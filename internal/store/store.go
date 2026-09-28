@@ -22,6 +22,29 @@ var ErrNotFound = errors.New("store: record not found")
 // never considered a duplicate.
 var ErrDuplicateIdemKey = errors.New("store: duplicate idempotency key")
 
+// ErrDecode is wrapped into SeqEntry.DecodeErr when a stored row cannot be
+// rebuilt into a Record. It lets a caller detect a decode failure with
+// errors.Is rather than by matching an error message, so a wording change in a
+// decode error can never silently stop the failure from being recognised.
+var ErrDecode = errors.New("store: record failed to decode")
+
+// SeqEntry is one stored row in chain order. Rec is the decoded record; when
+// the row cannot be decoded, Rec is the zero Record and DecodeErr is set
+// instead. ID and Seq are read from their own columns, independently of the
+// record payload, so a row whose reason payload has been corrupted can still be
+// identified by its exact identity and position.
+type SeqEntry struct {
+	// Seq is the row's chain position, read from the seq column.
+	Seq uint64
+	// ID is the row's identifier, read from the id column.
+	ID record.RecordID
+	// Rec is the decoded record. It is the zero Record when DecodeErr is set.
+	Rec record.Record
+	// DecodeErr is non-nil when the row could not be rebuilt into a Record, and
+	// is nil otherwise. It wraps ErrDecode, so callers detect it with errors.Is.
+	DecodeErr error
+}
+
 // Store is the durable, ordered home of the audit trail. Implementations
 // persist records and read them back faithfully; a read must reproduce the
 // record that was written, or fail rather than return a different claim.
@@ -48,6 +71,14 @@ type Store interface {
 	// ListRecords returns the records whose At falls within [from, to],
 	// inclusive at both bounds, ordered by At ascending and then by Seq.
 	ListRecords(from, to time.Time) ([]record.Record, error)
+	// SeqEntries returns every stored row in chain order (seq ascending). It
+	// differs from ListRecords in two ways that matter for verification: it
+	// selects on seq rather than on at, so no record can fall outside a time
+	// window, and it does not abort on a row that cannot be decoded. Such a
+	// row is returned with its own Seq and ID set and DecodeErr non-nil
+	// (wrapping ErrDecode); a row that decodes carries the rebuilt record in
+	// Rec.
+	SeqEntries() ([]SeqEntry, error)
 	// Head returns the record with the greatest Seq. The bool is false, with
 	// a zero record and a nil error, when the table is empty.
 	Head() (record.Record, bool, error)

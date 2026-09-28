@@ -81,11 +81,12 @@ func runVerify(cmd *cobra.Command, cfg *config.Config) error {
 	l := ledger.New(st, nil, nil)
 
 	if verbose {
-		// Print each record as it is checked. A read failure here is left for
-		// Verify below to report as a decode break, so the two never disagree.
-		if recs, rerr := l.Records(); rerr == nil {
-			for _, r := range recs {
-				fmt.Fprintf(out, "checking %s (seq %d)\n", r.ID, r.Seq)
+		// Print each stored row as it is checked, including one that fails to
+		// decode (Verify below reports it). The store is read here through the
+		// same Seq-ordered accessor Verify itself uses.
+		if entries, eerr := st.SeqEntries(); eerr == nil {
+			for _, e := range entries {
+				fmt.Fprintf(out, "checking %s (seq %d)\n", e.ID, e.Seq)
 			}
 		}
 	}

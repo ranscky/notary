@@ -312,6 +312,41 @@ func (s *SQLiteStore) Head() (record.Record, bool, error) {
 	return r, ok, nil
 }
 
+// SeqEntries returns every stored row in chain order (seq ascending).
+//
+// It differs from ListRecords in two ways that matter for verification: it
+// orders by and selects on seq rather than at, so no record can fall outside a
+// time window, and it does not abort on a row that cannot be decoded. Such a
+// row is returned with its own Seq and ID -- read from their own columns,
+// independently of the payload -- and DecodeErr set (wrapping ErrDecode), while
+// a row that decodes carries the rebuilt record in Rec.
+func (s *SQLiteStore) SeqEntries() ([]SeqEntry, error) {
+	rows, err := s.db.Query(`SELECT ` + selectColumns + ` FROM records ORDER BY seq ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: seq entries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []SeqEntry
+	for rows.Next() {
+		raw, err := scanRawRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: seq entries: %w", err)
+		}
+		entry := SeqEntry{Seq: uint64(raw.seq), ID: record.RecordID(raw.id)}
+		if rec, derr := raw.buildRecord(); derr != nil {
+			entry.DecodeErr = fmt.Errorf("%w: %w", ErrDecode, derr)
+		} else {
+			entry.Rec = rec
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: seq entries: %w", err)
+	}
+	return out, nil
+}
+
 // headFrom returns the record with the greatest Seq read through q, reporting
 // false with a zero record and a nil error when the table is empty. It is
 // shared by Head and AppendChained, so the head is read identically wherever it
@@ -375,6 +410,121 @@ type queryRower interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
+// rawRow holds one row's columns exactly as scanned from the database, before
+// any decoding. Splitting the scan from the rebuild (buildRecord) is what lets
+// SeqEntries report a row that fails to decode by the seq and id it was read
+// with, rather than losing the whole read.
+type rawRow struct {
+	seq              int64
+	id               string
+	atStr            string
+	recordedAtStr    string
+	event            string
+	tierStr          string
+	reasonKind       string
+	reasonPayload    []byte
+	memoryID         string
+	userID           string
+	agentID          string
+	appID            string
+	runID            string
+	contentHash      []byte
+	contentText      sql.NullString
+	contentSensitive int64
+	idemKey          string
+	prevHash         []byte
+	hash             []byte
+	signature        []byte
+	signerKeyID      string
+}
+
+// scanRawRow scans one row's columns into a rawRow in the fixed selectColumns
+// order. It performs no decoding and returns no decode error: a failure here is
+// a genuine read error.
+func scanRawRow(row scanner) (rawRow, error) {
+	var r rawRow
+	err := row.Scan(
+		&r.seq, &r.id, &r.atStr, &r.recordedAtStr, &r.event, &r.tierStr, &r.reasonKind,
+		&r.reasonPayload, &r.memoryID, &r.userID, &r.agentID, &r.appID, &r.runID, &r.contentHash,
+		&r.contentText, &r.contentSensitive, &r.idemKey, &r.prevHash, &r.hash, &r.signature,
+		&r.signerKeyID,
+	)
+	return r, err
+}
+
+// buildRecord rebuilds a Record from a scanned row: it decodes the Reason with
+// record.ParseReason and re-checks the readability columns (tier, reason_kind)
+// against it. Any failure here means the stored row no longer describes a valid
+// record -- a hand-edited row -- and surfaces as an error rather than a
+// different claim.
+func (r rawRow) buildRecord() (record.Record, error) {
+	at, err := time.Parse(instantLayout, r.atStr)
+	if err != nil {
+		return record.Record{}, fmt.Errorf("parse at %q: %w", r.atStr, err)
+	}
+	recordedAt, err := time.Parse(instantLayout, r.recordedAtStr)
+	if err != nil {
+		return record.Record{}, fmt.Errorf("parse recorded_at %q: %w", r.recordedAtStr, err)
+	}
+
+	reason, err := record.ParseReason(r.reasonPayload)
+	if err != nil {
+		return record.Record{}, fmt.Errorf("decode reason: %w", err)
+	}
+	if want := reason.Tier().String(); want != r.tierStr {
+		return record.Record{}, fmt.Errorf(
+			"stored tier %q disagrees with payload tier %q", r.tierStr, want)
+	}
+	if want := string(reason.Kind()); want != r.reasonKind {
+		return record.Record{}, fmt.Errorf(
+			"stored reason_kind %q disagrees with payload kind %q", r.reasonKind, want)
+	}
+
+	ch, err := hashFromBytes("content_hash", r.contentHash)
+	if err != nil {
+		return record.Record{}, err
+	}
+	ph, err := hashFromBytes("prev_hash", r.prevHash)
+	if err != nil {
+		return record.Record{}, err
+	}
+	hh, err := hashFromBytes("hash", r.hash)
+	if err != nil {
+		return record.Record{}, err
+	}
+
+	rec := record.Record{
+		ID:         record.RecordID(r.id),
+		Seq:        uint64(r.seq),
+		At:         at,
+		RecordedAt: recordedAt,
+		Event:      record.EventType(r.event),
+		Reason:     reason,
+		Subject: record.Subject{
+			MemoryID: r.memoryID,
+			Scope: record.Scope{
+				UserID:  r.userID,
+				AgentID: r.agentID,
+				AppID:   r.appID,
+				RunID:   r.runID,
+			},
+			ContentHash: ch,
+		},
+		IdempotencyKey: record.IdemKey(r.idemKey),
+		PrevHash:       ph,
+		Hash:           hh,
+		Signature:      r.signature,
+		SignerKeyID:    r.signerKeyID,
+	}
+	if r.contentText.Valid {
+		rec.Content = &record.Content{
+			Text:      r.contentText.String,
+			Sensitive: r.contentSensitive != 0,
+		}
+	}
+	return rec, nil
+}
+
 // scanRecord reads one row and rebuilds a Record from it. It rebuilds the
 // Reason with record.ParseReason and propagates any decode error, so a row
 // edited directly in SQLite fails here rather than becoming a different claim.
@@ -382,104 +532,11 @@ type queryRower interface {
 // the decoded payload, which is what makes a hand-edited tier column
 // detectable.
 func scanRecord(row scanner) (record.Record, error) {
-	var (
-		seq              int64
-		id               string
-		atStr            string
-		recordedAtStr    string
-		event            string
-		tierStr          string
-		reasonKind       string
-		reasonPayload    []byte
-		memoryID         string
-		userID           string
-		agentID          string
-		appID            string
-		runID            string
-		contentHash      []byte
-		contentText      sql.NullString
-		contentSensitive int64
-		idemKey          string
-		prevHash         []byte
-		hash             []byte
-		signature        []byte
-		signerKeyID      string
-	)
-
-	if err := row.Scan(
-		&seq, &id, &atStr, &recordedAtStr, &event, &tierStr, &reasonKind,
-		&reasonPayload, &memoryID, &userID, &agentID, &appID, &runID, &contentHash,
-		&contentText, &contentSensitive, &idemKey, &prevHash, &hash, &signature,
-		&signerKeyID,
-	); err != nil {
-		return record.Record{}, err
-	}
-
-	at, err := time.Parse(instantLayout, atStr)
-	if err != nil {
-		return record.Record{}, fmt.Errorf("parse at %q: %w", atStr, err)
-	}
-	recordedAt, err := time.Parse(instantLayout, recordedAtStr)
-	if err != nil {
-		return record.Record{}, fmt.Errorf("parse recorded_at %q: %w", recordedAtStr, err)
-	}
-
-	reason, err := record.ParseReason(reasonPayload)
-	if err != nil {
-		return record.Record{}, fmt.Errorf("decode reason: %w", err)
-	}
-	if want := reason.Tier().String(); want != tierStr {
-		return record.Record{}, fmt.Errorf(
-			"stored tier %q disagrees with payload tier %q", tierStr, want)
-	}
-	if want := string(reason.Kind()); want != reasonKind {
-		return record.Record{}, fmt.Errorf(
-			"stored reason_kind %q disagrees with payload kind %q", reasonKind, want)
-	}
-
-	ch, err := hashFromBytes("content_hash", contentHash)
+	raw, err := scanRawRow(row)
 	if err != nil {
 		return record.Record{}, err
 	}
-	ph, err := hashFromBytes("prev_hash", prevHash)
-	if err != nil {
-		return record.Record{}, err
-	}
-	hh, err := hashFromBytes("hash", hash)
-	if err != nil {
-		return record.Record{}, err
-	}
-
-	rec := record.Record{
-		ID:         record.RecordID(id),
-		Seq:        uint64(seq),
-		At:         at,
-		RecordedAt: recordedAt,
-		Event:      record.EventType(event),
-		Reason:     reason,
-		Subject: record.Subject{
-			MemoryID: memoryID,
-			Scope: record.Scope{
-				UserID:  userID,
-				AgentID: agentID,
-				AppID:   appID,
-				RunID:   runID,
-			},
-			ContentHash: ch,
-		},
-		IdempotencyKey: record.IdemKey(idemKey),
-		PrevHash:       ph,
-		Hash:           hh,
-		Signature:      signature,
-		SignerKeyID:    signerKeyID,
-	}
-	if contentText.Valid {
-		rec.Content = &record.Content{
-			Text:      contentText.String,
-			Sensitive: contentSensitive != 0,
-		}
-	}
-	return rec, nil
+	return raw.buildRecord()
 }
 
 // hashFromBytes decodes a fixed-width hash column, rejecting any width other

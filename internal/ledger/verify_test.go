@@ -156,16 +156,21 @@ func TestVerifyUnknownKey(t *testing.T) {
 	}
 }
 
-// TestVerifyReportsDecodeBreak proves a row whose stored Reason no longer decodes
-// (a SQLite-level tamper) surfaces as a decode break rather than an error.
-func TestVerifyReportsDecodeBreak(t *testing.T) {
-	l, v, path := verifyFixture(t, 3)
+// TestVerifyDecodeBreakNamesTheRecord proves a row whose stored Reason no longer
+// decodes is reported as a decode break by its exact record ID and chain
+// position -- the case Review Focus #3 most needs named, because a corrupted
+// reason payload is a direct SQLite edit.
+func TestVerifyDecodeBreakNamesTheRecord(t *testing.T) {
+	l, v, path := verifyFixture(t, 5)
 
-	execRaw(t, path, `UPDATE records SET reason_payload = ? WHERE seq = 1`, []byte("not a valid reason"))
+	execRaw(t, path, `UPDATE records SET reason_payload = x'00' WHERE seq = 2`)
 
 	breaks, err := l.Verify(v)
 	require.NoError(t, err, "a decode failure must be reported as a break, not an error")
-	require.Len(t, breaks, 1)
+	require.Len(t, breaks, 1, "a decode tamper must yield exactly one break")
+	assert.Equal(t, uint64(2), breaks[0].Seq)
+	assert.Equal(t, record.RecordID("rec-0003"), breaks[0].RecordID,
+		"the decode break must name the exact record ID")
 	assert.Equal(t, "decode", breaks[0].Field)
 }
 

@@ -510,5 +510,47 @@ func TestForeignKeysEnabledOnEveryConnection(t *testing.T) {
 	}
 }
 
+// TestSeqEntriesOrdersBySeqAndNamesAnUndecodableRow proves SeqEntries returns
+// rows in chain order and, unlike ListRecords, does not lose a row whose reason
+// payload cannot be decoded: the row is still named by its own seq and id, with
+// DecodeErr wrapping ErrDecode so callers need not match error text.
+func TestSeqEntriesOrdersBySeqAndNamesAnUndecodableRow(t *testing.T) {
+	s := newOpenStore(t)
+
+	// Insert three rows out of seq order, so seq ordering is not incidental.
+	for id, seq := range map[string]uint64{"rec-a": 1, "rec-b": 2, "rec-bad": 0} {
+		rec := fullRecord(t)
+		rec.ID = record.RecordID(id)
+		rec.Seq = seq
+		rec.IdempotencyKey = "" // the fixture reuses one key; keep each row distinct
+		require.NoError(t, s.PutRecord(rec))
+	}
+
+	// Corrupt the seq-0 row's reason payload so it can no longer be decoded.
+	_, err := s.db.Exec(`UPDATE records SET reason_payload = x'00' WHERE seq = 0`)
+	require.NoError(t, err)
+
+	entries, err := s.SeqEntries()
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+	assert.Equal(t, []uint64{0, 1, 2},
+		[]uint64{entries[0].Seq, entries[1].Seq, entries[2].Seq},
+		"SeqEntries must be ordered by seq ascending")
+
+	// The undecodable row is still named by its own seq and id.
+	assert.Equal(t, uint64(0), entries[0].Seq)
+	assert.Equal(t, record.RecordID("rec-bad"), entries[0].ID)
+	assert.ErrorIs(t, entries[0].DecodeErr, ErrDecode,
+		"a decode failure must wrap ErrDecode so callers need not match text")
+	assert.Equal(t, record.Record{}, entries[0].Rec,
+		"a row that failed to decode must carry the zero record")
+
+	// The decodable rows carry their rebuilt record and no decode error.
+	assert.NoError(t, entries[1].DecodeErr)
+	assert.Equal(t, record.RecordID("rec-a"), entries[1].Rec.ID)
+	assert.NoError(t, entries[2].DecodeErr)
+	assert.Equal(t, record.RecordID("rec-b"), entries[2].Rec.ID)
+}
+
 // ensure the concrete type satisfies the interface at compile time.
 var _ Store = (*SQLiteStore)(nil)
