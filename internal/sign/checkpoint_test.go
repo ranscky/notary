@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,15 @@ import (
 
 	"notary/internal/record"
 	"notary/internal/sign"
+)
+
+// Compile-time proof that Checkpoint satisfies the encoding/json interfaces on
+// both the value and pointer forms. MarshalJSON has a value receiver, so the
+// value type implements json.Marshaler as well as the pointer; UnmarshalJSON has
+// a pointer receiver, as required to write through.
+var (
+	_ json.Marshaler   = sign.Checkpoint{}
+	_ json.Unmarshaler = (*sign.Checkpoint)(nil)
 )
 
 // newCheckpointSigner loads a fresh Signer from a random key in
@@ -258,4 +268,59 @@ func TestMarshalCheckpointUsesStableFieldNames(t *testing.T) {
 	assert.JSONEq(t, `"`+hex.EncodeToString(cp.Hash[:])+`"`, string(raw["hash"]))
 	assert.JSONEq(t, `"`+hex.EncodeToString(cp.Signature)+`"`, string(raw["signature"]))
 	assert.JSONEq(t, `"2026-07-08T09:10:11Z"`, string(raw["at"]))
+}
+
+// TestCheckpointJSONMarshalRoundTripsThroughCanonicalCodec proves the obvious
+// path is the correct one: json.Marshal of a signed Checkpoint produces bytes
+// that UnmarshalCheckpoint accepts and that decode back to the original value,
+// and the same holds for a *Checkpoint. Without Checkpoint's MarshalJSON, a
+// bare json.Marshal would emit the hash as a 32-element number array and
+// UnmarshalCheckpoint would reject it.
+func TestCheckpointJSONMarshalRoundTripsThroughCanonicalCodec(t *testing.T) {
+	signer, keyring := newCheckpointSigner(t)
+	verifier := sign.NewVerifier(keyring)
+	at := time.Date(2026, 11, 12, 13, 14, 15, 987654321, time.UTC)
+
+	cp, err := sign.NewCheckpoint(123, testHash(), at, signer)
+	require.NoError(t, err)
+
+	// Value form: json.Marshal(cp) must equal the canonical codec output.
+	valueJSON, err := json.Marshal(cp)
+	require.NoError(t, err)
+
+	canonical, err := sign.MarshalCheckpoint(cp)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(canonical), string(valueJSON),
+		"json.Marshal(cp) must produce the canonical wire form")
+
+	// The obvious path round-trips: jsondata -> UnmarshalCheckpoint -> equal.
+	got, err := sign.UnmarshalCheckpoint(valueJSON)
+	require.NoError(t, err)
+	assert.True(t, reflect.DeepEqual(cp, got),
+		"UnmarshalCheckpoint(json.Marshal(cp)) must equal the original")
+
+	// And json.Unmarshal into a Checkpoint (via its UnmarshalJSON) round-trips too.
+	var decoded sign.Checkpoint
+	require.NoError(t, json.Unmarshal(valueJSON, &decoded))
+	assert.True(t, reflect.DeepEqual(cp, decoded),
+		"json.Unmarshal into Checkpoint must equal the original")
+
+	// The signature still verifies after the plain-json round trip.
+	require.NoError(t, verifier.VerifyCheckpoint(got))
+
+	// Pointer form: json.Marshal(&cp) must also work (value receiver covers it).
+	pointerJSON, err := json.Marshal(&cp)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(valueJSON), string(pointerJSON),
+		"json.Marshal(&cp) must match json.Marshal(cp)")
+}
+
+// TestCheckpointJSONUnmarshalRejectsMalformed proves the json.Unmarshaler path
+// inherits UnmarshalCheckpoint's validation: malformed input errors and leaves a
+// partially-populated Checkpoint is never produced.
+func TestCheckpointJSONUnmarshalRejectsMalformed(t *testing.T) {
+	var cp sign.Checkpoint
+	err := json.Unmarshal([]byte(`{"seq":1,"hash":"deadbeef"}`), &cp)
+	require.Error(t, err)
+	assert.Equal(t, sign.Checkpoint{}, cp)
 }

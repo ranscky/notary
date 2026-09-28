@@ -30,7 +30,11 @@ const checkpointDomain = "notary/checkpoint/v1"
 // material, and it carries no expiry: freshness policy is the caller's concern.
 //
 // The canonical encoding of a Checkpoint is produced by MarshalCheckpoint and
-// consumed by UnmarshalCheckpoint. See MarshalCheckpoint for the wire format.
+// consumed by UnmarshalCheckpoint. Checkpoint's MarshalJSON and UnmarshalJSON
+// delegate to those functions, so the obvious json.Marshal/json.Unmarshal path
+// is the canonical one rather than a footgun: a bare json.Marshal would
+// otherwise encode record.Hash as a 32-element number array that
+// UnmarshalCheckpoint then rejects. See MarshalCheckpoint for the wire format.
 type Checkpoint struct {
 	// Seq is the chain position of the signed head: the sequence number of the
 	// record the head hash belongs to.
@@ -88,21 +92,21 @@ func (v *Verifier) VerifyCheckpoint(c Checkpoint) error {
 
 // checkpointMessage builds the canonical bytes that a checkpoint signs:
 //
-//	"notary/checkpoint/v1" ‖ uint64-BE(Seq) ‖ Hash[:] ‖ uint16-BE(len) ‖ Timestamp
+//	"notary/checkpoint/v1" ‖ uint64-BE(Seq) ‖ Hash[:] ‖ Timestamp
 //
-// where Timestamp is At.UTC().Format(time.RFC3339Nano).
-//
-// The domain prefix, Seq, and Hash are fixed width, so the timestamp — the only
-// variable-width segment — is length-prefixed with a big-endian uint16 byte
-// count. That keeps the layout self-delimiting and unambiguous, so two distinct
-// (Seq, Hash, At) triples can never produce the same signed bytes. In
-// particular RFC3339Nano's trailing-zero trimming is injective over nanosecond
-// instants, so a whole second and a nanosecond later sign distinct messages.
+// where Timestamp is At.UTC().Format(time.RFC3339Nano). This is the exact
+// documented form; there is no length prefix on the timestamp. The domain
+// prefix, Seq, and Hash are fixed width (19 + 8 + 32 = 59 bytes), and the
+// timestamp is the last segment, so everything after byte 59 is unambiguous —
+// no two distinct (Seq, Hash, At) triples can produce the same signed bytes.
+// In particular RFC3339Nano's trailing-zero trimming is injective over
+// nanosecond instants, so a whole second and a nanosecond later sign distinct
+// messages.
 func checkpointMessage(seq uint64, hash record.Hash, at time.Time) []byte {
 	ts := at.UTC().Format(time.RFC3339Nano)
 
 	var buf bytes.Buffer
-	buf.Grow(len(checkpointDomain) + 8 + len(hash) + 2 + len(ts))
+	buf.Grow(len(checkpointDomain) + 8 + len(hash) + len(ts))
 	buf.WriteString(checkpointDomain)
 
 	var seqBuf [8]byte
@@ -110,11 +114,6 @@ func checkpointMessage(seq uint64, hash record.Hash, at time.Time) []byte {
 	buf.Write(seqBuf[:])
 
 	buf.Write(hash[:])
-
-	var lenBuf [2]byte
-	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(ts)))
-	buf.Write(lenBuf[:])
-
 	buf.WriteString(ts)
 	return buf.Bytes()
 }
@@ -219,4 +218,25 @@ func UnmarshalCheckpoint(data []byte) (Checkpoint, error) {
 		SignerKeyID: wire.SignerKeyID,
 		Signature:   rawSig,
 	}, nil
+}
+
+// MarshalJSON implements json.Marshaler by delegating to MarshalCheckpoint, so
+// json.Marshal(checkpoint) emits the canonical hex wire form. It uses a value
+// receiver, so both Checkpoint and *Checkpoint are covered — the same lesson as
+// Signer's redaction methods in sign.go.
+func (c Checkpoint) MarshalJSON() ([]byte, error) {
+	return MarshalCheckpoint(c)
+}
+
+// UnmarshalJSON implements json.Unmarshaler by delegating to
+// UnmarshalCheckpoint, so json.Unmarshal into a Checkpoint rejects the same
+// malformed input and never leaves a partially-populated value. The pointer
+// receiver is required to write through to the caller's value.
+func (c *Checkpoint) UnmarshalJSON(data []byte) error {
+	decoded, err := UnmarshalCheckpoint(data)
+	if err != nil {
+		return err
+	}
+	*c = decoded
+	return nil
 }
