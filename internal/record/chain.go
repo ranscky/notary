@@ -21,11 +21,17 @@ const hashDomain = "notary/record/v1"
 // CanonicalBytes returns the deterministic byte encoding of r over which the
 // record hash is computed.
 //
-// It writes each field length-prefixed -- a big-endian uint32 byte length
-// followed by the field's bytes -- in a fixed order: ID, Event, Reason,
-// Subject (MemoryID, Scope dimensions, ContentHash), Content, IdempotencyKey,
-// At, RecordedAt, and SignerKeyID. Length-prefixing makes the encoding
-// unambiguous: no field's bytes can be read as another field's boundary.
+// It writes the fields in a fixed order: ID, Event, Reason, Subject
+// (MemoryID, the Scope dimensions, ContentHash), Content, IdempotencyKey, At,
+// RecordedAt, and SignerKeyID. The variable-length byte fields (the identifiers,
+// the Reason encoding, the Scope dimensions, Content.Text, IdempotencyKey, the
+// formatted timestamps, and SignerKeyID) are each length-prefixed with a
+// big-endian uint32 byte count followed by the bytes, so no field's bytes can
+// be read as another field's boundary. The fixed-width values are written
+// directly: ContentHash is its raw 32 bytes, Content is preceded by a one-byte
+// presence flag (0 for nil, 1 for present), and when present its Sensitive flag
+// is a single byte. The presence flag is what keeps a nil *Content from
+// encoding identically to a non-nil but empty one.
 //
 // Four fields are deliberately excluded, each for a specific reason:
 //

@@ -57,10 +57,6 @@ func differentReason(t *testing.T) record.Reason {
 // field that participates in the digest, mutating it changes the hash. If any
 // of these passed unchanged, that field would be silently unprotected.
 func TestEveryFieldChangesHash(t *testing.T) {
-	baseline := baselineRecord(t)
-	baselineHash, err := record.ComputeHash(baseline)
-	require.NoError(t, err)
-
 	mutations := []struct {
 		name   string
 		mutate func(*record.Record)
@@ -84,7 +80,21 @@ func TestEveryFieldChangesHash(t *testing.T) {
 
 	for _, m := range mutations {
 		t.Run(m.name, func(t *testing.T) {
+			// A fresh baseline per subtest, so no earlier subtest's mutation
+			// can leak into this one's starting point.
+			baseline := baselineRecord(t)
+			baselineHash, err := record.ComputeHash(baseline)
+			require.NoError(t, err)
+
 			mutated := baseline
+			// baseline.Content is a *Content; a plain struct copy would share
+			// that pointer, letting a Content mutation reach back into
+			// baseline. Deep-copy it so each subtest differs from the baseline
+			// only in its target field.
+			if baseline.Content != nil {
+				c := *baseline.Content
+				mutated.Content = &c
+			}
 			m.mutate(&mutated)
 			got, err := record.ComputeHash(mutated)
 			require.NoError(t, err)
