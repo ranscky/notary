@@ -56,7 +56,9 @@ func TestKeyMaterialNeverAppearsInOutput(t *testing.T) {
 
 	// Build the signer format calls with a runtime format string so that the
 	// deliberate %s/%q/%x against a struct do not trip the printf vet check.
-	for _, verb := range []string{"v", "+v", "#v", "s", "q", "x"} {
+	// %X is included so both hex cases are exercised.
+	verbs := []string{"v", "+v", "#v", "s", "q", "x", "X"}
+	for _, verb := range verbs {
 		format := "%" + verb
 		out[format+" signer"] = fmt.Sprintf(format, signer)
 	}
@@ -91,16 +93,39 @@ func TestKeyMaterialNeverAppearsInOutput(t *testing.T) {
 	logger.Printf("go=%#v", signer)
 	out["log.Logger"] = buf.String()
 
+	// Positive assertion: every rendering of the signer itself must be exactly
+	// the redaction marker. A negative check against an enumerated list of
+	// secret spellings can always miss a spelling — notably the 0x-prefixed,
+	// comma-separated Go-syntax form that %#v emits — so this positive check is
+	// what actually guards the verb. Had it used only the absence list below,
+	// deleting Signer.Format and Signer.GoString (keeping Signer.String) would
+	// leave this test green while %#v printed the raw private key.
+	const redacted = "[redacted]"
+	for _, verb := range verbs {
+		format := "%" + verb
+		assert.Equalf(t, redacted, out[format+" signer"],
+			"%%%s of the signer must render exactly %q", verb, redacted)
+	}
+	assert.Equal(t, `"`+redacted+`"`, string(marshaledSigner),
+		"json.Marshal(signer) must render exactly the redacted JSON string")
+	assert.Containsf(t, out["log.Logger"], "signer="+redacted,
+		"logged signer must render exactly %q", redacted)
+	assert.Containsf(t, out["log.Logger"], "go="+redacted,
+		"logged signer under %%#v must render exactly %q", redacted)
+
 	// Every printable form of the private key. The base64 forms are what the
 	// brief requires; the hex and decimal forms catch a leak that a raw %v/%x of
-	// the key bytes would produce (which base64 would not match).
+	// the key bytes would produce (which base64 would not match). The Go-syntax
+	// form catches the 0x-prefixed, comma-separated rendering that %#v emits.
 	secrets := map[string]string{
-		"base64(private key)":  keyB64,
-		"base64(seed)":         seedB64,
-		"hex(private key)":     hex.EncodeToString(priv),
-		"hex(seed)":            hex.EncodeToString(canarySeed[:]),
-		"decimal(private key)": fmt.Sprintf("%v", []byte(priv)),
-		"decimal(seed)":        fmt.Sprintf("%v", canarySeed[:]),
+		"base64(private key)":    keyB64,
+		"base64(seed)":           seedB64,
+		"hex(private key)":       hex.EncodeToString(priv),
+		"hex(seed)":              hex.EncodeToString(canarySeed[:]),
+		"decimal(private key)":   fmt.Sprintf("%v", []byte(priv)),
+		"decimal(seed)":          fmt.Sprintf("%v", canarySeed[:]),
+		"go-syntax(private key)": fmt.Sprintf("%#v", ed25519.PrivateKey(priv)),
+		"go-syntax(seed)":        fmt.Sprintf("%#v", canarySeed),
 	}
 
 	for outName, text := range out {
