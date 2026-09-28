@@ -694,8 +694,12 @@ git add internal/ledger/ && git commit -m "feat(ledger): add single write path w
 - Test: `testdata/tamper/README.md`, `internal/ledger/verify_test.go`
 
 **Interfaces:**
-- Consumes: `ledger.Ledger` (Task 9), `sign.Verifier` (Task 7).
-- Produces: `ledger.Break` (`{RecordID record.RecordID; Seq uint64; Field string; Detail string}`); `(*Ledger) Verify(v *sign.Verifier) ([]Break, error)`; the `notary verify` command with `--checkpoint <file>` (consumed in Task 12) and `--verbose`.
+- Consumes: `ledger.Ledger` (Task 9), `sign.Verifier` (Task 7), `config.Config.TrustedKeysPath` (Task 7).
+- Produces: `ledger.Break` (`{RecordID record.RecordID; Seq uint64; Field string; Detail string}`); `(*Ledger) Verify(v *sign.Verifier) ([]Break, error)`; `sign.LoadTrustedKeys(path string) (map[string]ed25519.PublicKey, error)`; the `notary verify` command with `--checkpoint <file>` (consumed in Task 12) and `--verbose`.
+
+**The trusted-keyring file format, decided here.** `config.TrustedKeysPath` names a file of base64-encoded ed25519 **public** keys, one per line. Blank lines and lines whose first non-space character is `#` are ignored; surrounding whitespace is trimmed. Each key's `KeyID` is computed from the key itself via the existing `keyIDFor` helper — the file never states a key ID. That is deliberate: a format that let the file declare a `keyid` alongside the key would admit a mismatch where the declared identity differs from the key actually used, which is a verification-integrity hole. A malformed line, a key that is not 32 bytes, or a file that is empty after comments is an error, not a silent skip. `LoadTrustedKeys` lives in `internal/sign` (not `cmd/`), so parsing is unit-testable without a CLI.
+
+**`notary verify` with no trusted keys must NOT report success.** If `TrustedKeysPath` is empty or yields an empty keyring, the command must exit non-zero with a plain-language error saying no trusted keys are configured and how to configure them — because "could not verify anything" and "verified everything" must never look the same. Otherwise a broken deployment prints `ok`. `Verify` itself stays pure over the verifier it is given; the emptiness check belongs in the command.
 
 - [ ] **Step 1: Write the failing test** in `internal/ledger/verify_test.go`
 
