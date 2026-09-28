@@ -1,0 +1,5 @@
+package fixture
+
+import "notary/internal/record"
+
+var _ = record.VisibilityTier{v: 3}

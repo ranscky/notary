@@ -1,0 +1,6 @@
+package fixture
+
+import "notary/internal/record"
+
+var _ = record.Reason{}
+var _ = record.Reason{kind: record.ReasonReturnedBySearch}
