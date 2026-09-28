@@ -6,15 +6,16 @@
 
 **Architecture:** One write path (`internal/ledger`) owns the chain. Records are immutable, hash-chained, and signed with ed25519; the chain position `Seq` is assigned inside a single SQLite transaction. A `VisibilityTier` that cannot be forged outside `internal/record` labels every "why" claim, enforced by three constructors with disjoint evidence types rather than one builder. The Mem0 interceptor writes only what it witnesses inline, and fails open but loud.
 
-**Tech Stack:** Go 1.23, `github.com/spf13/cobra`, `modernc.org/sqlite` (pure-Go, no CGO), stdlib `crypto/ed25519`, `github.com/stretchr/testify`.
+**Tech Stack:** Go 1.22, `github.com/spf13/cobra`, `modernc.org/sqlite` (pure-Go, no CGO), stdlib `crypto/ed25519`, `github.com/stretchr/testify`.
 
 **Spec:** `docs/superpowers/specs/2026-09-28-notary-v1-architecture-design.md`
 
 ## Global Constraints
 
-- `go.mod` declares `go 1.23`. `GOTOOLCHAIN=auto` fetches it; builds need network on a machine with an older local toolchain.
+- `go.mod` declares `go 1.22`, pinned to the local toolchain (`go1.22.2`). Newer toolchains *can* be downloaded in this environment, but pinning to the local one keeps the build self-contained and reproducible.
 - Module path is `notary`. If Notary is to be imported by other modules this must become a repository URL **before** any external consumer exists.
-- Dependencies: stdlib plus `cobra`, `modernc.org/sqlite`, `testify`. **The Anthropic SDK is not used in this plan.** Do not add any other dependency without asking.
+- Dependencies, pinned: `github.com/spf13/cobra`, `github.com/stretchr/testify`, and `modernc.org/sqlite v1.36.0`. The sqlite pin is load-bearing: `v1.37+` requires go ≥ 1.23 and `v1.59.0` requires go ≥ 1.25, neither permitted by the `go 1.22` directive. `v1.36.0` still satisfies `.clinerules`' "v1.30+" floor. **The Anthropic SDK is not used in this plan.** Do not add any other dependency without asking.
+- The Go module cache (`/home/ranscky/go/pkg/mod`) and the checksum-db cache are **not writable by subagents**. Module provisioning is done once by the controller before Task 0; implementers only read the cache and write `/tmp` (the `GOCACHE`).
 - Never `panic` in library code. Every fallible function returns an error.
 - Wrap errors with context: `fmt.Errorf("writing record: %w", err)`.
 - No global mutable state; dependencies are passed through constructors.
@@ -50,12 +51,17 @@ Phase 0 is described as complete in the Cline phase plan, but the repository cur
 **Interfaces:**
 - Produces: `config.Config`, `config.Load() (*Config, error)`, `config.LoadFrom(env map[string]string) (*Config, error)`; the `notary` root command with persistent flags `--verbose` and `--config`.
 
-- [ ] **Step 1: Initialise the module and folders**
+- [ ] **Step 1: Confirm the module and create the folders**
+
+The controller has already run `go mod init notary` and pinned the three dependencies, because the module cache is not writable from your sandbox. Verify, do not re-run:
 
 ```bash
-go mod init notary && go get github.com/spf13/cobra github.com/stretchr/testify modernc.org/sqlite
+cat go.mod                      # expect `module notary`, `go 1.22`, and the three requires
+go build ./... && echo "module OK"
 mkdir -p cmd/notary internal/record internal/store internal/sign internal/ledger internal/interceptor/library config
 ```
+
+If `go.mod` is missing or the build fails, stop and report `BLOCKED` — do not attempt `go get`, which cannot write the module cache from your sandbox.
 
 - [ ] **Step 2: Write the failing config test** in `config/config_test.go`
 
