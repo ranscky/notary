@@ -45,6 +45,7 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to the configuration file")
 
 	cmd.AddCommand(newVersionCmd())
+	cmd.AddCommand(newVerifyCmd())
 
 	return cmd
 }
