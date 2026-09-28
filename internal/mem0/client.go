@@ -19,6 +19,13 @@ const clientRedacted = "[redacted]"
 // defaultTimeout bounds a single Mem0 call when the caller supplies no client.
 const defaultTimeout = 30 * time.Second
 
+// maxResponseBytes bounds how much of a response body the client will read, so
+// that a misbehaving, broken-proxy, or hostile endpoint cannot exhaust the
+// client's memory by streaming unboundedly. It is far above any legitimate
+// Mem0 response; a body that exceeds it surfaces as a wrapped error naming the
+// call, rather than being silently truncated and decoded.
+const maxResponseBytes = 8 << 20 // 8 MiB
+
 // Client is a thin REST client for the hosted Mem0 API.
 //
 // It holds the API key in an unexported field and never renders it: String,
@@ -177,13 +184,18 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	// Read one byte past the cap so an over-size body is detected rather than
+	// silently truncated (a truncated body could still be valid JSON).
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("mem0: reading %s %s response: %w", method, path, err)
 	}
+	if len(raw) > maxResponseBytes {
+		return fmt.Errorf("mem0: %s %s response exceeds %d-byte limit", method, path, maxResponseBytes)
+	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return &HTTPError{StatusCode: resp.StatusCode, Body: raw}
+		return fmt.Errorf("mem0: %s %s: %w", method, path, &HTTPError{StatusCode: resp.StatusCode, Body: raw})
 	}
 
 	if out == nil {

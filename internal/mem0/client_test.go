@@ -1,6 +1,7 @@
 package mem0_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -255,6 +256,8 @@ func TestErrorSurfacesStatusAndBody(t *testing.T) {
 	c := mem0.NewClient(srv.URL, "test-key", nil)
 	_, err := c.Add(context.Background(), mem0.AddRequest{Messages: []mem0.Message{}})
 	require.Error(t, err)
+	// The error must name the call (verb + path) as well as the status and body.
+	assert.Contains(t, err.Error(), "POST /v3/memories/add/")
 	assert.Contains(t, err.Error(), "400")
 	assert.Contains(t, err.Error(), "This list may not be empty")
 
@@ -274,7 +277,41 @@ func TestServerErrorIsAnErrorNotAPanic(t *testing.T) {
 		_, err = c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
 	})
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "POST /v3/memories/search/")
 	assert.Contains(t, err.Error(), "500")
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.Equal(t, http.StatusInternalServerError, httpErr.StatusCode)
+}
+
+func TestOversizeResponseIsRejected(t *testing.T) {
+	// Stream one byte past the cap in small, cheap chunks (not 8 MiB of
+	// meaningful JSON). The client must stop reading at the cap and return an
+	// error naming the call, rather than allocating or decoding an unbounded
+	// body.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		chunk := bytes.Repeat([]byte("x"), 4096) // not valid JSON
+		remaining := int64(8<<20) + 1            // maxResponseBytes + 1
+		for remaining > 0 {
+			n := int64(len(chunk))
+			if n > remaining {
+				n = remaining
+			}
+			if _, err := w.Write(chunk[:n]); err != nil {
+				return
+			}
+			remaining -= n
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+	assert.Contains(t, err.Error(), "POST /v3/memories/search/")
 }
 
 func TestNoImplicitPingRequest(t *testing.T) {
