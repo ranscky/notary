@@ -32,10 +32,10 @@
 
 The spec says what Notary must do, not everything it will meet. These are the input classes and failure modes most likely to bite a user, each pinned by a test in the task that owns the code:
 
-1. **An empty store** — `verify` on a store with zero records, and `Head()` on an empty table, must report "nothing to verify", not error or panic. (Task 5, Task 11)
-2. **A store whose tail was deleted** — plain `verify` must still pass (the remaining chain is self-consistent) while `verify --checkpoint` must fail loudly. Confusing these two is the whole point of the feature. (Task 12)
-3. **A record edited directly in SQLite** — `verify` must name the exact record ID *and* field, not just report "invalid". (Task 11)
-4. **A Store or Signer that fails during a Mem0 call** — the Mem0 call must still succeed *and* a gap marker must land in both channels. (Task 18)
+1. **An empty store** — `verify` on a store with zero records, and `Head()` on an empty table, must report "nothing to verify", not error or panic. (Task 6, Task 10)
+2. **A store whose tail was deleted** — plain `verify` must still pass (the remaining chain is self-consistent) while `verify --checkpoint` must fail loudly. Confusing these two is the whole point of the feature. (Task 11)
+3. **A record edited directly in SQLite** — `verify` must name the exact record ID *and* field, not just report "invalid". (Task 10)
+4. **A Store or Signer that fails during a Mem0 call** — the Mem0 call must still succeed *and* a gap marker must land in both channels. (Task 15, Task 16, Task 19)
 5. **Key material reaching any output** — a canary private key must never appear in a log, an error string, or a `%v`/`%+v` rendering. (Task 7)
 
 ---
@@ -176,7 +176,9 @@ git add internal/record/ && git commit -m "feat(record): add unforgeable Visibil
 
 **Interfaces:**
 - Consumes: `record.VisibilityTier` and its three values, plus `record.RecordID` and `record.Hash`, all from Task 1.
-- Produces: `record.ReasonKind` and its constants; `(ReasonKind) AllowedTier() (VisibilityTier, bool)`; `record.EvidenceSource` (`SourceMem0Response`, `SourceNotaryInstrumentation`); `record.ObservedEvidence`, `record.ReconstructedEvidence`, `record.InternalNote`; `record.Reason`; `NewObservedReason(ReasonKind, ObservedEvidence) (Reason, error)`, `NewReconstructedReason(ReasonKind, ReconstructedEvidence) (Reason, error)`, `NewInternalReason(ReasonKind, InternalNote) (Reason, error)`; `(Reason) Kind() ReasonKind`, `Tier() VisibilityTier`, `Observed() (ObservedEvidence, bool)`, `Reconstructed() (ReconstructedEvidence, bool)`, `InternalNote() (InternalNote, bool)`, `Validate() error`.
+- Produces: `record.ReasonKind` and its constants; `(ReasonKind) AllowedTier() (VisibilityTier, bool)`; `record.EvidenceSource` (`SourceMem0Response`, `SourceNotaryInstrumentation`); `record.ObservedEvidence`, `record.ReconstructedEvidence`, `record.InternalNote`; `record.Reason`; `NewObservedReason(ReasonKind, ObservedEvidence) (Reason, error)`, `NewReconstructedReason(ReasonKind, ReconstructedEvidence) (Reason, error)`, `NewInternalReason(ReasonKind, InternalNote) (Reason, error)`; `(Reason) Kind() ReasonKind`, `Tier() VisibilityTier`, `Observed() (ObservedEvidence, bool)`, `Reconstructed() (ReconstructedEvidence, bool)`, `InternalNote() (InternalNote, bool)`, `Validate() error`; and the serialization pair `(Reason) Encode() ([]byte, error)` / `ParseReason([]byte) (Reason, error)`.
+
+`Encode`/`ParseReason` exist because `internal/store` is a **different package** and cannot reach `Reason`'s unexported fields — encoding is the record package's responsibility, and the store persists opaque bytes. `Encode` emits the tier, the kind, and the tier's payload; `ParseReason` rebuilds through the constructors so a row tampered with in SQLite fails validation rather than silently becoming a different claim.
 
 - [ ] **Step 1: Write the failing test** in `internal/record/reason_test.go`
 
@@ -499,16 +501,21 @@ CREATE TABLE IF NOT EXISTS records (
   content_hash     BLOB    NOT NULL,
   content_text     TEXT,
   content_sensitive INTEGER NOT NULL DEFAULT 0,
-  idempotency_key  TEXT    NOT NULL UNIQUE,
+  idempotency_key  TEXT    NOT NULL DEFAULT '',
   prev_hash        BLOB    NOT NULL,
   hash             BLOB    NOT NULL,
   signature        BLOB    NOT NULL,
   signer_key_id    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_records_at ON records(at);
+-- Partial, not a column constraint: only non-empty keys are unique. Phase 3
+-- deliberately writes records before idempotency exists (spec §13), and a
+-- plain UNIQUE would reject the second keyless record.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_records_idem ON records(idempotency_key)
+  WHERE idempotency_key <> '';
 ```
 
-Times are stored as `RFC3339Nano` in UTC so lexicographic order equals chronological order. `reason_payload` holds the canonicalised evidence bytes from Task 2; the tier and kind are also stored as their string forms so a row is readable and so `verify` can report a field name without decoding. `GetRecord` and `ListRecords` must reconstruct a `Record` whose `Reason` passes `Validate()` — including rebuilding evidence through the Task 2 constructors, so a row tampered with in SQLite surfaces as a decode error rather than as a silently different claim.
+Times are stored as `RFC3339Nano` in UTC so lexicographic order equals chronological order. `reason_payload` holds the bytes from `Reason.Encode()` (Task 2); the tier and kind are also stored as their string forms so a row is readable and so `verify` can report a field name without decoding. `GetRecord` and `ListRecords` rebuild the `Reason` via `record.ParseReason`, so a row tampered with in SQLite surfaces as a decode error rather than as a silently different claim. `PutRecord` returns `ErrDuplicateIdemKey` only for a duplicate **non-empty** key; an empty key is stored as-is. `ByIdemKey("")` reports not-found.
 
 - [ ] **Step 4: Run the tests and confirm they pass**
 
@@ -785,7 +792,7 @@ git add internal/ledger/ && git commit -m "test(ledger): prove a mid-write crash
 - Test: `internal/mem0/client_test.go`, `internal/mem0/testdata/*.json`
 
 **Interfaces:**
-- Produces: `mem0.Client`; `mem0.NewClient(baseURL, apiKey string, hc *http.Client) *Client`; `(*Client) Add(ctx, AddRequest) (AddResponse, error)`; `(*Client) Search(ctx, SearchRequest) (SearchResponse, error)`; `(*Client) GetAll(ctx, GetAllRequest) (GetAllResponse, error)`; `(*Client) History(ctx, memoryID string) (HistoryResponse, error)`; `(*Client) EventStatus(ctx, eventID string) (EventStatusResponse, error)`; the `mem0.Memory` and `mem0.SearchResult` types.
+- Produces: `mem0.Client`; `mem0.NewClient(baseURL, apiKey string, hc *http.Client) *Client`; `(*Client) Add(ctx, AddRequest) (AddResponse, error)`; `(*Client) Search(ctx, SearchRequest) (SearchResponse, error)`; `(*Client) GetAll(ctx, GetAllRequest) (GetAllResponse, error)`; `(*Client) History(ctx, memoryID string) (HistoryResponse, error)`; `(*Client) EventStatus(ctx, eventID string) (EventStatusResponse, error)`; and the wire types `mem0.AddRequest`, `mem0.AddResponse`, `mem0.SearchRequest`, `mem0.SearchResponse`, `mem0.GetAllRequest`, `mem0.GetAllResponse`, `mem0.HistoryEvent`, `mem0.HistoryResponse`, `mem0.EventStatusResponse`, `mem0.Memory`, `mem0.SearchResult`.
 
 ```go
 type Memory struct {
@@ -901,7 +908,9 @@ git add internal/gap/ internal/ledger/ cmd/notary/ && git commit -m "feat(gap): 
 
 **Interfaces:**
 - Consumes: `record.Record` (Task 4), `ledger.Ledger` (Task 9), `gap.Log` (Task 14).
-- Produces: `interceptor.FailMode` (`FailOpenLoud`, `FailClosed`); `interceptor.Interceptor`; `interceptor.Deps`; `interceptor.AuditWriter`; `interceptor.NewAuditWriter(l *ledger.Ledger, g *gap.Log, stderr io.Writer) *AuditWriter`; `(*AuditWriter) Write(rec record.Record) error`; `interceptor.ErrFailClosedUnimplemented`.
+- Produces: `interceptor.FailMode` (`FailOpenLoud`, `FailClosed`); `interceptor.Interceptor`; `interceptor.AuditWriter`; `interceptor.NewAuditWriter(l *ledger.Ledger, g *gap.Log, channels []io.Writer) *AuditWriter`; `(*AuditWriter) Write(rec record.Record) error`; `interceptor.ErrFailClosedUnimplemented`.
+
+`channels` comes from `gap.WriteChannels(gapLogPath, os.Stderr)` (Task 14) — constructing them that way is what guarantees the two channels do not share a failure domain.
 
 ```go
 type FailMode uint8
@@ -910,7 +919,7 @@ const (
     FailClosed                        // defined; never implemented in v1
 )
 
-type AuditWriter struct { /* unexported: ledger, gaplog, stderr */ }
+type AuditWriter struct { /* unexported: ledger, gaplog, channels */ }
 
 // Write attempts the ledger and, on failure, emits an audit_gap marker.
 // It NEVER returns an error for a ledger failure: audit problems must not
@@ -920,7 +929,7 @@ func (w *AuditWriter) Write(rec record.Record) error
 
 - [ ] **Step 1: Write the failing test** in `internal/interceptor/interceptor_test.go`
 
-Assert: `FailMode(0)` is not valid and `Validate()` rejects it; `FailClosed.Validate()` returns `ErrFailClosedUnimplemented` (the value exists in the enum but is never implemented — spec §1 non-goals); `AuditWriter.Write` on a healthy ledger stores exactly one record and returns nil; `AuditWriter.Write` with a ledger whose store is closed returns **nil** (not an error), writes an `audit_gap` entry to the gap log, and writes a marker line to the provided stderr writer (Review Focus #4).
+Assert: `FailMode(0)` is not valid and `Validate()` rejects it; `FailClosed.Validate()` returns `ErrFailClosedUnimplemented` (the value exists in the enum but is never implemented — spec §1 non-goals); `AuditWriter.Write` on a healthy ledger stores exactly one record and returns nil; `AuditWriter.Write` with a ledger whose store is closed returns **nil** (not an error), writes an `audit_gap` entry to the gap log, and writes a marker line to **every** provided channel (Review Focus #4).
 
 - [ ] **Step 2: Run it and confirm it fails**
 
@@ -936,7 +945,7 @@ type Interceptor interface {
 }
 ```
 
-`AuditWriter.Write` is the fail-open-loud mechanism in one place: try `ledger.Append`; on error, construct a `record` with `Event: record.EventAuditGap` and a `Reason` built by `record.NewObservedReason(record.ReasonAuditUnavailable, ev)` where `ev` uses `record.SourceNotaryInstrumentation`; write it to the gap log; write a one-line marker to the stderr writer; and return nil regardless. If the gap log write *also* fails, write the stderr marker anyway and **then** return the gap-log error — the caller is a background reconciliation path at that point, and a doubly-failed write is a real error worth surfacing.
+`AuditWriter.Write` is the fail-open-loud mechanism in one place: try `ledger.Append`; on error, construct a `record` with `Event: record.EventAuditGap` and a `Reason` built by `record.NewObservedReason(record.ReasonAuditUnavailable, ev)` where `ev` uses `record.SourceNotaryInstrumentation`; write it to the gap log; write a one-line marker to **every** channel; and return nil regardless. If the gap log write *also* fails, write the channel markers anyway and **then** return the gap-log error — the caller is a background reconciliation path at that point, and a doubly-failed write is a real error worth surfacing.
 
 Note that the `audit_gap` record cannot be written to the ledger (that is what failed), so gaps exist only in the gap log. Task 19 reconciles them back when the store recovers.
 
@@ -961,7 +970,9 @@ git add internal/interceptor/ && git commit -m "feat(interceptor): add Intercept
 
 **Interfaces:**
 - Consumes: `mem0.Client` (Task 13), `interceptor.AuditWriter` (Task 15), `record.*` (Tasks 1–5).
-- Produces: `library.Mem0Interceptor`; `library.New(mc *mem0.Client, aw *interceptor.AuditWriter, scope record.Scope, now func() time.Time) *Mem0Interceptor`; `(*Mem0Interceptor) Add(ctx, correlationID string, messages []string) (mem0.AddResponse, error)`; `(*Mem0Interceptor) Search(ctx, correlationID string, q mem0.SearchRequest) (mem0.SearchResponse, error)`; `library.ErrMissingCorrelationID`; `library.DeriveCorrelationID`.
+- Produces: `library.Mem0Interceptor`, which **implements `interceptor.Interceptor`** (`FailMode() interceptor.FailMode` returning `interceptor.FailOpenLoud`, and `Close() error`); `library.New(mc *mem0.Client, aw *interceptor.AuditWriter, scope record.Scope, now func() time.Time) *Mem0Interceptor`; `(*Mem0Interceptor) Add(ctx, correlationID string, messages []string) (mem0.AddResponse, error)`; `(*Mem0Interceptor) Search(ctx, correlationID string, q mem0.SearchRequest) (mem0.SearchResponse, error)`; `library.ErrMissingCorrelationID`; `library.DeriveCorrelationID`.
+
+This task does **not** set `Record.IdempotencyKey` — Phase 3 writes keyless records and the store's uniqueness is a partial index for exactly that reason (Task 6). Task 18 adds key derivation and tightens `Append`.
 
 - [ ] **Step 1: Write the failing test** in `internal/interceptor/library/mem0_test.go`
 
