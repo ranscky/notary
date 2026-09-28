@@ -666,7 +666,11 @@ Expected: FAIL — `undefined: ledger.New`
 func (l *Ledger) Append(rec record.Record) (record.RecordID, error)
 ```
 
-Inside one transaction: `Validate()` the record and return `ErrInvalidTier`/`ErrInvalidRecord` **before** opening it; query `SELECT COALESCE(MAX(seq), -1) + 1 FROM records` to get `seq`; assign `rec.Seq`; set `rec.PrevHash` to `GenesisHash` when `seq == 0`, otherwise to the head record's `Hash`; set `rec.RecordedAt = l.now().UTC()` when zero; compute `rec.Hash` via `record.ComputeHash`; sign `rec.Hash[:]`; store. The insert and the `MAX(seq)` read share the transaction, which is why `Seq` cannot race (spec §7).
+Inside one transaction: `Validate()` the record and return `ErrInvalidTier`/`ErrInvalidRecord` **before** opening it; query `SELECT COALESCE(MAX(seq), -1) + 1 FROM records` to get `seq`; assign `rec.Seq`; set `rec.PrevHash` to `GenesisHash` when `seq == 0`, otherwise to the head record's `Hash`; set `rec.RecordedAt = l.now().UTC()` when zero; **set `rec.SignerKeyID = l.signer.KeyID()`**; compute `rec.Hash` via `record.ComputeHash`; sign `rec.Hash[:]`; store. The insert and the `MAX(seq)` read share the transaction, which is why `Seq` cannot race (spec §7).
+
+**Order matters and is easy to get wrong: `SignerKeyID` must be set *before* `ComputeHash`, not after.** `CanonicalBytes` includes `SignerKeyID` (Task 5), so assigning it after hashing would leave the stored record's `SignerKeyID` outside its own digest — and `notary verify` (Task 10) recomputes the hash from the *stored* record, so the recomputation would differ from the stored `Hash` and report tampering on an honest ledger. Setting it first also means the digest commits to the signing identity, which is the stronger property.
+
+Because the `MAX(seq)` read and the insert must not race, they belong to the same transaction. The `Store` interface has no transaction handle, so this task **adds a transactional append primitive to `internal/store`** — e.g. `AppendChained(func(prev record.Record, hasPrev bool) (record.Record, error)) error`, where the callback receives the current head under the write lock and returns the fully-formed record to insert. Reading `Head()` outside a transaction and inserting afterwards reintroduces the race this task exists to prevent.
 
 `Append` must reject a caller-supplied non-zero `Seq` so no caller can influence chain position — this is the property that makes the chain trustworthy.
 
