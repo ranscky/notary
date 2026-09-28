@@ -1,0 +1,64 @@
+# Notary — Project Rules
+
+## 1. Tech Stack & Versions
+- Go 1.23+
+- CLI framework: github.com/spf13/cobra v1.8+
+- Embedded DB: modernc.org/sqlite (pure-Go, no CGO) v1.30+
+- Signing: stdlib crypto/ed25519
+- Config: stdlib os.Getenv + github.com/joho/godotenv (dev only) v1.5+
+- Testing: stdlib testing + github.com/stretchr/testify v1.9+
+- Target integration: Mem0 via its REST API (net/http directly, no official Go SDK)
+- Optional LLM phrasing: Anthropic Messages API (github.com/anthropics/anthropic-sdk-go), export path only, never the write path
+
+## 2. Folder Structure
+notary/
+├── cmd/
+│   └── notary/
+│       └── main.go                  # CLI entrypoint (Cobra root command)
+├── internal/
+│   ├── record/                      # Structured reason-record schema + hash-chaining
+│   │   ├── record.go                # Includes the VisibilityTier type
+│   │   └── chain.go
+│   ├── store/
+│   │   └── sqlite.go
+│   ├── sign/
+│   │   └── sign.go
+│   ├── interceptor/
+│   │   ├── interceptor.go           # The pluggable Interceptor interface + fail-mode config
+│   │   ├── library/
+│   │   │   └── mem0.go              # LibraryInterceptor
+│   │   └── proxy/
+│   │       └── proxy.go             # ProxyInterceptor (Phase 7)
+│   ├── export/
+│   │   └── export.go
+│   └── replay/
+│       └── replay.go
+├── config/
+│   └── config.go
+├── go.mod
+├── go.sum
+└── README.md
+
+## 3. Coding Style
+- Standard Go error handling, never panic in library code
+- Exported types/functions get doc comments
+- Naming: camelCase unexported, PascalCase exported, snake_case only for SQL columns
+- File length guidance: aim under ~300 lines per file as a signal to split by responsibility, not a hard ceiling
+- No global mutable state — pass dependencies explicitly through constructors
+
+## 4. Error Handling
+- Every fallible function returns an error; never swallow one silently
+- Wrap errors with context: `fmt.Errorf("writing record: %w", err)`
+- Never log key material or raw sensitive memory content
+- CLI errors surface in plain language, full detail behind `--verbose`
+
+## 5. Guardrails
+- Do NOT install new dependencies without asking first
+- Do NOT touch files outside the current phase's scope
+- No hardcoded secrets or signing keys anywhere in the repo — env vars or OS keychain only
+- No refactoring of working code from a prior phase unless explicitly asked
+- The structured record is always the source of truth — no code path may treat LLM-generated text as authoritative
+- `VisibilityTier` must be a type that cannot be constructed without specifying its value — no code path may write "observed" data through a path that could also write "reconstructed" data
+- Every write to the store must be idempotent from Phase 4 onward
+- The audit-observation path defaults to fail-open-loud; nothing in v1 implements fail-closed, since v1 has no enforcement function
+- In proxy mode, a failure in the audit-write path must never block, delay, or fail the underlying Mem0 request/response
