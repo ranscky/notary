@@ -15,6 +15,9 @@ const (
 	DefaultDBPath = "notary.db"
 	// DefaultGapLogPath is the gap-log file, relative to the working directory.
 	DefaultGapLogPath = "notary-gaps.log"
+	// DefaultSigningKeyEnv is the environment variable that, by default, holds
+	// the base64 signing key material.
+	DefaultSigningKeyEnv = "NOTARY_SIGNING_KEY"
 )
 
 // Environment variable names that override the defaults.
@@ -23,6 +26,13 @@ const (
 	EnvMem0BaseURL = "NOTARY_MEM0_BASE_URL"
 	EnvDBPath      = "NOTARY_DB_PATH"
 	EnvGapLogPath  = "NOTARY_GAP_LOG_PATH"
+	// EnvSigningKey names the environment variable holding the base64 signing
+	// key. It is also the default for Config.SigningKeyEnv, so the same variable
+	// can be read by name through the configuration.
+	EnvSigningKey = "NOTARY_SIGNING_KEY"
+	// EnvTrustedKeysPath is the environment variable holding the path to a file
+	// of trusted public keys.
+	EnvTrustedKeysPath = "NOTARY_TRUSTED_KEYS_PATH"
 )
 
 // Config is the fully resolved runtime configuration. A *Config is passed
@@ -36,6 +46,14 @@ type Config struct {
 	DBPath string
 	// GapLogPath is the path to the gap log.
 	GapLogPath string
+	// SigningKeyEnv is the name of the environment variable holding the base64
+	// signing key material. It defaults to NOTARY_SIGNING_KEY; the empty string
+	// means no signing key variable is configured. It holds a variable name, not
+	// the key itself, so config stays free of cryptographic material.
+	SigningKeyEnv string
+	// TrustedKeysPath is the path to a file of trusted public keys; an empty
+	// string means none is configured.
+	TrustedKeysPath string
 	// Verbose enables verbose output.
 	Verbose bool
 }
@@ -50,10 +68,12 @@ func Load() (*Config, error) {
 // empty, which is not an error — it is only required once a Mem0 call is made.
 func LoadFrom(env map[string]string) (*Config, error) {
 	cfg := &Config{
-		Mem0APIKey:  env[EnvMem0APIKey],
-		Mem0BaseURL: valueOr(env, EnvMem0BaseURL, DefaultMem0BaseURL),
-		DBPath:      valueOr(env, EnvDBPath, DefaultDBPath),
-		GapLogPath:  valueOr(env, EnvGapLogPath, DefaultGapLogPath),
+		Mem0APIKey:      env[EnvMem0APIKey],
+		Mem0BaseURL:     valueOr(env, EnvMem0BaseURL, DefaultMem0BaseURL),
+		DBPath:          valueOr(env, EnvDBPath, DefaultDBPath),
+		GapLogPath:      valueOr(env, EnvGapLogPath, DefaultGapLogPath),
+		SigningKeyEnv:   valueOr(env, EnvSigningKey, DefaultSigningKeyEnv),
+		TrustedKeysPath: env[EnvTrustedKeysPath],
 	}
 	return cfg, nil
 }

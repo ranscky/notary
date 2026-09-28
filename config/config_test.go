@@ -53,3 +53,37 @@ func TestLoadFrom(t *testing.T) {
 		assert.Equal(t, "/tmp/other.log", cfg.GapLogPath)
 	})
 }
+
+// TestLoadFromSigningKeys verifies the signing-key fields: SigningKeyEnv
+// defaults to NOTARY_SIGNING_KEY and TrustedKeysPath defaults to empty, and
+// both can be overridden through the environment.
+func TestLoadFromSigningKeys(t *testing.T) {
+	t.Run("signing key env defaults to NOTARY_SIGNING_KEY", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{})
+		require.NoError(t, err)
+		assert.Equal(t, "NOTARY_SIGNING_KEY", cfg.SigningKeyEnv)
+		assert.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv)
+	})
+
+	t.Run("trusted keys path defaults to empty", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{})
+		require.NoError(t, err)
+		assert.Empty(t, cfg.TrustedKeysPath)
+	})
+
+	t.Run("both fields are overridable by env", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{
+			"NOTARY_SIGNING_KEY":       "NOTARY_OTHER_KEY_VAR",
+			"NOTARY_TRUSTED_KEYS_PATH": "/tmp/trusted.keys",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "NOTARY_OTHER_KEY_VAR", cfg.SigningKeyEnv)
+		assert.Equal(t, "/tmp/trusted.keys", cfg.TrustedKeysPath)
+	})
+
+	t.Run("empty env value falls back to the default", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{"NOTARY_SIGNING_KEY": ""})
+		require.NoError(t, err)
+		assert.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv)
+	})
+}
