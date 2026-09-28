@@ -2,3 +2,5 @@
 *.db-wal
 *.db-shm
 /notary
+notary-gaps.log
+.reasonix/
