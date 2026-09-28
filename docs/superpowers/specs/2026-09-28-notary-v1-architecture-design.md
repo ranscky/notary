@@ -167,9 +167,11 @@ const (
 
 ### `ReasonKind` vocabulary
 
-`returned_by_search`, `stored_by_mem0`, `kept_by_content_match`, `absent_from_search`, `no_facts_extracted`, `removed_by_mem0`, `add_failed`, `audit_unavailable`.
+`search_performed`, `add_acknowledged`, `returned_by_search`, `stored_by_mem0`, `kept_by_content_match`, `absent_from_search`, `no_facts_extracted`, `removed_by_mem0`, `add_failed`, `audit_unavailable`.
 
-Allowed tiers are fixed per kind: `returned_by_search`, `stored_by_mem0`, `add_failed`, `audit_unavailable` are `Observed`; `kept_by_content_match`, `absent_from_search`, `no_facts_extracted` are `Reconstructed`; `removed_by_mem0` is `Internal`.
+Allowed tiers are fixed per kind: `search_performed`, `add_acknowledged`, `returned_by_search`, `stored_by_mem0`, `add_failed`, `audit_unavailable` are `Observed`; `kept_by_content_match`, `absent_from_search`, `no_facts_extracted` are `Reconstructed`; `removed_by_mem0` is `Internal`.
+
+`search_performed` and `add_acknowledged` describe observing the *request* that produced a decision, as distinct from the decision's outcome. They were added during planning: every record carries a `Reason`, so without them a `search_performed` or `add_requested` record has no legal kind.
 
 The vocabulary names only what v1 can actually establish. Attributing a non-surfaced memory to `threshold` versus `top_k` would require re-querying Mem0 with a widened window; v1 records the fact (`absent_from_search`) and the parameters as its basis, and does not guess the cause (§15).
 
