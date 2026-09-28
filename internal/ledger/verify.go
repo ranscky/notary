@@ -43,7 +43,10 @@ type Break struct {
 	// populated: even a row that fails to decode carries its identity in the
 	// id column, which is read independently of the record payload.
 	RecordID record.RecordID
-	// Seq is the broken record's chain position.
+	// Seq is the broken record's chain position. For a "truncation" break it is
+	// instead the checkpoint's attested Seq, which may have no surviving row:
+	// the shortened tail's own position is gone, so the attested position is the
+	// only meaningful one to report.
 	Seq uint64
 	// Field names the part of the record that broke.
 	Field string

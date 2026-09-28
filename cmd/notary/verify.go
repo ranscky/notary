@@ -150,7 +150,14 @@ func runVerify(cmd *cobra.Command, cfg *config.Config, checkpointPath, writeChec
 		}
 	}
 
-	if len(breaks) == 0 {
+	// Report success only when there is BOTH no break AND no truncation error.
+	// truncation() today always pairs ErrTruncated with exactly one break, so a
+	// set truncErr implies a non-empty breaks; but were a future change ever to
+	// return ErrTruncated with no break, an unguarded "len(breaks) == 0" return
+	// would print "ok: N records verified" and exit 0 with truncErr set -- the
+	// exact silent failure this command exists to prevent. Requiring truncErr ==
+	// nil pins that invariant.
+	if len(breaks) == 0 && truncErr == nil {
 		n := 0
 		if head, ok, herr := l.Head(); herr != nil {
 			return fmt.Errorf("reading ledger head: %w", herr)
