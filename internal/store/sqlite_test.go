@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -403,6 +405,109 @@ func TestPutRecordRejectsInvalidReason(t *testing.T) {
 
 	err := s.PutRecord(rec)
 	require.Error(t, err, "a record with an unencodable reason must be rejected")
+}
+
+// recordAt builds a distinct record with the given ID, Seq, and whole At.
+func recordAt(t *testing.T, id string, seq uint64, at time.Time) record.Record {
+	t.Helper()
+	r := fullRecord(t)
+	r.ID = record.RecordID(id)
+	r.Seq = seq
+	r.At = at
+	r.IdempotencyKey = ""
+	return r
+}
+
+// TestListRecordsWholeSecondAtIncludedBySubSecondToBound guards the range bug:
+// time.RFC3339Nano trims trailing zeros, so a whole-second At stored as
+// "...T12:00:00Z" sorted AFTER a sub-second bound "...T12:00:00.5Z" under
+// BINARY collation ('Z' > '.'), silently excluding an in-range record. With a
+// fixed-width instant the whole-second record is correctly included.
+func TestListRecordsWholeSecondAtIncludedBySubSecondToBound(t *testing.T) {
+	s := newOpenStore(t)
+	base := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.PutRecord(recordAt(t, "whole-second", 1, base)))
+
+	to := base.Add(500 * time.Millisecond) // sub-second bound, same second
+	got, err := s.ListRecords(base.Add(-time.Hour), to)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a whole-second At must be included by a sub-second later 'to' bound")
+	assert.Equal(t, record.RecordID("whole-second"), got[0].ID)
+	// Also at the exact boundary: `to` equal to a whole-second At must include it.
+	got, err = s.ListRecords(base.Add(-time.Hour), base)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "an inclusive whole-second 'to' bound must include the record")
+}
+
+// TestListRecordsSubSecondAtIncludedByWholeSecondFromBound is the mirror of the
+// 'to' case: a sub-second At stored as "...T12:00:00.5Z" sorted BEFORE a
+// whole-second 'from' bound "...T12:00:00Z" under BINARY collation
+// ('.' < 'Z'), silently excluding an in-range record. This is the symmetric
+// "a whole-second from excludes sub-second rows" failure the review named.
+func TestListRecordsSubSecondAtIncludedByWholeSecondFromBound(t *testing.T) {
+	s := newOpenStore(t)
+	base := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.PutRecord(recordAt(t, "sub-second", 1, base.Add(500*time.Millisecond))))
+
+	got, err := s.ListRecords(base, base.Add(time.Hour)) // whole-second, inclusive 'from'
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a whole-second 'from' bound must include a sub-second record in that second")
+	assert.Equal(t, record.RecordID("sub-second"), got[0].ID)
+
+	// And a sub-second 'from' earlier than a whole-second record includes it.
+	later := time.Date(2026, 2, 2, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.PutRecord(recordAt(t, "later-whole", 2, later)))
+	got, err = s.ListRecords(later.Add(-500*time.Millisecond), later.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a sub-second 'from' must include a whole-second record")
+	assert.Equal(t, record.RecordID("later-whole"), got[0].ID)
+}
+
+// TestListRecordsOrdersWholeSecondBeforeSubSecondSameSecond guards the ordering
+// bug: with RFC3339Nano, ORDER BY at put "...T12:00:00.000000001Z" before
+// "...T12:00:00Z" because '.' < 'Z', inverting chronological order within a
+// second. With a fixed-width instant the whole second sorts first.
+func TestListRecordsOrdersWholeSecondBeforeSubSecondSameSecond(t *testing.T) {
+	s := newOpenStore(t)
+	base := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	// Insert in reverse chronological order so ORDER BY, not insertion, decides.
+	require.NoError(t, s.PutRecord(recordAt(t, "plus-one-ns", 2, base.Add(time.Nanosecond))))
+	require.NoError(t, s.PutRecord(recordAt(t, "whole-second", 1, base)))
+
+	got, err := s.ListRecords(base.Add(-time.Hour), base.Add(time.Hour))
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, []record.RecordID{"whole-second", "plus-one-ns"},
+		[]record.RecordID{got[0].ID, got[1].ID},
+		"a whole second must sort before a sub-second instant within the same second")
+}
+
+// TestForeignKeysEnabledOnEveryConnection proves the per-connection PRAGMA is
+// applied by the driver DSN, not just once via Exec. Holding several
+// connections open at once forces the pool to open distinct ones; each must
+// report foreign_keys ON.
+func TestForeignKeysEnabledOnEveryConnection(t *testing.T) {
+	s := newOpenStore(t)
+	ctx := context.Background()
+
+	const n = 4
+	conns := make([]*sql.Conn, 0, n)
+	defer func() {
+		for _, c := range conns {
+			require.NoError(t, c.Close())
+		}
+	}()
+
+	for i := 0; i < n; i++ {
+		c, err := s.db.Conn(ctx)
+		require.NoError(t, err)
+
+		var fk int
+		require.NoError(t, c.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk))
+		assert.Equal(t, 1, fk, "foreign_keys must be ON on every pooled connection")
+
+		conns = append(conns, c) // held open so the next Conn is a distinct one
+	}
 }
 
 // ensure the concrete type satisfies the interface at compile time.

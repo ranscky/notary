@@ -75,7 +75,7 @@ func Open(path string) (*SQLiteStore, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("store: open %s: %w", path, err)
 	}
@@ -92,13 +92,27 @@ func Open(path string) (*SQLiteStore, error) {
 	return s, nil
 }
 
-// migrate enables the required pragmas and applies the schema. It is safe to
-// run against an already-initialised database.
+// dsn builds the driver connection string for path. foreign_keys is a
+// per-connection PRAGMA, so under database/sql's connection pool it must be
+// applied to every pooled connection rather than once with Exec; the driver's
+// DSN applies it as each connection is established.
+func dsn(path string) string {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_foreign_keys=1"
+}
+
+// migrate enables WAL journalling and applies the schema. It is safe to run
+// against an already-initialised database.
+//
+// journal_mode=WAL is persistent (stored in the database file), so setting it
+// once on one connection is enough. foreign_keys is per-connection, so it is
+// applied to every pooled connection through the DSN instead (see dsn).
 func (s *SQLiteStore) migrate() error {
-	for _, pragma := range []string{`PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`} {
-		if _, err := s.db.Exec(pragma); err != nil {
-			return fmt.Errorf("store: apply %q: %w", pragma, err)
-		}
+	if _, err := s.db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		return fmt.Errorf("store: enable WAL: %w", err)
 	}
 	for _, stmt := range schemaStatements {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -301,11 +315,11 @@ func scanRecord(row scanner) (record.Record, error) {
 		return record.Record{}, err
 	}
 
-	at, err := time.Parse(time.RFC3339Nano, atStr)
+	at, err := time.Parse(instantLayout, atStr)
 	if err != nil {
 		return record.Record{}, fmt.Errorf("parse at %q: %w", atStr, err)
 	}
-	recordedAt, err := time.Parse(time.RFC3339Nano, recordedAtStr)
+	recordedAt, err := time.Parse(instantLayout, recordedAtStr)
 	if err != nil {
 		return record.Record{}, fmt.Errorf("parse recorded_at %q: %w", recordedAtStr, err)
 	}
@@ -379,10 +393,28 @@ func hashFromBytes(field string, b []byte) (record.Hash, error) {
 	return h, nil
 }
 
-// formatTime renders t in UTC as RFC3339Nano, so lexicographic order over the
-// stored text equals chronological order and the time zone is not lost.
+// instantLayout is the fixed-width UTC instant layout used for the at and
+// recorded_at columns. Exactly nine fractional digits are always written, so
+// every stored value has the same width and SQLite's BINARY collation orders
+// the text chronologically.
+//
+// time.RFC3339Nano cannot be used here: it trims trailing zeros, so a
+// whole-second value ("...T12:00:00Z") and a sub-second value
+// ("...T12:00:00.5Z") have different widths and lexical order disagrees with
+// chronological order ('Z' sorts after '.'), silently dropping in-range rows
+// from range queries and inverting order within a second.
+//
+// The layout deliberately uses the Z07:00 offset form rather than a literal
+// "Z": a literal Z is emitted verbatim regardless of the time's zone, so a
+// forgotten .UTC() would silently render a wrong instant, whereas Z07:00
+// renders the real offset (still "Z" for UTC) and would show a visible
+// "+HH:MM" if .UTC() were dropped. Keep the explicit .UTC() call.
+const instantLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// formatTime renders t as a fixed-width UTC instant so lexicographic order over
+// the stored text equals chronological order and the time zone is not lost.
 func formatTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.UTC().Format(instantLayout)
 }
 
 // isDuplicateIdemKey reports whether err is a uniqueness violation on the
