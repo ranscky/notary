@@ -622,7 +622,11 @@ Expected: FAIL — `undefined: sign.NewCheckpoint`
 
 - [ ] **Step 3: Implement `checkpoint.go`**
 
-The signed message is the canonical form `"notary/checkpoint/v1" ‖ uint64 BE Seq ‖ Hash[:] ‖ At.UTC().Format(RFC3339Nano)`. `MarshalCheckpoint` writes indented JSON via a struct with exported fields and a `json:"..."` tag on each — the checkpoint is a human-inspectable artifact an auditor may read, so indentation is deliberate.
+The signed message is exactly `"notary/checkpoint/v1" ‖ uint64 BE Seq ‖ Hash[:] ‖ At.UTC().Format(RFC3339Nano)` — **no length prefix on the timestamp.** The prefix is unnecessary and must not be added: the first segment of the message is a fixed 19+8+32 = 59 bytes, and the timestamp is last, so everything after byte 59 is unambiguous. Adding a prefix would change the signed artifact away from the form documented here, and a verifier implemented from this document would then reject valid checkpoints.
+
+**`Checkpoint` must carry `MarshalJSON`/`UnmarshalJSON` that delegate to `MarshalCheckpoint`/`UnmarshalCheckpoint`.** Without them the type is a footgun: `record.Hash` is `[32]byte`, so a bare `json.Marshal(Checkpoint)` emits the hash as a 32-element number array, which `UnmarshalCheckpoint` then rejects. Any caller embedding a checkpoint in a larger JSON document — including the `notary verify --write-checkpoint` wiring in Task 11 — would produce an artifact this package cannot read. Make the obvious path the correct one.
+
+`MarshalCheckpoint` writes indented JSON via a struct with exported fields and a `json:"..."` tag on each — the checkpoint is a human-inspectable artifact an auditor may read, so indentation is deliberate. Hex-encode the `Hash` and `Signature` in that wire struct and document the format.
 
 - [ ] **Step 4: Run the tests and confirm they pass**
 
