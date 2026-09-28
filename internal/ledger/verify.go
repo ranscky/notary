@@ -26,11 +26,18 @@ const (
 	// fieldDecode reports that a stored row could not be rebuilt into a record
 	// at all (a SQLite-level tamper that breaks the Reason).
 	fieldDecode = "decode"
+	// fieldTruncation reports that the chain no longer reaches a signed head
+	// checkpoint: it was shortened, rewritten, or emptied. It is emitted by
+	// VerifyAgainstCheckpoint, not by Verify, because a hash chain alone cannot
+	// see its own removed tail.
+	fieldTruncation = "truncation"
 )
 
 // Break records one integrity failure found while verifying the chain. It names
 // the exact record (RecordID and Seq) and the exact field ("hash", "prev_hash",
-// "signature", "seq", or "decode") that broke, with a human-readable Detail.
+// "signature", "seq", "decode", or "truncation") that broke, with a
+// human-readable Detail. VerifyAgainstCheckpoint emits a "truncation" break,
+// whose RecordID is empty when the shortened tail's identity is unknowable.
 type Break struct {
 	// RecordID identifies the record the break was found on. It is always
 	// populated: even a row that fails to decode carries its identity in the
