@@ -102,12 +102,23 @@ func Open(path string) (*SQLiteStore, error) {
 // it reads the chain head and inserts within one transaction, and the write
 // lock must be held across both so no second writer can interleave between the
 // read and the insert. Autocommit statements are unaffected.
+//
+// _busy_timeout is what makes concurrent writers serialize rather than fail.
+// The driver defaults busy_timeout to 0, so with BEGIN IMMEDIATE a second
+// writer that finds the write lock held returns SQLITE_BUSY immediately instead
+// of waiting -- a dropped append, i.e. an audit gap. Because a ledger file is
+// written one writer at a time and serialize by SQLite (spec section 7), the
+// losing writer must block until the lock is free, so a busy timeout is set.
+// This is the SQLite lock-wait knob, not an application retry loop (we never
+// re-execute a failed append) and not connection-pool tuning (MaxOpenConns et
+// al. are untouched). It only bounds how long a writer waits before a genuinely
+// stuck lock surfaces as SQLITE_BUSY.
 func dsn(path string) string {
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	return path + sep + "_foreign_keys=1&_txlock=immediate"
+	return path + sep + "_foreign_keys=1&_txlock=immediate&_busy_timeout=5000"
 }
 
 // migrate enables WAL journalling and applies the schema. It is safe to run
@@ -241,7 +252,7 @@ func (s *SQLiteStore) AppendChained(build func(prev record.Record, hasPrev bool)
 	}
 
 	if err := insertRecord(tx, rec); err != nil {
-		return fmt.Errorf("store: append chained: insert: %w", err)
+		return fmt.Errorf("store: append chained: insert record %s: %w", rec.ID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: append chained: commit: %w", err)

@@ -249,3 +249,51 @@ func TestAppendWithoutSignerErrorsNotPanics(t *testing.T) {
 	assert.Empty(t, id)
 	assert.Equal(t, 0, countRecords(t, st), "the store must be unchanged")
 }
+
+// TestAppendRoundTripsContentAndHash covers the *Content path: a record carrying
+// non-nil content must survive the store faithfully, and its stored hash must
+// still recompute to itself -- Task 10's exact operation (recompute the digest
+// over the stored record) applied to a record with content. The nil-content case
+// is covered alongside it, so CanonicalBytes' content presence flag is exercised
+// on both sides.
+func TestAppendRoundTripsContentAndHash(t *testing.T) {
+	t.Run("non-nil content", func(t *testing.T) {
+		l, _, _, _ := newLedger(t)
+
+		rec := validRecord(t, "rec-content")
+		rec.Content = &record.Content{Text: "sensitive note", Sensitive: true}
+
+		id, err := l.Append(rec)
+		require.NoError(t, err)
+		stored, err := l.GetRecord(id)
+		require.NoError(t, err)
+
+		require.NotNil(t, stored.Content, "content must survive as a non-nil pointer")
+		assert.Equal(t, "sensitive note", stored.Content.Text, "the content text must survive")
+		assert.True(t, stored.Content.Sensitive, "the sensitive flag must survive")
+
+		wantHash, err := record.ComputeHash(stored)
+		require.NoError(t, err)
+		assert.Equal(t, wantHash, stored.Hash,
+			"the stored hash must recompute over the stored content")
+	})
+
+	t.Run("nil content", func(t *testing.T) {
+		l, _, _, _ := newLedger(t)
+
+		rec := validRecord(t, "rec-nocontent")
+		require.Nil(t, rec.Content, "the fixture carries no content")
+
+		id, err := l.Append(rec)
+		require.NoError(t, err)
+		stored, err := l.GetRecord(id)
+		require.NoError(t, err)
+
+		assert.Nil(t, stored.Content, "absent content must round-trip as nil, not as empty content")
+
+		wantHash, err := record.ComputeHash(stored)
+		require.NoError(t, err)
+		assert.Equal(t, wantHash, stored.Hash,
+			"the stored hash must recompute over the stored record")
+	})
+}
