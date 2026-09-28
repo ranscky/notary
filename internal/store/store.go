@@ -28,7 +28,20 @@ var ErrDuplicateIdemKey = errors.New("store: duplicate idempotency key")
 type Store interface {
 	// PutRecord persists a record. It returns ErrDuplicateIdemKey when the
 	// record carries a non-empty IdempotencyKey already in use.
+	//
+	// PutRecord inserts a record exactly as given, including its Seq. It is the
+	// raw write used to rebuild a store; ordinary writes go through
+	// AppendChained so the chain position is assigned atomically.
 	PutRecord(record.Record) error
+	// AppendChained appends a record built from the current chain head in a
+	// single write transaction. build is called with the head record (prev,
+	// hasPrev) while the write lock is held; it returns the fully-formed record
+	// to insert. The store alone assigns the record's chain position (Seq): 0
+	// when the table is empty, otherwise prev.Seq + 1. The head read and the
+	// insert share one transaction, so two appends can never be assigned the
+	// same position, and a crash cannot leave a partial link. Any error from
+	// build, or from the insert, rolls the whole transaction back.
+	AppendChained(build func(prev record.Record, hasPrev bool) (record.Record, error)) error
 	// GetRecord returns the record with the given ID, or ErrNotFound when
 	// none exists.
 	GetRecord(record.RecordID) (record.Record, error)

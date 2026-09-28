@@ -96,12 +96,18 @@ func Open(path string) (*SQLiteStore, error) {
 // per-connection PRAGMA, so under database/sql's connection pool it must be
 // applied to every pooled connection rather than once with Exec; the driver's
 // DSN applies it as each connection is established.
+//
+// _txlock=immediate makes every Begin issue "BEGIN IMMEDIATE", taking the
+// write lock up front rather than on first write. AppendChained relies on this:
+// it reads the chain head and inserts within one transaction, and the write
+// lock must be held across both so no second writer can interleave between the
+// read and the insert. Autocommit statements are unaffected.
 func dsn(path string) string {
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	return path + sep + "_foreign_keys=1"
+	return path + sep + "_foreign_keys=1&_txlock=immediate"
 }
 
 // migrate enables WAL journalling and applies the schema. It is safe to run
@@ -122,13 +128,31 @@ func (s *SQLiteStore) migrate() error {
 	return nil
 }
 
-// PutRecord persists r. It returns an error wrapping ErrDuplicateIdemKey when
-// r carries a non-empty IdempotencyKey already in use, and otherwise a wrapped
-// error describing the failure.
+// PutRecord persists r exactly as given. It returns an error wrapping
+// ErrDuplicateIdemKey when r carries a non-empty IdempotencyKey already in use,
+// and otherwise a wrapped error describing the failure.
 func (s *SQLiteStore) PutRecord(r record.Record) error {
+	if err := insertRecord(s.db, r); err != nil {
+		return fmt.Errorf("store: put record %s: %w", r.ID, err)
+	}
+	return nil
+}
+
+// insertSQL is the single INSERT used by every write path. PutRecord and
+// AppendChained must persist a record identically, so they share it.
+const insertSQL = `INSERT INTO records (
+  seq, id, at, recorded_at, event, tier, reason_kind, reason_payload,
+  memory_id, user_id, agent_id, app_id, run_id, content_hash, content_text,
+  content_sensitive, idempotency_key, prev_hash, hash, signature, signer_key_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+// insertRecord writes r through q, which may be the pool or a transaction. It
+// returns the bare ErrDuplicateIdemKey on a uniqueness violation so each caller
+// can wrap it with its own context.
+func insertRecord(q execer, r record.Record) error {
 	payload, err := r.Reason.Encode()
 	if err != nil {
-		return fmt.Errorf("store: put record %s: encode reason: %w", r.ID, err)
+		return fmt.Errorf("encode reason: %w", err)
 	}
 
 	// content_text is NULL exactly when there is no content, so a keyless
@@ -148,12 +172,7 @@ func (s *SQLiteStore) PutRecord(r record.Record) error {
 		signature = []byte{}
 	}
 
-	_, err = s.db.Exec(
-		`INSERT INTO records (
-  seq, id, at, recorded_at, event, tier, reason_kind, reason_payload,
-  memory_id, user_id, agent_id, app_id, run_id, content_hash, content_text,
-  content_sensitive, idempotency_key, prev_hash, hash, signature, signer_key_id
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = q.Exec(insertSQL,
 		r.Seq,
 		string(r.ID),
 		formatTime(r.At),
@@ -178,10 +197,56 @@ func (s *SQLiteStore) PutRecord(r record.Record) error {
 	)
 	if err != nil {
 		if isDuplicateIdemKey(err) {
-			return fmt.Errorf("store: put record %s: %w", r.ID, ErrDuplicateIdemKey)
+			return ErrDuplicateIdemKey
 		}
-		return fmt.Errorf("store: put record %s: %w", r.ID, err)
+		return err
 	}
+	return nil
+}
+
+// AppendChained appends a record built from the current chain head in a single
+// write transaction. The head read and the insert share one immediate (write-
+// locked) transaction, so the chain position cannot race and no error can leave
+// a partial link. On any failure the transaction is rolled back.
+func (s *SQLiteStore) AppendChained(build func(prev record.Record, hasPrev bool) (record.Record, error)) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: append chained: begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	prev, hasPrev, err := headFrom(tx)
+	if err != nil {
+		return fmt.Errorf("store: append chained: read head: %w", err)
+	}
+
+	rec, err := build(prev, hasPrev)
+	if err != nil {
+		return err
+	}
+
+	// The store owns the chain position: it is derived from the head read under
+	// the write lock, so no value supplied by build can influence it. The
+	// callback is expected to have set the same Seq so it could hash over the
+	// final position; the store re-asserts it here.
+	if hasPrev {
+		rec.Seq = prev.Seq + 1
+	} else {
+		rec.Seq = 0
+	}
+
+	if err := insertRecord(tx, rec); err != nil {
+		return fmt.Errorf("store: append chained: insert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: append chained: commit: %w", err)
+	}
+	committed = true
 	return nil
 }
 
@@ -229,13 +294,25 @@ func (s *SQLiteStore) ListRecords(from, to time.Time) ([]record.Record, error) {
 // Head returns the record with the greatest Seq. It reports false with a zero
 // record and a nil error when the table is empty.
 func (s *SQLiteStore) Head() (record.Record, bool, error) {
-	row := s.db.QueryRow(`SELECT ` + selectColumns + ` FROM records ORDER BY seq DESC LIMIT 1`)
+	r, ok, err := headFrom(s.db)
+	if err != nil {
+		return record.Record{}, false, fmt.Errorf("store: head: %w", err)
+	}
+	return r, ok, nil
+}
+
+// headFrom returns the record with the greatest Seq read through q, reporting
+// false with a zero record and a nil error when the table is empty. It is
+// shared by Head and AppendChained, so the head is read identically wherever it
+// is needed.
+func headFrom(q queryRower) (record.Record, bool, error) {
+	row := q.QueryRow(`SELECT ` + selectColumns + ` FROM records ORDER BY seq DESC LIMIT 1`)
 	r, err := scanRecord(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return record.Record{}, false, nil
 	}
 	if err != nil {
-		return record.Record{}, false, fmt.Errorf("store: head: %w", err)
+		return record.Record{}, false, err
 	}
 	return r, true, nil
 }
@@ -273,6 +350,18 @@ func (s *SQLiteStore) Close() error {
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
+}
+
+// execer is satisfied by both *sql.DB and *sql.Tx, so insertRecord can run
+// either on the pool (PutRecord) or inside a transaction (AppendChained).
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// queryRower is satisfied by both *sql.DB and *sql.Tx, so headFrom can read the
+// head either from the pool (Head) or inside a transaction (AppendChained).
+type queryRower interface {
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 // scanRecord reads one row and rebuilds a Record from it. It rebuilds the
