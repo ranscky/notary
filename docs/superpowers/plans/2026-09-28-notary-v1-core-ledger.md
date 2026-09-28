@@ -813,28 +813,60 @@ git add internal/ledger/ && git commit -m "test(ledger): prove a mid-write crash
 **Interfaces:**
 - Produces: `mem0.Client`; `mem0.NewClient(baseURL, apiKey string, hc *http.Client) *Client`; `(*Client) Add(ctx, AddRequest) (AddResponse, error)`; `(*Client) Search(ctx, SearchRequest) (SearchResponse, error)`; `(*Client) GetAll(ctx, GetAllRequest) (GetAllResponse, error)`; `(*Client) History(ctx, memoryID string) (HistoryResponse, error)`; `(*Client) EventStatus(ctx, eventID string) (EventStatusResponse, error)`; and the wire types `mem0.AddRequest`, `mem0.AddResponse`, `mem0.SearchRequest`, `mem0.SearchResponse`, `mem0.GetAllRequest`, `mem0.GetAllResponse`, `mem0.HistoryEvent`, `mem0.HistoryResponse`, `mem0.EventStatusResponse`, `mem0.Memory`, `mem0.SearchResult`.
 
+**The fixtures are already recorded.** `internal/mem0/testdata/` contains seven
+real captured responses plus a `FIXTURES.md` documenting their provenance. Do not
+re-record and do not hand-write replacements — recording needs a live API key that is
+deliberately absent from this repo.
+
+**The recorded shapes are richer and less uniform than the documented shapes assumed, and
+they are the contract.** Details that must be honoured are listed in `FIXTURES.md`; the
+load-bearing ones are: `search` returns `score_breakdown{semantic,bm25,entity}` alongside
+`score`; `get_all` returns `replaced_by`, `synthesized`, and `structured_attributes`;
+`event_status` carries `event_type`, a full `payload` echo, and `results[]` with each
+result's own `event`; field presence is inconsistent between endpoints (`search` emits
+`agent_id`/`app_id`/`run_id` as explicit `null` where `get_all` omits them, and `metadata`
+is `{}` in one and `null` in another); and no `hash` field was observed anywhere.
+
 ```go
+// Memory is the memory object as returned by list/search endpoints. Optional
+// fields are pointers or omit-empty-tolerant because the API is inconsistent
+// about emitting them as null versus omitting them (see FIXTURES.md).
 type Memory struct {
-    ID         string            `json:"id"`
-    Memory     string            `json:"memory"`
-    UserID     string            `json:"user_id"`
-    AgentID    string            `json:"agent_id"`
-    AppID      string            `json:"app_id"`
-    RunID      string            `json:"run_id"`
-    Metadata   map[string]any    `json:"metadata"`
-    Categories []string          `json:"categories"`
-    Hash       string            `json:"hash"`
-    CreatedAt  string            `json:"created_at"`
-    UpdatedAt  string            `json:"updated_at"`
+    ID          string         `json:"id"`
+    Memory      string         `json:"memory"`
+    UserID      string         `json:"user_id"`
+    AgentID     *string        `json:"agent_id"`
+    AppID       *string        `json:"app_id"`
+    RunID       *string        `json:"run_id"`
+    Metadata    map[string]any `json:"metadata"`
+    Categories  []string       `json:"categories"`
+    CreatedAt   string         `json:"created_at"`
+    UpdatedAt   string         `json:"updated_at"`
+    ExpiresAt   *string        `json:"expiration_date"`
+    // Hash is retained for completeness only: NO fixture shows this field, so
+    // nothing here proves the platform returns it.
+    Hash string `json:"hash"`
 }
-type SearchResult struct { Memory; Score float64 `json:"score"` }
+
+// SearchResult adds the ranking evidence to a Memory.
+type SearchResult struct {
+    Memory
+    Score          float64        `json:"score"`
+    ScoreBreakdown ScoreBreakdown `json:"score_breakdown"`
+}
+
+type ScoreBreakdown struct {
+    Semantic float64 `json:"semantic"`
+    BM25     float64 `json:"bm25"`
+    Entity   float64 `json:"entity"`
+}
 ```
 
 - [ ] **Step 1: Write the failing test** in `internal/mem0/client_test.go`
 
-Using `httptest.NewServer` with recorded fixtures from `testdata/`, assert: `Add` POSTs to `/v3/memories/add/` with header `Authorization: Token <key>` and a body whose `messages` and `infer` match the request, and decodes `{status, event_id}`; `Search` POSTs to `/v3/memories/search/` with entity IDs **inside `filters`** (a top-level entity ID is a 400 from Mem0) and decodes `results` with a `score` on each; `GetAll` POSTs to `/v3/memories/` and decodes the `{count, next, previous, results}` envelope; `History` GETs `/v1/memories/{id}/history/` and decodes an event list; `EventStatus` GETs `/v1/event/{id}/`; a 400 response body is surfaced in the returned error, and a 5xx is surfaced as an error, not a panic; a request for `/v1/ping/` is not made implicitly.
+Using `httptest.NewServer` with recorded fixtures from `testdata/`, assert: `Add` POSTs to `/v3/memories/add/` with header `Authorization: Token <key>` and a body whose `messages` and `infer` match the request, and decodes `{status, event_id}`; `Search` POSTs to `/v3/memories/search/` with entity IDs **inside `filters`** (a top-level entity ID is a 400 from Mem0) and decodes `results` with a `score` on each; `GetAll` POSTs to `/v3/memories/` and decodes the `{count, next, previous, results}` envelope, correctly handling `metadata: null` and the absent `agent_id`/`app_id`/`run_id`; `History` GETs `/v1/memories/{id}/history/` and decodes an event list whose entries carry `event`, `old_memory`, and `new_memory`; `EventStatus` GETs `/v1/event/{id}/` and decodes the full shape including `event_type`, `status`, `results[].event`, and `latency`; `Delete` issues `DELETE /v1/memories/{id}/`; a 400 response body is surfaced in the returned error (the fixture's body is `{"error": "<python-repr string>"}`, so parse defensively), and a 5xx is surfaced as an error, not a panic; a request for `/v1/ping/` is not made implicitly.
 
-Capture each fixture as a real recorded response where possible; where not, hand-write it from the documented shape and mark it in `testdata/FIXTURES.md` with its source.
+Assert against the recorded fixtures byte-shape where it matters (e.g. `score_breakdown` present, `event: "ADD"` in `results`), so a future API change shows up as a failing test rather than silent drift.
 
 - [ ] **Step 2: Run it and confirm it fails**
 
