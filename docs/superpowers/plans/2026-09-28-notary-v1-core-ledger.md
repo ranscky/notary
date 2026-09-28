@@ -535,12 +535,18 @@ git add internal/store/ && git commit -m "feat(store): add SQLite store with sch
 
 **Files:**
 - Create: `internal/sign/sign.go`
-- Modify: `config/config.go` (add `SigningKeySource KeySource` and `TrustedKeys []string`)
+- Modify: `config/config.go` (add strings only: `SigningKeyEnv` and `TrustedKeysPath`)
 - Test: `internal/sign/sign_test.go`, `internal/sign/canary_test.go`
 
 **Interfaces:**
 - Consumes: `record.Hash` (Task 4).
-- Produces: `sign.KeySource` (`KeySourceEnv`, `KeySourceFile`, `KeySourceKeychain`); `sign.Signer`; `sign.NewSigner(KeySource) (*Signer, error)`; `(*Signer) KeyID() string`; `(*Signer) Sign([]byte) ([]byte, error)`; `sign.Verifier`; `sign.NewVerifier(keyring map[string]ed25519.PublicKey) *Verifier`; `(*Verifier) Verify(keyID string, msg, sig []byte) error`; `sign.ErrNoKeyConfigured`; `sign.ErrKeychainUnsupported`; `sign.ErrLoosePerms`.
+- Produces: `sign.KeySource` (`KeySourceEnv`, `KeySourceFile`, `KeySourceKeychain`); `sign.Signer`; `sign.NewSigner(KeySource) (*Signer, error)`; `(*Signer) KeyID() string`; `(*Signer) Sign([]byte) ([]byte, error)`; `sign.Verifier`; `sign.NewVerifier(keyring map[string]ed25519.PublicKey) *Verifier`; `(*Verifier) Verify(keyID string, msg, sig []byte) error`; `sign.ErrNoKeyConfigured`; `sign.ErrKeychainUnsupported`; `sign.ErrLoosePerms`; plus `sign.ErrUnknownKey` and `sign.ErrInvalidSignature` so `Verify` can distinguish an unknown key ID from a bad signature.
+
+**Redaction must live on `Signer` itself, with value receivers** — `String`, `Format`, `GoString`, and `MarshalJSON`. Putting them only on the inner key-material type does not work: `fmt` never consults a nested type's `GoStringer` for `%#v` on an outer struct, and pointer-receiver methods do not apply to embedded values. `Signer` must therefore implement `fmt.Formatter`/`fmt.Stringer`/`fmt.GoStringer`/`json.Marshaler` in its own right, or `%v`, `%+v`, `%x`, and `%#v` all print the raw private key. `KeyID()` stays readable — only private key material is secret.
+
+**`config` must not carry crypto types or import `internal/sign`** (that would create a cycle once `sign` needs config). It holds only the strings `SigningKeyEnv` and `TrustedKeysPath`; `sign` translates them into its own `KeySource`.
+
+The canary test (§12, Review Focus #5) must assert **positively** that every verb renders exactly `[redacted]`, not merely that a list of secret spellings is absent — an enumerated list misses the `0x`-prefixed Go-syntax form that `%#v` emits, which is precisely the leak this task exists to prevent.
 
 - [ ] **Step 1: Write the failing tests**
 
