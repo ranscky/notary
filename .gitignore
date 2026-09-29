@@ -1,6 +1,56 @@
+# ---------------------------------------------------------------------------
+# Notary runtime artifacts
+#
+# The ledger database lives in SQLite; the -journal/-wal/-shm sidecars are
+# written beside it. The gap log is a separate plain file by design (it exists
+# to survive a store outage), so it is ignored here too.
+# ---------------------------------------------------------------------------
 *.db
+*.db-journal
 *.db-wal
 *.db-shm
-/notary
 notary-gaps.log
+
+# The compiled binary, when built in the repo root with `go build`.
+/notary
+
+# ---------------------------------------------------------------------------
+# Secrets — never commit key material
+#
+# Notary reads its signing key and the Mem0 API key from the ENVIRONMENT
+# (NOTARY_SIGNING_KEY, NOTARY_MEM0_API_KEY). Nothing in this repo reads a .env
+# file, so a stray one here would be both inert and committable. These rules
+# exist so that mistake cannot reach a commit.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ---------------------------------------------------------------------------
+# Local tool state (not part of the project)
+# ---------------------------------------------------------------------------
 .reasonix/
+.superpowers/
+
+# ---------------------------------------------------------------------------
+# Editors and operating systems
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Go build and test output
+# ---------------------------------------------------------------------------
+*.test
+*.out
+/dist/
+/bin/
+go.work
+go.work.sum
