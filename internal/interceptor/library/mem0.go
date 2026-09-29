@@ -124,10 +124,17 @@ func (m *Mem0Interceptor) Close() error {
 //   - Add's signature carries no infer flag, so mem0.AddRequest.Infer is left
 //     nil and Mem0's platform default applies. A caller needing an explicit
 //     infer value must call mem0.Client directly.
+//
 //   - Add's signature carries no sensitivity input, so the record's
 //     Content.Sensitive is always false. There is no way to express "this
 //     memory is sensitive" through Add(messages []string); a caller that needs
 //     it must classify and write through the ledger itself. This is a v1 gap.
+//
+//     Read that false carefully: it means UNCLASSIFIED, not verified
+//     non-sensitive. Every record this method writes carries it, so a consumer
+//     that trusts the flag and renders or exports without redaction will emit
+//     this content in the clear. Treat records from this path as unclassified
+//     until the caller supplies a sensitivity input.
 //
 // On a Mem0 error, Add returns that error and writes no record -- a Mem0
 // failure is a real error, not an audit gap. When Mem0 succeeds, Add returns
