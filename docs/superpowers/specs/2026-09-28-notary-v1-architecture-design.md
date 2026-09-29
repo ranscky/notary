@@ -252,9 +252,11 @@ The reconciler runs as a scheduled CLI command or an in-process loop, selected b
 
 Idempotency keys are deterministic and content-derived — never wall-clock, never random.
 
-- **Operations Mem0 identifies:** `H(kind ‖ scope ‖ event_id)`.
-- **Operations Mem0 does not identify (`search`):** a caller-supplied `correlation_id` is required. Mem0's API already scopes by `run_id`, so this is idiomatic. The key is `H(kind ‖ scope ‖ correlation_id ‖ normalized_request)`. If the caller omits it, the library **errors** rather than inventing a key from a clock or a random source.
+- **Every operation keys on the caller-supplied `correlation_id`,** which is required. The key is `H(kind ‖ reason_kind ‖ scope ‖ correlation_id ‖ request_digest)`, the same form for adds and searches. If the caller omits the correlation ID, the library **errors** rather than inventing a key from a clock or a random source.
+- **Notary deliberately does not key on Mem0's `event_id`.** Mem0 does return one for adds, but a *retried* add comes back with a **fresh** `event_id`, so keying on it would write a second audit record for one logical operation — the exact duplication an idempotency key exists to prevent. The `correlation_id` names the caller's operation, which is the thing that must not be recorded twice.
+- **The reason kind is part of the key**, because it determines the tier (1:1 through `AllowedTier`). Without it, `memory_kept` observed as `stored_by_mem0` and reconstructed as `kept_by_content_match` would derive the same key, and the second claim — later knowledge — would be silently suppressed instead of appended.
 - **Derived claims:** `H(claim_kind ‖ basis_record_ids ‖ rule_version)`, so re-running `Reconcile` adds nothing.
+- **Keyless writes remain legal.** Uniqueness is a partial index over *non-empty* keys only. The interceptor always supplies one; the ledger tolerates absence rather than rejecting it.
 
 **Chain writes.** `Ledger.Append` assigns `Seq` and computes the hash inside a single `BEGIN IMMEDIATE` transaction, so `Seq = max+1` cannot race and a crash between hash computation and commit is structurally impossible. An existing `IdempotencyKey` is a no-op returning the existing record ID; a different event or tier yields a different key, so later knowledge **appends** rather than mutates. One store file has one writer at a time, serialized by SQLite.
 
@@ -357,7 +359,7 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 1 | `record` schema, tier constructors, `chain`, `store`; negative-compile tests |
 | 2 | `sign`, keyring, `verify`, checkpoints |
 | 3 | `interceptor`, `library/mem0`, `internal/mem0`, fail-open-loud, `internal/gap` |
-| 4 | Idempotency; correlation ID required on id-less operations |
+| 4 | Idempotency; correlation ID required on every observation |
 | 5 | **Reconciler** (new): event polling, `get_all` diffing, `kept`/`dropped`, rule registry, `reconcile-mode` |
 | 6 | `export`, redaction, tier phrasing, `internal/phrase` |
 | 7 | `replay` |
