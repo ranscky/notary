@@ -223,3 +223,45 @@ func TestReplayGapsNilSafety(t *testing.T) {
 		assert.Equal(t, 0, n)
 	})
 }
+
+// TestReplayGapsAppendFailureWritesNoMarker forces the append-failure branch --
+// the one earlier reported as unreachable without a test seam.
+//
+// That claim conflated a broken STORE with a failed APPEND. Append also fails
+// VALIDATION, which a healthy store exercises perfectly well, so a lookup
+// returning a record the ledger will refuse forces the branch with the store
+// fully working.
+//
+// The contract under test is "the marker must not lie": if the record could not
+// be stored, the run must report the error, count nothing, and append no
+// reconciliation marker -- because a marker claiming reconciliation that never
+// happened would be worse than no marker at all.
+func TestReplayGapsAppendFailureWritesNoMarker(t *testing.T) {
+	const corr = record.RecordID("corr-append-fail")
+	w, l, _, gapPath := recordGapWhileBroken(t, corr)
+
+	before, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	require.Len(t, before, 1, "the broken write logged exactly one gap entry")
+
+	// A record the ledger will refuse: Validate rejects an unknown event, so the
+	// append fails without the store being broken at all.
+	bad := record.Record{ID: corr, Event: record.EventType("not-a-real-event")}
+	lookup := func(string) (record.Record, bool) { return bad, true }
+
+	n, err := w.ReplayGaps(context.Background(), lookup)
+	require.Error(t, err, "an append failure must be surfaced, not swallowed away")
+	assert.Equal(t, 0, n, "a failed append reconciles nothing")
+	assert.Contains(t, err.Error(), string(corr), "the error must name the offending record")
+
+	assert.Empty(t, replayList(t, l), "no record may be stored when the append failed")
+
+	after, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	assert.Len(t, after, 1,
+		"no reconciliation marker may be appended when the append failed")
+
+	breaks, err := gap.Verify(gapPath)
+	require.NoError(t, err)
+	assert.Empty(t, breaks, "the gap log's own chain must stay intact")
+}
