@@ -164,15 +164,50 @@ func newSigner(key ed25519.PrivateKey) (*Signer, error) {
 }
 
 // loadFromEnv reads base64 key material from the environment variable named ref.
+//
+// ref must be a variable NAME. A base64 key material always contains '+', '/',
+// or '=' (and frequently '-'), none of which is valid in a name, so a ref that
+// holds material can never be mistaken for a name. This matters because an error
+// that echoed a material-shaped ref verbatim would leak the key: when a ref is
+// not a name, the value is therefore reported as "the setting must name a
+// variable" and never repeated.
 func loadFromEnv(ref string) (ed25519.PrivateKey, error) {
 	if ref == "" {
 		return nil, fmt.Errorf("%w: no environment variable name provided", ErrNoKeyConfigured)
+	}
+	if !isEnvVarName(ref) {
+		return nil, fmt.Errorf(
+			"%w: the signing-key setting must name an environment variable, not hold key material",
+			ErrNoKeyConfigured)
 	}
 	material := strings.TrimSpace(os.Getenv(ref))
 	if material == "" {
 		return nil, fmt.Errorf("%w: environment variable %q is unset or empty", ErrNoKeyConfigured, ref)
 	}
 	return parsePrivateKey(material)
+}
+
+// isEnvVarName reports whether s is a plausible environment variable name: a
+// leading letter or underscore followed by letters, digits, or underscores. It
+// is deliberately conservative, so any string that could hold base64 key
+// material (which contains '+', '/', or '=') is rejected.
+func isEnvVarName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r == '_':
+			// always allowed
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // loadFromFile reads base64 key material from the 0600 file at path.

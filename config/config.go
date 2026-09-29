@@ -17,8 +17,9 @@ const (
 	DefaultDBPath = "notary.db"
 	// DefaultGapLogPath is the gap-log file, relative to the working directory.
 	DefaultGapLogPath = "notary-gaps.log"
-	// DefaultSigningKeyEnv is the environment variable that, by default, holds
-	// the base64 signing key material.
+	// DefaultSigningKeyEnv is the name of the environment variable that holds
+	// the base64 signing key material, and the default value of
+	// Config.SigningKeyEnv.
 	DefaultSigningKeyEnv = "NOTARY_SIGNING_KEY"
 )
 
@@ -28,9 +29,11 @@ const (
 	EnvMem0BaseURL = "NOTARY_MEM0_BASE_URL"
 	EnvDBPath      = "NOTARY_DB_PATH"
 	EnvGapLogPath  = "NOTARY_GAP_LOG_PATH"
-	// EnvSigningKey names the environment variable holding the base64 signing
-	// key. It is also the default for Config.SigningKeyEnv, so the same variable
-	// can be read by name through the configuration.
+	// EnvSigningKey is the name of the environment variable whose VALUE holds the
+	// base64 signing key material. It equals DefaultSigningKeyEnv and is the
+	// default value of Config.SigningKeyEnv. The configuration never reads this
+	// variable's value: only the signing library reads the variable, by name,
+	// through Config.SigningKeyEnv.
 	EnvSigningKey = "NOTARY_SIGNING_KEY"
 	// EnvTrustedKeysPath is the environment variable holding the path to a file
 	// of trusted public keys.
@@ -49,9 +52,12 @@ type Config struct {
 	// GapLogPath is the path to the gap log.
 	GapLogPath string
 	// SigningKeyEnv is the name of the environment variable holding the base64
-	// signing key material. It defaults to NOTARY_SIGNING_KEY; the empty string
-	// means no signing key variable is configured. It holds a variable name, not
-	// the key itself, so config stays free of cryptographic material.
+	// signing key material. LoadFrom always sets it to DefaultSigningKeyEnv; a
+	// caller may override it programmatically. There is deliberately no
+	// environment variable that sets it, because the variable it names is where
+	// the key material itself lives -- reading that value here would copy the key
+	// into the config. It holds a variable name, not the key itself, so config
+	// stays free of cryptographic material.
 	SigningKeyEnv string
 	// TrustedKeysPath is the path to a file of trusted public keys; an empty
 	// string means none is configured.
@@ -80,11 +86,16 @@ func Load() (*Config, error) {
 // empty, which is not an error — it is only required once a Mem0 call is made.
 func LoadFrom(env map[string]string) (*Config, error) {
 	cfg := &Config{
-		Mem0APIKey:      env[EnvMem0APIKey],
-		Mem0BaseURL:     valueOr(env, EnvMem0BaseURL, DefaultMem0BaseURL),
-		DBPath:          valueOr(env, EnvDBPath, DefaultDBPath),
-		GapLogPath:      valueOr(env, EnvGapLogPath, DefaultGapLogPath),
-		SigningKeyEnv:   valueOr(env, EnvSigningKey, DefaultSigningKeyEnv),
+		Mem0APIKey:  env[EnvMem0APIKey],
+		Mem0BaseURL: valueOr(env, EnvMem0BaseURL, DefaultMem0BaseURL),
+		DBPath:      valueOr(env, EnvDBPath, DefaultDBPath),
+		GapLogPath:  valueOr(env, EnvGapLogPath, DefaultGapLogPath),
+		// SigningKeyEnv is the NAME of the variable holding key material, not the
+		// material itself. It is never read from the environment: the variable it
+		// names (NOTARY_SIGNING_KEY) holds the key's VALUE, so copying that value
+		// here would move cryptographic material into the config -- and from there
+		// into any error that renders cfg.SigningKeyEnv.
+		SigningKeyEnv:   DefaultSigningKeyEnv,
 		TrustedKeysPath: env[EnvTrustedKeysPath],
 		FailMode:        interceptor.FailOpenLoud,
 	}

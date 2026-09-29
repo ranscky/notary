@@ -305,7 +305,7 @@ func loadCheckpoint(path string) (sign.Checkpoint, error) {
 func writeCheckpoint(out io.Writer, cfg *config.Config, l *ledger.Ledger, path string) error {
 	sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: cfg.SigningKeyEnv})
 	if err != nil {
-		return fmt.Errorf("loading signing key from %s: %w", cfg.SigningKeyEnv, err)
+		return fmt.Errorf("loading signing key: %w", err)
 	}
 	cp, err := l.Checkpoint(sg, time.Now().UTC())
 	if err != nil {
@@ -344,7 +344,7 @@ func writeCheckpoint(out io.Writer, cfg *config.Config, l *ledger.Ledger, path s
 func writeGapCheckpoint(out io.Writer, cfg *config.Config, logPath, path string) error {
 	sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: cfg.SigningKeyEnv})
 	if err != nil {
-		return fmt.Errorf("loading signing key from %s: %w", cfg.SigningKeyEnv, err)
+		return fmt.Errorf("loading signing key: %w", err)
 	}
 	if _, statErr := os.Stat(logPath); errors.Is(statErr, os.ErrNotExist) {
 		// Refuse without opening the path: gap.Open opens with O_CREATE, so

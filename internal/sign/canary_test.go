@@ -161,6 +161,42 @@ func signerErrEnvValue(t *testing.T, value string) error {
 	return err
 }
 
+// TestNewSignerNeverEchoesMaterialRef guards the defect where Config.SigningKeyEnv
+// was populated from the VALUE of NOTARY_SIGNING_KEY. Under that bug the "ref"
+// passed to NewSigner was base64 key material, and loadFromEnv echoed it in its
+// error text. A material-shaped ref must now be refused WITHOUT being echoed,
+// while a genuine variable name -- which is not secret -- is still named so the
+// operator can act on it.
+func TestNewSignerNeverEchoesMaterialRef(t *testing.T) {
+	priv := ed25519.NewKeyFromSeed(canarySeed[:])
+	keyB64 := base64.StdEncoding.EncodeToString(priv)
+	seedB64 := base64.StdEncoding.EncodeToString(canarySeed[:])
+
+	// The canary is unmistakable and material-shaped: base64 of a 64-byte
+	// private key ends in "==" padding, which is invalid in an env var name.
+	require.Contains(t, keyB64, "=", "the canary must be material-shaped (base64 padding)")
+
+	t.Run("material-shaped ref is refused without echoing it", func(t *testing.T) {
+		signer, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: keyB64})
+		require.Error(t, err)
+		assert.Nil(t, signer)
+		assert.ErrorIs(t, err, sign.ErrNoKeyConfigured, "ErrNoKeyConfigured must still wrap")
+		assert.NotContains(t, err.Error(), keyB64,
+			"key material used as a ref must never be echoed")
+		assert.NotContains(t, err.Error(), seedB64,
+			"nor may the seed form leak")
+	})
+
+	t.Run("a valid variable name is still named in the error", func(t *testing.T) {
+		t.Setenv("NOTARY_CANARY_UNSET", "")
+		_, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: "NOTARY_CANARY_UNSET"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, sign.ErrNoKeyConfigured)
+		assert.Contains(t, err.Error(), "NOTARY_CANARY_UNSET",
+			"a variable name is not secret, so it stays in the error")
+	})
+}
+
 func signerErrLoosePerms(t *testing.T, content string) error {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "canary.key")

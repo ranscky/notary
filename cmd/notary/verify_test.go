@@ -262,3 +262,67 @@ func TestRunVerifyWriteCheckpointWritesParsableFile(t *testing.T) {
 	require.NoError(t, runVerify(cmd2, cfg, cpPath, ""))
 	assert.Contains(t, buf2.String(), "checkpoint ok")
 }
+
+// verifyCanarySeed is a fixed seed, distinct from verifyTestSeed, so the
+// material used by the leak canary below is unmistakable in any output.
+var verifyCanarySeed = []byte{
+	0xde, 0xad, 0xbe, 0xef, 0x11, 0x22, 0x33, 0x44,
+	0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+	0xdd, 0xee, 0xff, 0x00, 0x0f, 0xf0, 0x3c, 0xc3,
+	0x5a, 0xa5, 0x6b, 0xb6, 0x7c, 0xc7, 0x8d, 0xd8,
+}
+
+// TestRunVerifyNeverPrintsSigningKeyMaterial is the end-to-end canary for the
+// leak. It uses the natural configuration -- the key material placed IN
+// NOTARY_SIGNING_KEY and the config loaded from the environment -- and drives
+// `--write-checkpoint`. The material must appear in NEITHER stdout NOR the
+// returned error (which is what the CLI prints to stderr), and the write must
+// actually succeed.
+//
+// Before the fix, config.LoadFrom copied the material's VALUE into
+// cfg.SigningKeyEnv, and both cmd/notary/verify.go and internal/sign echoed it,
+// so the material reached stderr AND the key could never load. This test fails
+// against that code and passes once SigningKeyEnv is a name again.
+func TestRunVerifyNeverPrintsSigningKeyMaterial(t *testing.T) {
+	material := base64.StdEncoding.EncodeToString(verifyCanarySeed)
+	pub := ed25519.NewKeyFromSeed(verifyCanarySeed).Public().(ed25519.PublicKey)
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ledger.db")
+	trustedPath := filepath.Join(dir, "trusted.keys")
+	cpPath := filepath.Join(dir, "cp.json")
+	gapPath := filepath.Join(dir, "gaps.log")
+
+	// The ledger is signed with the canary key, and the trusted-keys file holds
+	// its public key, so the config below is a coherent, healthy setup.
+	t.Setenv("NOTARY_CANARY_SIGN_KEY", material)
+	sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: "NOTARY_CANARY_SIGN_KEY"})
+	require.NoError(t, err)
+	buildLedger(t, dbPath, sg, 3)
+	require.NoError(t, os.WriteFile(trustedPath, []byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0o644))
+
+	// The natural configuration: material in NOTARY_SIGNING_KEY, config from env.
+	t.Setenv("NOTARY_SIGNING_KEY", material)
+	t.Setenv("NOTARY_DB_PATH", dbPath)
+	t.Setenv("NOTARY_TRUSTED_KEYS_PATH", trustedPath)
+	t.Setenv("NOTARY_GAP_LOG_PATH", gapPath)
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv,
+		"SigningKeyEnv must be the variable NAME, never the material")
+
+	cmd, buf := newTestVerifyCmd(t)
+	werr := runVerify(cmd, cfg, "", cpPath)
+
+	stdout := buf.String()
+	stderr := ""
+	if werr != nil {
+		stderr = werr.Error()
+	}
+	assert.NotContains(t, stdout, material, "key material must never reach stdout")
+	assert.NotContains(t, stderr, material, "key material must never reach stderr")
+
+	require.NoError(t, werr, "with the material in NOTARY_SIGNING_KEY the checkpoint must be written")
+	_, statErr := os.Stat(cpPath)
+	require.NoError(t, statErr, "the checkpoint file must exist")
+}

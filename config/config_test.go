@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,9 +56,12 @@ func TestLoadFrom(t *testing.T) {
 	})
 }
 
-// TestLoadFromSigningKeys verifies the signing-key fields: SigningKeyEnv
-// defaults to NOTARY_SIGNING_KEY and TrustedKeysPath defaults to empty, and
-// both can be overridden through the environment.
+// TestLoadFromSigningKeys verifies the signing-key fields. SigningKeyEnv is the
+// NAME of the environment variable that holds key material: it defaults to
+// DefaultSigningKeyEnv and is NEVER populated from the value of
+// NOTARY_SIGNING_KEY, so the key's material can never end up in the config --
+// and so can never be echoed by an error that renders the config. TrustedKeysPath
+// defaults to empty and is overridable through its own environment variable.
 func TestLoadFromSigningKeys(t *testing.T) {
 	t.Run("signing key env defaults to NOTARY_SIGNING_KEY", func(t *testing.T) {
 		cfg, err := config.LoadFrom(map[string]string{})
@@ -72,20 +76,45 @@ func TestLoadFromSigningKeys(t *testing.T) {
 		assert.Empty(t, cfg.TrustedKeysPath)
 	})
 
-	t.Run("both fields are overridable by env", func(t *testing.T) {
+	// The material lives IN NOTARY_SIGNING_KEY; the config carries the variable's
+	// NAME. LoadFrom must therefore leave SigningKeyEnv at its default and must
+	// never copy the material's value into it. Before the fix this case asserted
+	// the opposite (SigningKeyEnv == the value), which is exactly the assertion
+	// that encoded the leak.
+	t.Run("NOTARY_SIGNING_KEY holding material is not read as a variable name", func(t *testing.T) {
+		material := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+		cfg, err := config.LoadFrom(map[string]string{"NOTARY_SIGNING_KEY": material})
+		require.NoError(t, err)
+		assert.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv,
+			"SigningKeyEnv must remain the NAME of the variable, not the key's value")
+		assert.NotEqual(t, material, cfg.SigningKeyEnv,
+			"the key material must never become the signing-key variable name")
+		assert.NotContains(t, cfg.SigningKeyEnv, material,
+			"no fragment of the key material may appear in SigningKeyEnv")
+	})
+
+	t.Run("trusted keys path is overridable by env", func(t *testing.T) {
 		cfg, err := config.LoadFrom(map[string]string{
-			"NOTARY_SIGNING_KEY":       "NOTARY_OTHER_KEY_VAR",
 			"NOTARY_TRUSTED_KEYS_PATH": "/tmp/trusted.keys",
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "NOTARY_OTHER_KEY_VAR", cfg.SigningKeyEnv)
 		assert.Equal(t, "/tmp/trusted.keys", cfg.TrustedKeysPath)
+		assert.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv,
+			"no environment variable changes SigningKeyEnv")
 	})
 
 	t.Run("empty env value falls back to the default", func(t *testing.T) {
 		cfg, err := config.LoadFrom(map[string]string{"NOTARY_SIGNING_KEY": ""})
 		require.NoError(t, err)
 		assert.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv)
+	})
+
+	t.Run("SigningKeyEnv remains settable by the caller", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{})
+		require.NoError(t, err)
+		cfg.SigningKeyEnv = "NOTARY_OTHER_KEY_VAR"
+		assert.Equal(t, "NOTARY_OTHER_KEY_VAR", cfg.SigningKeyEnv,
+			"a caller may still override SigningKeyEnv programmatically")
 	})
 }
 
