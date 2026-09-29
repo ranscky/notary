@@ -73,19 +73,78 @@ func TestDeriveIdemKeyIsLowercaseHex(t *testing.T) {
 // event would silently deduplicate the other and a record would never be
 // written.
 func TestDeriveIdemKeyLengthPrefixPreventsCollision(t *testing.T) {
-	left := record.Scope{UserID: "ab", AgentID: "c", AppID: "app", RunID: "run"}
-	right := record.Scope{UserID: "a", AgentID: "bc", AppID: "app", RunID: "run"}
+	// Each case shifts one character across an ADJACENT boundary of the hash
+	// input, so the two argument sets concatenate to the same raw bytes while
+	// describing DIFFERENT logical events. Every variable-length boundary is
+	// covered -- not just UserID|AgentID -- because a future change that
+	// un-prefixed only AppID, RunID, or the identifier would otherwise slip
+	// past this test while still silently sharing a key.
+	//
+	// kind is written into the hash as an opaque string (DeriveIdemKey does not
+	// validate it), so the kind|UserID case below uses a non-canonical value.
+	dg := digest(0x07)
 
-	// Sanity: the boundary-shifted concatenations are equal as raw strings.
-	require.Equal(t, left.UserID+left.AgentID, right.UserID+right.AgentID,
-		"test setup: the two scopes must concatenate to the same raw string")
+	type args struct {
+		kind record.EventType
+		sc   record.Scope
+		ev   string
+	}
+	cases := []struct {
+		name                  string
+		left, right           args
+		naiveLeft, naiveRight string
+	}{
+		{
+			name:       "kind|UserID",
+			left:       args{record.EventType("ab"), record.Scope{UserID: "c", AgentID: "a", AppID: "p", RunID: "r"}, "e"},
+			right:      args{record.EventType("a"), record.Scope{UserID: "bc", AgentID: "a", AppID: "p", RunID: "r"}, "e"},
+			naiveLeft:  "ab" + "c",
+			naiveRight: "a" + "bc",
+		},
+		{
+			name:       "UserID|AgentID",
+			left:       args{record.EventAddRequested, record.Scope{UserID: "ab", AgentID: "c", AppID: "p", RunID: "r"}, "e"},
+			right:      args{record.EventAddRequested, record.Scope{UserID: "a", AgentID: "bc", AppID: "p", RunID: "r"}, "e"},
+			naiveLeft:  "ab" + "c",
+			naiveRight: "a" + "bc",
+		},
+		{
+			name:       "AgentID|AppID",
+			left:       args{record.EventAddRequested, record.Scope{UserID: "u", AgentID: "ab", AppID: "c", RunID: "r"}, "e"},
+			right:      args{record.EventAddRequested, record.Scope{UserID: "u", AgentID: "a", AppID: "bc", RunID: "r"}, "e"},
+			naiveLeft:  "ab" + "c",
+			naiveRight: "a" + "bc",
+		},
+		{
+			name:       "AppID|RunID",
+			left:       args{record.EventAddRequested, record.Scope{UserID: "u", AgentID: "a", AppID: "ab", RunID: "c"}, "e"},
+			right:      args{record.EventAddRequested, record.Scope{UserID: "u", AgentID: "a", AppID: "a", RunID: "bc"}, "e"},
+			naiveLeft:  "ab" + "c",
+			naiveRight: "a" + "bc",
+		},
+		{
+			name:       "RunID|identifier",
+			left:       args{record.EventAddRequested, record.Scope{UserID: "u", AgentID: "a", AppID: "p", RunID: "ab"}, "c"},
+			right:      args{record.EventAddRequested, record.Scope{UserID: "u", AgentID: "a", AppID: "p", RunID: "a"}, "bc"},
+			naiveLeft:  "ab" + "c",
+			naiveRight: "a" + "bc",
+		},
+	}
 
-	kl, err := record.DeriveIdemKey(record.EventAddRequested, left, "event-1", "", digest(0x07))
-	require.NoError(t, err)
-	kr, err := record.DeriveIdemKey(record.EventAddRequested, right, "event-1", "", digest(0x07))
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.naiveLeft, tc.naiveRight,
+				"test setup: the two scopes must concatenate to the same raw string")
 
-	assert.NotEqual(t, kl, kr, "length-prefix collision: distinct events share a key")
+			kl, err := record.DeriveIdemKey(tc.left.kind, tc.left.sc, tc.left.ev, "", dg)
+			require.NoError(t, err)
+			kr, err := record.DeriveIdemKey(tc.right.kind, tc.right.sc, tc.right.ev, "", dg)
+			require.NoError(t, err)
+
+			assert.NotEqual(t, kl, kr,
+				"length-prefix collision at boundary %s: distinct events share a key", tc.name)
+		})
+	}
 }
 
 // TestDeriveIdemKeySensitivity is hazard 3: the key must vary when any single
