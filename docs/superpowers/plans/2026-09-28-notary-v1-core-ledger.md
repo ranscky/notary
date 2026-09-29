@@ -415,7 +415,12 @@ Expected: FAIL — `undefined: record.ComputeHash`
 
 ```go
 var GenesisHash Hash // 32 zero bytes
-
+```
+> **Corrected after execution.** `GenesisHash` shipped as `func GenesisHash() Hash` returning 32 zero
+> bytes, not as a package `var`: an exported mutable global could be reassigned by any caller,
+> silently redefining where a chain starts. See `internal/record/chain.go` and the negative-compile
+> fixture `testdata/negative/redefine_genesis.go.txt`.
+```go
 func CanonicalBytes(r Record) ([]byte, error)
 func ComputeHash(r Record) (Hash, error)
 func LinkOK(prev, cur Record) bool
@@ -900,6 +905,12 @@ git add internal/mem0/ && git commit -m "feat(mem0): add thin REST client for ad
 - Consumes: `record.EventType`, `record.Scope`, `record.Hash` (Task 4).
 - Produces: `gap.Entry`; `gap.Break` (`{Line int; Counter uint64; Field string; Detail string}`); `gap.Log`; `gap.Open(path string) (*Log, error)`; `(*Log) Record(e Entry) error`; `(*Log) Verify() ([]Break, error)`; `(*Log) Close() error`; `gap.Verify(path string) ([]Break, error)`; `gap.WriteChannels(path string, w io.Writer) []io.Writer`.
 
+> **Corrected after execution.** `gap.WriteChannels` was **removed**. Its first writer appended raw
+> bytes straight to the gap log file, bypassing the hash chain, so using it for audit output would
+> inject a non-JSON line and destroy the tamper-evidence the gap log exists to provide. It shipped
+> with no production caller and was deleted. Audit output goes to `interceptor.AuditWriter`, which
+> writes the chain solely via `(*gap.Log).Record` and takes stderr-only sinks.
+
 ```go
 type Entry struct {
     Counter       uint64
@@ -960,6 +971,12 @@ git add internal/gap/ internal/ledger/ cmd/notary/ && git commit -m "feat(gap): 
 **Interfaces:**
 - Consumes: `record.Record` (Task 4), `ledger.Ledger` (Task 9), `gap.Log` (Task 14).
 - Produces: `interceptor.FailMode` (`FailOpenLoud`, `FailClosed`); `interceptor.Interceptor`; `interceptor.AuditWriter`; `interceptor.NewAuditWriter(l *ledger.Ledger, g *gap.Log, channels []io.Writer) *AuditWriter`; `(*AuditWriter) Write(rec record.Record) error`; `interceptor.ErrFailClosedUnimplemented`.
+
+> **Corrected after execution — do not follow the instruction below.** `channels` must be the loud
+> human sinks only (e.g. `[]io.Writer{os.Stderr}`); the gap log's own file must **never** be among
+> them. `gap.WriteChannels(gapLogPath, os.Stderr)` was removed precisely because its file writer
+> appends raw bytes and would corrupt the NDJSON chain. The chained entry is written by
+> `(*gap.Log).Record`, and `AuditWriter` requires stderr-only channels.
 
 `channels` comes from `gap.WriteChannels(gapLogPath, os.Stderr)` (Task 14) — constructing them that way is what guarantees the two channels do not share a failure domain.
 
