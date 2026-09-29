@@ -139,17 +139,18 @@ func (w *AuditWriter) ReplayGaps(
 			return reconciled, fmt.Errorf(
 				"interceptor: replay gaps: append record %s: %w", rec.ID, err)
 		}
-		// Append returning a nil error is NOT proof the entry's record was
+		// Append returning a nil error is NOT proof this entry's record was
 		// stored: Append is a keyed no-op that returns the EXISTING record's
-		// ID. The entry is reconciled -- and earns a marker -- only when the
-		// returned ID is the one GapBreaks matches on, record.RecordID(e.
-		// CorrelationID). When it is not, the append stored nothing that
-		// accounts for this entry, so SKIP it: do not count it, do not append a
-		// marker, and do not error. The entry stays unreconciled and visible to
-		// `notary verify` (ledger.GapBreaks) -- the loud channel here -- and
-		// the run continues with the other entries, so one bad Lookup result
-		// cannot block the rest.
-		if id != record.RecordID(e.CorrelationID) {
+		// ID, so a Lookup whose record carries an already-used key resolves to
+		// some other ID and stores nothing new. Rather than trust the append,
+		// re-ask the SAME question `notary verify` will ask -- reconciledByStore
+		// wraps ledger.GapBreaks over the full (Kind, Scope, CorrelationID)
+		// tuple. When the entry still does not match, SKIP it: do not count it,
+		// do not append a marker, and do not error. The entry stays
+		// unreconciled and visible to `notary verify` (ledger.GapBreaks) -- the
+		// loud channel here -- and the run continues with the other entries, so
+		// one bad Lookup result cannot block the rest.
+		if !w.reconciledByStore(e) {
 			continue
 		}
 		// Mark only what was actually reconciled, and only after the append

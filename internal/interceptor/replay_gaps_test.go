@@ -328,3 +328,44 @@ func TestReplayGapsAppendFailureWritesNoMarker(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, breaks, "the gap log's own chain must stay intact")
 }
+
+// TestReplayGapsMismatchedScopeIsNotClaimedReconciled pins the FULL-tuple check.
+//
+// GapBreaks matches a gap entry against a stored record on
+// (Event, Scope, CorrelationID), so a Lookup returning a record that carries the
+// entry's ID but a DIFFERENT scope appends successfully -- a row really is
+// written -- yet that row does not account for the entry. Trusting the append
+// alone would therefore write a marker for a reconciliation ledger.GapBreaks
+// will not agree with: the same defect class as a keyed no-op resolving to
+// another record's ID, reached by a different route.
+func TestReplayGapsMismatchedScopeIsNotClaimedReconciled(t *testing.T) {
+	const corr = record.RecordID("corr-scope-mismatch")
+	w, l, orig, gapPath := recordGapWhileBroken(t, corr)
+
+	before, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	require.Len(t, before, 1, "the broken write logged exactly one gap entry")
+
+	// Same ID and a fresh key, so this record stores cleanly -- but under a
+	// different scope, so it cannot account for the gap entry.
+	mismatched := orig
+	mismatched.Subject.Scope = record.Scope{UserID: "someone-else"}
+	mismatched.IdempotencyKey = record.IdemKey("idem-scope-mismatch")
+
+	lookup := func(string) (record.Record, bool) { return mismatched, true }
+
+	n, err := w.ReplayGaps(context.Background(), lookup)
+	require.NoError(t, err, "a lookup that does not account for the entry is not an error")
+	assert.Equal(t, 0, n, "an entry the store does not account for must not be counted")
+
+	after, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	assert.Len(t, after, 1,
+		"no marker may claim a reconciliation that GapBreaks will not agree with")
+
+	// The disagreement must stay VISIBLE rather than being papered over.
+	recs := replayList(t, l)
+	assert.Len(t, recs, 1, "the mismatched record itself was stored")
+	assert.Len(t, ledger.GapBreaks(after, recs), 1,
+		"ledger.GapBreaks must still report the entry, so the operator sees it")
+}
