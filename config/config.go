@@ -5,6 +5,8 @@ package config
 import (
 	"os"
 	"strings"
+
+	"notary/internal/interceptor"
 )
 
 // Default values applied when the corresponding environment variable is unset.
@@ -54,6 +56,16 @@ type Config struct {
 	// TrustedKeysPath is the path to a file of trusted public keys; an empty
 	// string means none is configured.
 	TrustedKeysPath string
+	// FailMode selects how the interceptor behaves when the audit ledger cannot
+	// accept a record. It defaults to interceptor.FailOpenLoud, the only mode
+	// implemented in v1.
+	//
+	// There is deliberately NO environment variable for this field.
+	// interceptor.FailClosed is defined but unimplemented, so exposing the mode
+	// via the environment would invite an operator to configure a mode that can
+	// only fail. When FailClosed is implemented, an env override can be added
+	// and validated with interceptor.FailMode.Validate.
+	FailMode interceptor.FailMode
 	// Verbose enables verbose output.
 	Verbose bool
 }
@@ -74,6 +86,7 @@ func LoadFrom(env map[string]string) (*Config, error) {
 		GapLogPath:      valueOr(env, EnvGapLogPath, DefaultGapLogPath),
 		SigningKeyEnv:   valueOr(env, EnvSigningKey, DefaultSigningKeyEnv),
 		TrustedKeysPath: env[EnvTrustedKeysPath],
+		FailMode:        interceptor.FailOpenLoud,
 	}
 	return cfg, nil
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"notary/config"
+	"notary/internal/interceptor"
 )
 
 // TestLoadFrom verifies LoadFrom applies documented defaults and that every
@@ -85,5 +86,27 @@ func TestLoadFromSigningKeys(t *testing.T) {
 		cfg, err := config.LoadFrom(map[string]string{"NOTARY_SIGNING_KEY": ""})
 		require.NoError(t, err)
 		assert.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv)
+	})
+}
+
+// TestLoadFromFailMode verifies Config.FailMode defaults to the only mode
+// implemented in v1 -- interceptor.FailOpenLoud -- and that it is settable on
+// the struct. There is deliberately no environment variable for it, so an
+// environment that names an unknown key leaves the default intact.
+func TestLoadFromFailMode(t *testing.T) {
+	t.Run("defaults to FailOpenLoud", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{})
+		require.NoError(t, err)
+		assert.Equal(t, interceptor.FailOpenLoud, cfg.FailMode)
+		require.NoError(t, cfg.FailMode.Validate(), "the default must be a valid mode")
+	})
+
+	t.Run("no env var overrides it", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{
+			"NOTARY_FAIL_MODE": "fail_closed",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, interceptor.FailOpenLoud, cfg.FailMode,
+			"there is no env override for FailMode; the default must stand")
 	})
 }
