@@ -10,7 +10,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"notary/config"
+	"notary/internal/gap"
 	"notary/internal/ledger"
+	"notary/internal/record"
 	"notary/internal/sign"
 	"notary/internal/store"
 )
@@ -111,6 +113,30 @@ func runVerify(cmd *cobra.Command, cfg *config.Config, checkpointPath, writeChec
 	breaks, err := l.Verify(verifier)
 	if err != nil {
 		return fmt.Errorf("verifying ledger: %w", err)
+	}
+
+	// Cross-check the gap log against the store: a gap entry whose
+	// (Kind, Scope, CorrelationID) matches no stored record reports work that
+	// left no audit trail, and is surfaced as a "gap" break so the run exits
+	// non-zero. The "matched" case -- a gap later reconciled back into the
+	// ledger -- cannot be exercised until gaps have a corresponding record
+	// (Task 15); it is revisited in Task 19.
+	gapEntries, gerr := gap.Read(cfg.GapLogPath)
+	if gerr != nil {
+		return fmt.Errorf("reading gap log %s: %w", cfg.GapLogPath, gerr)
+	}
+	if len(gapEntries) > 0 {
+		seqEntries, serr := st.SeqEntries()
+		if serr != nil {
+			return fmt.Errorf("reading ledger records for gap check: %w", serr)
+		}
+		records := make([]record.Record, 0, len(seqEntries))
+		for _, se := range seqEntries {
+			if se.DecodeErr == nil {
+				records = append(records, se.Rec)
+			}
+		}
+		breaks = append(breaks, ledger.GapBreaks(gapEntries, records)...)
 	}
 
 	// --write-checkpoint emits a fresh signed checkpoint. It happens only after
