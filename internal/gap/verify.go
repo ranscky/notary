@@ -81,6 +81,22 @@ func Read(path string) ([]Entry, error) {
 	return out, nil
 }
 
+// Entries returns every decodable entry in the OPEN log, in file order, with
+// the same semantics as the package-level Read: lines that cannot be decoded
+// are skipped (Verify is what reports them), and a missing or empty file yields
+// no entries and a nil error. It exists so a caller that holds only a *gap.Log
+// -- and not its unexported path -- can read the log back; it deliberately
+// exposes no path and has no other obligation.
+//
+// Entries serialises with Record, Verify, and Close on the log's mutex, so it
+// observes a consistent view and never races a concurrent append. It never
+// panics.
+func (l *Log) Entries() ([]Entry, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return Read(l.path)
+}
+
 // readLog reads the whole file at path, treating a missing file as empty.
 func readLog(path string) ([]byte, error) {
 	if path == "" {
