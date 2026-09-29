@@ -31,6 +31,14 @@ var ErrInvalidRecord = errors.New("ledger: record is invalid")
 // with context, so callers detect it with errors.Is.
 var ErrSeqAssigned = errors.New("ledger: record already has a chain position")
 
+// errIdemKeyPresent is an internal sentinel that aborts AppendChained's write
+// transaction when the record's idempotency key is already stored. It never
+// reaches a caller: Append converts it into the existing record's ID. It is an
+// error -- rather than a nil "skip" -- because AppendChained has no skip path;
+// returning the sentinel makes it roll back the (still empty) transaction so no
+// second row is written.
+var errIdemKeyPresent = errors.New("ledger: idempotency key already present")
+
 // Ledger is the single write path into the audit trail: the only component that
 // appends records. Append assigns each record's chain position, links, hashes,
 // and signs it inside one store transaction; the remaining methods are thin
@@ -65,6 +73,30 @@ func New(st store.Store, sg *sign.Signer, now func() time.Time) *Ledger {
 // Chain position is assigned under the same lock as the insert, so no caller
 // can influence where a record lands: a record supplied with a non-zero Seq is
 // rejected with ErrSeqAssigned.
+//
+// Append is idempotent on rec.IdempotencyKey (spec §7). When the key is
+// non-empty and a record already carries it, the append is a no-op: Append
+// returns the EXISTING record's ID -- not the caller's -- and writes nothing.
+// The first observation is the record; content is never compared and nothing is
+// updated. A different event, tier, scope, or identifier derives a different
+// key (record.DeriveIdemKey), so later knowledge appends as a new record rather
+// than mutating the first.
+//
+// The key lookup runs inside the callback AppendChained invokes, which executes
+// while that transaction holds the write lock (the store opens every
+// transaction with BEGIN IMMEDIATE). Holding the write lock across both the
+// lookup and the insert is what makes two concurrent appends with the same key
+// yield exactly one record: the second append cannot even begin its transaction
+// until the first commits, so it sees the committed record and no-ops. A lookup
+// issued before AppendChained, outside the lock, would race and is deliberately
+// not done here. As belt and braces -- should a duplicate ever reach the insert
+// anyway -- a store.ErrDuplicateIdemKey from the insert is converted to the same
+// no-op by looking the existing record up and returning its ID.
+//
+// An empty key never deduplicates: a keyless record always appends, is never
+// treated as a duplicate of another keyless record, and any number of keyless
+// records remain legal. Dedupability comes from the interceptor always
+// supplying a key, not from the ledger requiring one.
 func (l *Ledger) Append(rec record.Record) (record.RecordID, error) {
 	if err := rec.Validate(); err != nil {
 		if rerr := rec.Reason.Validate(); rerr != nil {
@@ -79,7 +111,31 @@ func (l *Ledger) Append(rec record.Record) (record.RecordID, error) {
 		return "", fmt.Errorf("ledger: append record %s: no signer configured", rec.ID)
 	}
 
+	// existing is set inside the callback (below), on this goroutine, when the
+	// key is already stored. AppendChained invokes build synchronously, so
+	// reading it afterwards is not a data race.
+	var existing record.RecordID
+	var present bool
+
 	err := l.store.AppendChained(func(prev record.Record, hasPrev bool) (record.Record, error) {
+		// Idempotency: a non-empty key already stored makes this append a
+		// no-op. The lookup runs here, under the write lock AppendChained
+		// already holds, so no concurrent writer can insert a same-key record
+		// between the lookup and this append's insert. The empty key is never
+		// a match (store.ByIdemKey reports false for it), so keyless records
+		// always proceed to insert.
+		if rec.IdempotencyKey != "" {
+			prior, ok, lerr := l.store.ByIdemKey(rec.IdempotencyKey)
+			if lerr != nil {
+				return record.Record{}, fmt.Errorf(
+					"ledger: append record %s: look up idempotency key: %w", rec.ID, lerr)
+			}
+			if ok {
+				existing, present = prior.ID, true
+				return record.Record{}, errIdemKeyPresent
+			}
+		}
+
 		// The head is read under the write lock, so prev.Seq + 1 is the one
 		// authoritative next position. Derive it here too, so the hash is
 		// computed over the record's final chain position; the store re-asserts
@@ -116,6 +172,26 @@ func (l *Ledger) Append(rec record.Record) (record.RecordID, error) {
 
 		return rec, nil
 	})
+
+	if present || errors.Is(err, errIdemKeyPresent) {
+		// The sentinel is set together with present, so this covers the no-op
+		// path; the errors.Is form is defensive in case the callback ever set
+		// the sentinel without present.
+		return existing, nil
+	}
+	if errors.Is(err, store.ErrDuplicateIdemKey) {
+		// Belt and braces: a duplicate that somehow reached the insert (rather
+		// than being caught by the in-transaction lookup) is the same no-op.
+		// The key is non-empty because an empty key can never be a duplicate.
+		prior, ok, lerr := l.store.ByIdemKey(rec.IdempotencyKey)
+		if lerr != nil {
+			return "", fmt.Errorf("ledger: append record %s: resolve duplicate idempotency key: %w", rec.ID, lerr)
+		}
+		if ok {
+			return prior.ID, nil
+		}
+		return "", err
+	}
 	if err != nil {
 		return "", err
 	}

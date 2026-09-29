@@ -270,7 +270,7 @@ func TestAddWritesOneObservedRecord(t *testing.T) {
 	assert.Equal(t, uint64(0), rec.Seq, "the ledger, not the interceptor, assigns Seq")
 	assert.Equal(t, at, rec.At.UTC())
 	assert.Equal(t, at, rec.RecordedAt.UTC())
-	assert.Empty(t, rec.IdempotencyKey, "Phase 3 writes keyless records")
+	assert.NotEmpty(t, rec.IdempotencyKey, "Phase 4 writes records with a derived idempotency key")
 
 	require.NotNil(t, rec.Content)
 	assert.Equal(t, "hello\nworld", rec.Content.Text)

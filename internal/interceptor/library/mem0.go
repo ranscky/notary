@@ -210,7 +210,8 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 		return
 	}
 
-	m.write(record.Record{
+	contentHash := contentHashOf(messages...)
+	rec := record.Record{
 		ID:         record.RecordID(correlationID),
 		At:         at,
 		RecordedAt: at,
@@ -218,10 +219,20 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 		Reason:     reason,
 		Subject: record.Subject{
 			Scope:       m.scope,
-			ContentHash: contentHashOf(messages...),
+			ContentHash: contentHash,
 		},
 		Content: &record.Content{Text: strings.Join(messages, "\n")},
-	})
+	}
+	// The identifier is the caller's correlation ID (the record's own
+	// identity), NOT resp.EventID. resp.EventID is Mem0's answer, and keying
+	// on it would (a) make deduplication depend on the response, so a retry
+	// Mem0 assigns a fresh event id to would not dedupe, and (b) collide two
+	// genuinely distinct operations that happen to share a response id -- the
+	// exact silent loss the key exists to prevent (see
+	// TestAddContentHashCollisionResistance). The correlation ID identifies the
+	// logical operation; Mem0's event id travels in the evidence payload.
+	rec.IdempotencyKey = idemKey(record.EventAddRequested, record.ReasonAddAcknowledged, m.scope, "", correlationID, contentHash)
+	m.write(rec)
 }
 
 // observeSearch builds and writes the search_performed record and then one
@@ -259,7 +270,8 @@ func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.Sear
 		return
 	}
 
-	m.write(record.Record{
+	contentHash := contentHashOf(q.Query)
+	rec := record.Record{
 		ID:         record.RecordID(correlationID),
 		At:         at,
 		RecordedAt: at,
@@ -267,9 +279,13 @@ func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.Sear
 		Reason:     reason,
 		Subject: record.Subject{
 			Scope:       m.scope,
-			ContentHash: contentHashOf(q.Query),
+			ContentHash: contentHash,
 		},
-	})
+	}
+	// A search_performed record has no Mem0 event id, so the correlation ID
+	// carries the identifier for the key.
+	rec.IdempotencyKey = idemKey(record.EventSearchPerformed, record.ReasonSearchPerformed, m.scope, "", correlationID, contentHash)
+	m.write(rec)
 }
 
 // writeSurfaced builds and writes one memory_surfaced record for a single
@@ -285,7 +301,8 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 		return
 	}
 
-	m.write(record.Record{
+	contentHash := contentHashOf(res.Memory.Memory)
+	rec := record.Record{
 		ID:         derivedRecordID(correlationID, rank),
 		At:         at,
 		RecordedAt: at,
@@ -294,10 +311,14 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 		Subject: record.Subject{
 			MemoryID:    res.ID,
 			Scope:       m.scope,
-			ContentHash: contentHashOf(res.Memory.Memory),
+			ContentHash: contentHash,
 		},
 		Content: &record.Content{Text: res.Memory.Memory},
-	})
+	}
+	// A memory_surfaced record has no Mem0 event id, so the correlation ID
+	// carries the identifier for the key.
+	rec.IdempotencyKey = idemKey(record.EventMemorySurfaced, record.ReasonReturnedBySearch, m.scope, "", correlationID, contentHash)
+	m.write(rec)
 }
 
 // write hands rec to the audit writer. It is the fail-open boundary: the
@@ -324,6 +345,32 @@ func (m *Mem0Interceptor) write(rec record.Record) {
 		return
 	}
 	_ = m.aw.Write(rec)
+}
+
+// idemKey derives the idempotency key for a record this interceptor writes,
+// from the record's event, its reason kind (the tier distinguisher), the scope,
+// the caller's correlation ID as the identifier, and the request digest.
+//
+// The identifier is the caller's correlation ID (eventID is empty): it
+// identifies the logical operation and is stable across a retry, whereas the
+// identifiers Mem0 returns are response data and would make deduplication
+// depend on the response. For memory_surfaced records the correlation ID
+// carries the identifier, since a surfaced record has no event id of its own.
+//
+// It is deliberately total. The caller's correlation ID is validated
+// non-empty before any Mem0 call (ErrMissingCorrelationID), and DeriveIdemKey
+// only fails when both the event id and the correlation id are empty, so for
+// every call that reaches a builder DeriveIdemKey cannot fail. This branch is
+// therefore unreachable in practice; it exists so that if it ever were
+// reached, the record is still written -- keyless rather than dropped -- and
+// the caller is never failed (Ruling A: a Mem0 success must return (resp,
+// nil)). A keyless write appends normally; it simply is not deduplicatable.
+func idemKey(event record.EventType, kind record.ReasonKind, scope record.Scope, eventID, correlationID string, digest record.Hash) record.IdemKey {
+	key, err := record.DeriveIdemKey(event, kind, scope, eventID, correlationID, digest)
+	if err != nil {
+		return ""
+	}
+	return key
 }
 
 // observedReason builds an Observed reason of kind over raw JSON payload,
