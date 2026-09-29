@@ -1,6 +1,7 @@
 package ledger_test
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
@@ -23,6 +24,17 @@ import (
 	"notary/internal/store"
 )
 
+// crashHelperTimeout bounds both the helper build and every helper run. The
+// crash test dominates the ledger suite at roughly 50s (20 process kills plus a
+// build); a hung helper -- a deadlock, a slow build, a stuck SIGKILL watchdog --
+// would otherwise hang the whole test run rather than fail it. Four minutes is
+// well above the observed cost of any single build or run, so it never trips a
+// healthy suite, yet a stuck helper fails within a bounded time instead of
+// hanging forever. On expiry exec.CommandContext kills the child, so the wait
+// is bounded by this value; the failure message names the timeout rather than
+// surfacing a bare "signal: killed".
+const crashHelperTimeout = 4 * time.Minute
+
 // crashKeyEnv names the environment variable the crashwriter helper reads its
 // signing key from. The test sets it so the helper signs with the same key the
 // test derives the public half of.
@@ -34,8 +46,17 @@ const crashKeyEnv = "NOTARY_CRASH_KEY"
 func buildCrashWriter(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "crashwriter")
-	cmd := exec.Command("go", "build", "-o", bin, "./testdata/crashwriter")
+
+	// Bound the build: a stuck `go build` must fail the test, not hang it.
+	ctx, cancel := context.WithTimeout(context.Background(), crashHelperTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./testdata/crashwriter")
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("building testdata/crashwriter timed out after %s; output:\n%s",
+			crashHelperTimeout, out)
+	}
 	require.NoErrorf(t, err, "building testdata/crashwriter: %s", out)
 	return bin
 }
@@ -69,7 +90,19 @@ func runCrashWriter(t *testing.T, bin, db, mode string, n, target int) []int {
 	if target >= 0 {
 		args = append(args, strconv.Itoa(target))
 	}
-	out, err := exec.Command(bin, args...).Output()
+
+	// Bound the run: a hung helper (a deadlock, a stuck SIGKILL watchdog) must
+	// fail this test within crashHelperTimeout, not hang the whole suite.
+	ctx, cancel := context.WithTimeout(context.Background(), crashHelperTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, bin, args...).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("crashwriter %s run timed out after %s without terminating -- "+
+			"a hung helper must fail the test, not hang it; partial output:\n%s",
+			mode, crashHelperTimeout, out)
+	}
+
 	if mode == "clean" {
 		require.NoErrorf(t, err, "a clean run must exit 0; output:\n%s", out)
 	} else {

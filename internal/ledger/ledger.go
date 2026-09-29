@@ -100,9 +100,9 @@ func New(st store.Store, sg *sign.Signer, now func() time.Time) *Ledger {
 func (l *Ledger) Append(rec record.Record) (record.RecordID, error) {
 	if err := rec.Validate(); err != nil {
 		if rerr := rec.Reason.Validate(); rerr != nil {
-			return "", fmt.Errorf("ledger: append record %s: %w: %v", rec.ID, ErrInvalidTier, err)
+			return "", fmt.Errorf("ledger: append record %s: %w: %w", rec.ID, ErrInvalidTier, err)
 		}
-		return "", fmt.Errorf("ledger: append record %s: %w: %v", rec.ID, ErrInvalidRecord, err)
+		return "", fmt.Errorf("ledger: append record %s: %w: %w", rec.ID, ErrInvalidRecord, err)
 	}
 	if rec.Seq != 0 {
 		return "", fmt.Errorf("ledger: append record %s: %w: seq is %d", rec.ID, ErrSeqAssigned, rec.Seq)

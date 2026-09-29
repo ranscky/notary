@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -550,6 +551,55 @@ func TestSeqEntriesOrdersBySeqAndNamesAnUndecodableRow(t *testing.T) {
 	assert.Equal(t, record.RecordID("rec-a"), entries[1].Rec.ID)
 	assert.NoError(t, entries[2].DecodeErr)
 	assert.Equal(t, record.RecordID("rec-b"), entries[2].Rec.ID)
+}
+
+// TestIsDuplicateIdemKeyUsesStructuredErrorNotMessage pins the fix for a real
+// failure mode. The detector must key on the DRIVER'S STRUCTURED ERROR
+// (*sqlite.Error carrying SQLITE_CONSTRAINT_UNIQUE), never on a substring of
+// the driver's message text. Coupling correctness to the message means a driver
+// upgrade, a locale, or a reworded message would silently turn a genuine
+// duplicate key into a generic error -- breaking Ledger.Append's idempotent
+// no-op (Task 18) and letting a duplicate record through.
+//
+// A plain error whose text happens to carry the constraint wording is therefore
+// NOT a duplicate: text alone must never be enough.
+func TestIsDuplicateIdemKeyUsesStructuredErrorNotMessage(t *testing.T) {
+	assert.False(t, isDuplicateIdemKey(nil), "a nil error is not a duplicate key")
+
+	plain := errors.New("some wrapper: UNIQUE constraint failed: records.idempotency_key")
+	assert.False(t, isDuplicateIdemKey(plain),
+		"a message-only error must not be classified as a duplicate key violation: "+
+			"correctness must not hinge on the driver's error text")
+
+	// A wrapped plain error must also be rejected: wrapping does not make it the
+	// driver's structured violation.
+	wrapped := fmt.Errorf("store: put record %s: %w", "rec-x", plain)
+	assert.False(t, isDuplicateIdemKey(wrapped),
+		"wrapping a message-only error must not turn it into a structured violation")
+}
+
+// TestDuplicateIdColumnNotMistakenForIdempotencyKey guards the one ambiguity the
+// structured code cannot resolve: a UNIQUE violation on the id column carries
+// the SAME SQLITE_CONSTRAINT_UNIQUE (2067) code as the idempotency index, so a
+// slip in the constraint-name check would misreport a duplicate id as a
+// duplicate idempotency key. With an empty idempotency key only the id UNIQUE
+// column can fire, so the error must NOT wrap ErrDuplicateIdemKey.
+func TestDuplicateIdColumnNotMistakenForIdempotencyKey(t *testing.T) {
+	s := newOpenStore(t)
+
+	first := fullRecord(t)
+	first.IdempotencyKey = "" // partial index does not apply: only the id is unique
+	require.NoError(t, s.PutRecord(first))
+
+	dup := fullRecord(t)
+	dup.ID = first.ID       // duplicate id
+	dup.Seq = first.Seq + 1 // a distinct seq, so the PRIMARY KEY cannot fire
+	dup.IdempotencyKey = "" // still no key: the id UNIQUE column is the only violable one
+
+	err := s.PutRecord(dup)
+	require.Error(t, err, "a duplicate id must be rejected by the id UNIQUE constraint")
+	assert.False(t, errors.Is(err, ErrDuplicateIdemKey),
+		"a UNIQUE violation on the id column must not be misread as a duplicate idempotency key")
 }
 
 // ensure the concrete type satisfies the interface at compile time.
