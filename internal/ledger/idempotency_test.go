@@ -173,3 +173,76 @@ func TestConcurrentAppendsSameKeyProduceOneRecord(t *testing.T) {
 	assert.Equal(t, record.IdemKey("idem-concurrent"), stored.IdempotencyKey)
 	assert.Equal(t, uint64(0), stored.Seq, "the sole record sits at Seq 0")
 }
+
+// memoryKeptRecord builds a memory_kept record whose reason kind -- and
+// therefore tier -- the caller chooses. Two records built with the SAME event,
+// scope, and correlation ID but different reason kinds are the case Ruling 1
+// exists for.
+func memoryKeptRecord(t *testing.T, id record.RecordID, key record.IdemKey, observed bool) record.Record {
+	t.Helper()
+
+	var (
+		reason record.Reason
+		err    error
+	)
+	if observed {
+		ev, eerr := record.NewObservedEvidence(record.SourceMem0Response, []byte(`{"seen":true}`))
+		require.NoError(t, eerr)
+		reason, err = record.NewObservedReason(record.ReasonStoredByMem0, ev)
+	} else {
+		ev, eerr := record.NewReconstructedEvidence(
+			[]record.RecordID{"rec-basis"}, "kept-by-content-match", "v1", 0.5)
+		require.NoError(t, eerr)
+		reason, err = record.NewReconstructedReason(record.ReasonKeptByContentMatch, ev)
+	}
+	require.NoError(t, err)
+
+	rec := record.Record{
+		ID:             id,
+		At:             time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC),
+		Event:          record.EventMemoryKept,
+		Reason:         reason,
+		Subject:        record.Subject{Scope: record.Scope{UserID: "u1"}, ContentHash: hash32(0x60)},
+		IdempotencyKey: key,
+	}
+	require.NoError(t, rec.Validate(), "the test fixture must be a valid record")
+	return rec
+}
+
+// TestSameEventDifferentReasonKindAppends is Ruling 1's end-to-end payoff, and
+// the reason the reason kind is in the digest at all.
+//
+// The spec's own table emits memory_kept as Observed (stored_by_mem0) OR
+// Reconstructed (kept_by_content_match) -- same event, same scope, same
+// memory. Were the reason kind not hashed, those two claims would derive the
+// SAME key, the second would be treated as a duplicate, and later knowledge
+// would be silently LOST: never written, with no error anywhere. This pins the
+// behaviour at the ledger layer, not just at the digest layer, so a regression
+// that dropped the reason kind from the key would fail here too.
+func TestSameEventDifferentReasonKindAppends(t *testing.T) {
+	l, _, _, st := newLedger(t)
+
+	// Identical in every input EXCEPT the reason kind, so any difference in the
+	// derived key can only come from the reason kind.
+	const corr = "corr-kept"
+	scope := record.Scope{UserID: "u1"}
+	digest := hash32(0x61)
+
+	observedKey, err := record.DeriveIdemKey(
+		record.EventMemoryKept, record.ReasonStoredByMem0, scope, "", corr, digest)
+	require.NoError(t, err)
+	reconstructedKey, err := record.DeriveIdemKey(
+		record.EventMemoryKept, record.ReasonKeptByContentMatch, scope, "", corr, digest)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, observedKey, reconstructedKey,
+		"a different reason kind (and therefore tier) must yield a different key")
+
+	_, err = l.Append(memoryKeptRecord(t, "rec-kept-observed", observedKey, true))
+	require.NoError(t, err)
+	_, err = l.Append(memoryKeptRecord(t, "rec-kept-reconstructed", reconstructedKey, false))
+	require.NoError(t, err, "the reconstructed claim is later knowledge and must append, not dedupe")
+
+	assert.Equal(t, 2, countRecords(t, st),
+		"the same event with a different reason kind must produce TWO records, not one")
+}
