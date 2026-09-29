@@ -213,6 +213,8 @@ func TestRunVerifyWriteGapCheckpointMissingLogLeavesNoFile(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("write-gap-checkpoint", gcpPath))
 	err := runVerify(cmd, cfg, "", "")
 	require.Error(t, err, "writing a gap checkpoint for a missing gap log must exit non-zero")
+	require.ErrorIs(t, err, gap.ErrEmptyLog,
+		"a missing gap log must be identified by sentinel, not by matching error text")
 
 	_, statErr := os.Stat(gapPath)
 	assert.True(t, os.IsNotExist(statErr),

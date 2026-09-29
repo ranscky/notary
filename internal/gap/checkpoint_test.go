@@ -202,6 +202,8 @@ func TestGapCheckpointOnEmptyLogErrors(t *testing.T) {
 
 	cp, err := g.Checkpoint(sg, gapTestTime)
 	require.Error(t, err, "an empty gap log has no head to attest to")
+	require.ErrorIs(t, err, gap.ErrEmptyLog,
+		"an empty log must be recognisable by sentinel, not by matching its text")
 	assert.Equal(t, sign.Checkpoint{}, cp, "a failed checkpoint must be the zero value")
 	require.NoError(t, g.Close())
 }

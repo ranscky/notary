@@ -17,6 +17,13 @@ import (
 // context, so callers detect it with errors.Is.
 var ErrTruncated = errors.New("gap: gap log is shorter than the checkpoint")
 
+// ErrEmptyLog reports that a gap log has no entry, so there is no head for a
+// checkpoint to attest to. It is a sentinel rather than a bare message so a
+// caller (such as `notary verify --write-gap-checkpoint`, which must refuse
+// without creating the file) can recognise the condition with errors.Is
+// instead of duplicating this text and silently drifting from it.
+var ErrEmptyLog = errors.New("gap: checkpoint: gap log is empty, so there is no head to attest to")
+
 // fieldTruncation reports that the gap log no longer reaches a signed head
 // checkpoint: it was shortened, rewritten, or emptied. It mirrors the ledger's
 // fieldTruncation and is emitted only by VerifyAgainstCheckpoint, not by
@@ -28,10 +35,10 @@ const fieldTruncation = "truncation"
 // head's (Counter, Hash) and names the signer's key, so a later run can tell
 // that the log was shortened or deleted.
 //
-// A gap log with no entry has no head to attest to, so Checkpoint returns an
-// error rather than signing a checkpoint for a nonexistent entry -- mirroring
-// ledger.Checkpoint on an empty store. sg may be nil; the underlying signer
-// rejects it with an error, never a panic.
+// A gap log with no entry has no head to attest to, so Checkpoint returns
+// ErrEmptyLog rather than signing a checkpoint for a nonexistent entry --
+// mirroring ledger.Checkpoint on an empty store. sg may be nil; the underlying
+// signer rejects it with an error, never a panic.
 func (l *Log) Checkpoint(sg *sign.Signer, now time.Time) (sign.Checkpoint, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -41,7 +48,7 @@ func (l *Log) Checkpoint(sg *sign.Signer, now time.Time) (sign.Checkpoint, error
 		return sign.Checkpoint{}, fmt.Errorf("gap: checkpoint: read head: %w", err)
 	}
 	if !ok {
-		return sign.Checkpoint{}, errors.New("gap: checkpoint: gap log is empty, so there is no head to attest to")
+		return sign.Checkpoint{}, ErrEmptyLog
 	}
 
 	cp, err := sign.NewChainCheckpoint(sign.GapChain, head.Counter, head.Hash, now, sg)

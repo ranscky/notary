@@ -347,10 +347,13 @@ func writeGapCheckpoint(out io.Writer, cfg *config.Config, logPath, path string)
 		return fmt.Errorf("loading signing key from %s: %w", cfg.SigningKeyEnv, err)
 	}
 	if _, statErr := os.Stat(logPath); errors.Is(statErr, os.ErrNotExist) {
-		// Mirror the error gap.(*Log).Checkpoint returns for an empty log,
-		// without opening the path and creating it.
-		return fmt.Errorf("creating gap checkpoint: %w",
-			errors.New("gap: checkpoint: gap log is empty, so there is no head to attest to"))
+		// Refuse without opening the path: gap.Open opens with O_CREATE, so
+		// opening as a side effect of a write that then fails would manufacture
+		// an empty gap log -- turning the healthy "no gap log ever existed"
+		// state into the semantically different "an empty gap log exists". Wrap
+		// gap.ErrEmptyLog rather than restating its text, so the two cannot
+		// drift apart.
+		return fmt.Errorf("creating gap checkpoint: %w", gap.ErrEmptyLog)
 	}
 	gl, err := gap.Open(logPath)
 	if err != nil {
