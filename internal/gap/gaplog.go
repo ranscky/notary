@@ -6,10 +6,17 @@
 // case where the store is failing, so sharing a failure domain with it would
 // defeat the whole point: if the two shared a store, a store outage would
 // silence both the ledger and the record that a gap occurred. For the same
-// reason this package imports only internal/record (for the shared types) and
-// the standard library, and never internal/store. It is a plain file, written
-// with O_APPEND and flushed after every write, so it survives the very failure
-// it is meant to report.
+// reason this package reads and writes the log as a plain file, with O_APPEND
+// and a flush after every write, so it survives the very failure it is meant to
+// report.
+//
+// The package imports internal/record (for the shared types) and internal/sign
+// (for signed head checkpoints over the log, see checkpoint.go). Importing
+// internal/sign does not reintroduce the shared failure domain: signing uses
+// local key material from an env var, a 0600 file, or (unimplemented) the OS
+// keychain -- it never touches the record store. The store outage a gap log
+// exists to survive does not disable signing, so a checkpoint can still be
+// written and checked while the store is broken.
 package gap
 
 import (
