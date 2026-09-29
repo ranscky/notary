@@ -36,7 +36,9 @@ func repoRoot(t *testing.T) string {
 // struct with unexported fields and cannot make the zero value a compile error,
 // so the remaining paths -- naming an unexported field in a keyed literal, and
 // building an ObservedEvidence without its constructor -- are proven closed by
-// compiling snippets that MUST fail.
+// compiling snippets that MUST fail. The genesis anchor is pinned the same way:
+// a snippet that assigns to record.GenesisHash must not compile, so no caller
+// can redefine where a chain starts.
 //
 // Each fixture is copied into a throwaway module that resolves notary through a
 // replace directive pointing at this checkout, then built. A fixture that
@@ -60,6 +62,11 @@ func TestNegativeFixturesDoNotCompile(t *testing.T) {
 		{file: "forge_tier.go.txt", want: []string{"unexported field", "VisibilityTier"}},
 		{file: "bare_reason.go.txt", want: []string{"unexported field", "Reason"}},
 		{file: "observed_from_nothing.go.txt", want: []string{"unexported field", "ObservedEvidence"}},
+		// GenesisHash is a function, not a variable, so no caller can reassign
+		// the genesis anchor. The expected message is the assignment error, not
+		// a missing-module or unexported-field one, so this fixture fails for
+		// the right reason.
+		{file: "redefine_genesis.go.txt", want: []string{"cannot assign to record.GenesisHash"}},
 	}
 
 	for _, f := range fixtures {

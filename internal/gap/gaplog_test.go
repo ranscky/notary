@@ -285,42 +285,6 @@ func TestOpenAdoptsCompleteTornTail(t *testing.T) {
 	assert.Empty(t, breaks, "a recovered complete tail must not produce a spurious break")
 }
 
-// TestWriteChannelsReturnsDistinctSinks proves the two channels are distinct
-// writers and that a marker written through each reaches its own sink.
-func TestWriteChannelsReturnsDistinctSinks(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gaps.log")
-	var buf bytes.Buffer
-
-	chans := gap.WriteChannels(path, &buf)
-	require.Len(t, chans, 2)
-	require.NotEqual(t, chans[0], chans[1], "the file channel and the caller writer must be distinct")
-
-	_, err := chans[0].Write([]byte("file-marker\n"))
-	require.NoError(t, err)
-	_, err = chans[1].Write([]byte("stderr-marker\n"))
-	require.NoError(t, err)
-
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "file-marker", "the file channel must write to the file")
-	assert.Contains(t, buf.String(), "stderr-marker", "the caller channel must write to the caller writer")
-}
-
-// TestWriteChannelsNilWriterReturnsOnlyFileSink pins the documented behaviour
-// when no second writer is supplied: just the file sink.
-func TestWriteChannelsNilWriterReturnsOnlyFileSink(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gaps.log")
-
-	chans := gap.WriteChannels(path, nil)
-	require.Len(t, chans, 1)
-
-	_, err := chans[0].Write([]byte("only-file\n"))
-	require.NoError(t, err)
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "only-file")
-}
-
 // TestConcurrentRecordAssignsDistinctDenseCounters is the concurrency guard:
 // many goroutines appending at once must produce exactly counters 0..N-1 with
 // no duplicates or lost writes, and a clean Verify. Run under -race.

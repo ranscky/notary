@@ -165,7 +165,7 @@ func readRawBlobs(t *testing.T, path string) []storedBlob {
 // transaction boundary held.
 //
 // The one documented exemption is the genesis record's prev_hash: it links to
-// record.GenesisHash, the all-zero sentinel by design, so at seq 0 the all-zero
+// record.GenesisHash(), the all-zero sentinel by design, so at seq 0 the all-zero
 // value is required rather than forbidden. It returns the number of rows seen.
 func assertNoPartialRow(t *testing.T, path string) int {
 	t.Helper()

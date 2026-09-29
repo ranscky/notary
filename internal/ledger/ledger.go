@@ -61,7 +61,7 @@ func New(st store.Store, sg *sign.Signer, now func() time.Time) *Ledger {
 
 // Append validates rec and then appends it to the chain inside a single store
 // transaction: it assigns the next chain position (Seq), links the record to
-// its predecessor (PrevHash, or record.GenesisHash at position 0), stamps
+// its predecessor (PrevHash, or record.GenesisHash() at position 0), stamps
 // RecordedAt from the ledger's clock when it is zero, hashes the record over
 // that final position, and signs the hash. It returns the record's ID.
 //
@@ -145,7 +145,7 @@ func (l *Ledger) Append(rec record.Record) (record.RecordID, error) {
 			rec.PrevHash = prev.Hash
 		} else {
 			rec.Seq = 0
-			rec.PrevHash = record.GenesisHash
+			rec.PrevHash = record.GenesisHash()
 		}
 
 		if rec.RecordedAt.IsZero() {

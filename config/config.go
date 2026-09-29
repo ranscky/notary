@@ -29,12 +29,6 @@ const (
 	EnvMem0BaseURL = "NOTARY_MEM0_BASE_URL"
 	EnvDBPath      = "NOTARY_DB_PATH"
 	EnvGapLogPath  = "NOTARY_GAP_LOG_PATH"
-	// EnvSigningKey is the name of the environment variable whose VALUE holds the
-	// base64 signing key material. It equals DefaultSigningKeyEnv and is the
-	// default value of Config.SigningKeyEnv. The configuration never reads this
-	// variable's value: only the signing library reads the variable, by name,
-	// through Config.SigningKeyEnv.
-	EnvSigningKey = "NOTARY_SIGNING_KEY"
 	// EnvTrustedKeysPath is the environment variable holding the path to a file
 	// of trusted public keys.
 	EnvTrustedKeysPath = "NOTARY_TRUSTED_KEYS_PATH"

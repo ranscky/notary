@@ -1,0 +1,11 @@
+package fixture
+
+import "notary/internal/record"
+
+// Assigning to record.GenesisHash must not compile. GenesisHash is a function,
+// not a package variable, so no caller in any package can reassign the genesis
+// anchor and silently redefine where a chain starts -- which would make chain
+// verification accept or reject the wrong genesis link.
+func redefineGenesis() {
+	record.GenesisHash = record.Hash{}
+}

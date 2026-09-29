@@ -8,10 +8,16 @@ import (
 	"time"
 )
 
-// GenesisHash is the PrevHash of the first record in a ledger: 32 zero bytes.
-// It is a fixed sentinel rather than a hash of anything, so the genesis link
-// is unambiguous and can never collide with a real digest.
-var GenesisHash Hash
+// GenesisHash returns the PrevHash of the first record in a ledger: 32 zero
+// bytes. It is a fixed sentinel rather than a hash of anything, so the genesis
+// link is unambiguous and can never collide with a real digest.
+//
+// It is a function, not a package variable, so no caller in any package can
+// reassign it and silently redefine where a chain starts -- which would make
+// verification accept or reject the wrong genesis link. Go has no const
+// arrays, so a function is the form that makes the value immutable while
+// keeping the name recognisable.
+func GenesisHash() Hash { return Hash{} }
 
 // hashDomain separates Notary's record digests from every other use of
 // SHA-256, so a digest produced here can never be confused with a bare hash of

@@ -14,7 +14,7 @@ const (
 	// the stored record.
 	fieldHash = "hash"
 	// fieldPrevHash reports that the record's PrevHash is not its predecessor's
-	// Hash (or GenesisHash at the start of the chain).
+	// Hash (or GenesisHash() at the start of the chain).
 	fieldPrevHash = "prev_hash"
 	// fieldSignature reports that the record's Signature does not verify under
 	// a trust the verifier holds (unknown key) or does not verify at all
@@ -106,7 +106,7 @@ func (l *Ledger) Verify(v *sign.Verifier) ([]Break, error) {
 			// (2) The record must link to its predecessor (genesis at the
 			// start). It is skipped when the predecessor's hash is unknown.
 			if prevKnown {
-				wantPrev := record.GenesisHash
+				wantPrev := record.GenesisHash()
 				what := "genesis hash"
 				if prev != nil {
 					wantPrev = prev.Hash

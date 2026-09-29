@@ -21,7 +21,6 @@ package gap
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"time"
@@ -131,7 +130,7 @@ func (l *Log) recover() error {
 	// line that will not decode is corruption: Verify reports it, and recovery
 	// skips it, so a bogus counter is never fabricated from it.
 	l.next = 0
-	l.prev = record.GenesisHash
+	l.prev = record.GenesisHash()
 	var last Entry
 	found := false
 	for _, raw := range lines {
@@ -183,7 +182,7 @@ func tornHead(torn []byte, prev Entry, hasPrev bool) (Entry, bool) {
 	if hashEntry(e) != e.Hash {
 		return Entry{}, false
 	}
-	wantPrev := record.GenesisHash
+	wantPrev := record.GenesisHash()
 	var wantCounter uint64
 	if hasPrev {
 		wantPrev = prev.Hash
@@ -252,47 +251,4 @@ func (l *Log) Close() error {
 		return fmt.Errorf("gap: close log %s: %w", l.path, err)
 	}
 	return nil
-}
-
-// WriteChannels returns the writers a gap should be reported on at once, so a
-// gap is never silent. The first is always a writer that appends to the gap log
-// file at path; when w is non-nil the second is w itself (for example os.Stderr,
-// so the gap is loud). The two writers are distinct.
-//
-// When w is nil, only the file writer is returned: there is no second sink to
-// report on, and returning the same writer twice would falsely suggest a second
-// channel. The file writer opens the file per write (O_APPEND|O_CREATE|0o600)
-// and surfaces any open or write error from Write rather than panicking, which
-// is why WriteChannels itself returns no error.
-func WriteChannels(path string, w io.Writer) []io.Writer {
-	chans := []io.Writer{&fileAppender{path: path}}
-	if w != nil {
-		chans = append(chans, w)
-	}
-	return chans
-}
-
-// fileAppender is an io.Writer that appends each write to a file opened fresh
-// per call, so it holds no shared mutable state and needs no lock.
-type fileAppender struct {
-	path string
-}
-
-// Write appends p to the file. It returns a wrapped error on any failure and
-// never panics.
-func (a *fileAppender) Write(p []byte) (int, error) {
-	f, err := os.OpenFile(a.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return 0, fmt.Errorf("gap: open channel %s: %w", a.path, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	n, err := f.Write(p)
-	if err != nil {
-		return n, fmt.Errorf("gap: write channel %s: %w", a.path, err)
-	}
-	if err := f.Sync(); err != nil {
-		return n, fmt.Errorf("gap: flush channel %s: %w", a.path, err)
-	}
-	return n, nil
 }

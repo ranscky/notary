@@ -104,12 +104,12 @@ func TestEveryFieldChangesHash(t *testing.T) {
 }
 
 // TestComputeHashEmptyStoreGenesis verifies the empty-store case: a record with
-// Seq == 0 and PrevHash == GenesisHash is the legitimate first record and must
+// Seq == 0 and PrevHash == GenesisHash() is the legitimate first record and must
 // hash without error.
 func TestComputeHashEmptyStoreGenesis(t *testing.T) {
 	r := baselineRecord(t)
 	r.Seq = 0
-	r.PrevHash = record.GenesisHash
+	r.PrevHash = record.GenesisHash()
 
 	h, err := record.ComputeHash(r)
 	require.NoError(t, err)

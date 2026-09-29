@@ -120,7 +120,7 @@ func TestAppendAssignsSeqPrevHashHashAndSignature(t *testing.T) {
 
 	// Chain position: first record is Seq 0 and links to genesis.
 	assert.Equal(t, uint64(0), stored.Seq, "the first record must be Seq 0")
-	assert.Equal(t, record.GenesisHash, stored.PrevHash, "the first record's PrevHash must be the genesis hash")
+	assert.Equal(t, record.GenesisHash(), stored.PrevHash, "the first record's PrevHash must be the genesis hash")
 
 	// RecordedAt is stamped from the injected clock.
 	assert.Equal(t, fixedNow, stored.RecordedAt, "RecordedAt must be stamped from the ledger's clock")

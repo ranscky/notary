@@ -21,8 +21,8 @@ func mustParse(t *testing.T, s string) time.Time {
 // TestGenesisHash verifies that the genesis link is exactly 32 zero bytes, so
 // the first record's PrevHash is a fixed, unforgeable sentinel.
 func TestGenesisHashIs32ZeroBytes(t *testing.T) {
-	assert.Equal(t, record.Hash{}, record.GenesisHash)
-	assert.Equal(t, 32, len(record.GenesisHash))
+	assert.Equal(t, record.Hash{}, record.GenesisHash())
+	assert.Equal(t, 32, len(record.GenesisHash()))
 }
 
 // TestComputeHashStable verifies ComputeHash is a pure function of the record:
