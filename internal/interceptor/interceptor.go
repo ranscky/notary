@@ -149,7 +149,14 @@ func (w *AuditWriter) failOpen(rec record.Record, cause error) error {
 	entry, err := buildGapEntry(rec, cause)
 	if err != nil {
 		// The gap could not even be described. Still be loud, then surface the
-		// error: this is a doubly-failed write.
+		// error: this is a doubly-failed write. The markers are written BEFORE
+		// the return, deliberately -- the loud half of fail-open-loud is the
+		// one thing that must never be skipped by an early return.
+		//
+		// This branch is the only path here without direct test coverage: it
+		// needs the reason constructors themselves to fail, which cannot be
+		// provoked from outside without a seam. It is kept for completeness
+		// rather than left to panic.
 		w.markChannels(rec, cause)
 		return fmt.Errorf("interceptor: describe audit gap for record %s: %w", rec.ID, err)
 	}
@@ -248,6 +255,13 @@ func auditUnavailableReason(rec record.Record, cause error) (record.Reason, erro
 // channel. It names only non-sensitive metadata -- the event kind, the scope,
 // the correlation ID, and the failure reason -- and NEVER the record's content,
 // so no raw memory text can reach a log through the loud path.
+//
+// Interpolating cause is safe only because every error that can reach here from
+// ledger.Append names IDs, events, kinds, tiers, SQL parameters, or constraint
+// names -- never Content.Text. That is an assumption about other packages'
+// error formatting, not something enforced here, so if a store or ledger error
+// ever starts embedding record content, this marker would leak it. Keep that in
+// mind before adding a cause-bearing error upstream.
 func gapMarker(rec record.Record, cause error) string {
 	scope := rec.Subject.Scope
 	return fmt.Sprintf(
