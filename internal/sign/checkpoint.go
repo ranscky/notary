@@ -13,12 +13,21 @@ import (
 	"notary/internal/record"
 )
 
-// checkpointDomain is the domain-separation prefix of the signed message. It
-// carries the checkpoint wire version ("v1"), so no second version constant is
-// needed. Because it is a fixed-length ASCII string that no other signed message
-// in this package uses, a checkpoint signature can never be mistaken for a
-// signature over a ledger record (or vice versa).
-const checkpointDomain = "notary/checkpoint/v1"
+// ChainDomain identifies which hash chain a checkpoint attests to. It is bound
+// into the signed message, so a checkpoint signed for one chain can never be
+// replayed as evidence about another.
+type ChainDomain string
+
+const (
+	// LedgerChain is the domain of the audit ledger's record chain. Its value is
+	// the historical checkpoint wire prefix "notary/checkpoint/v1", which carries
+	// the wire version ("v1"), so no second version constant is needed.
+	LedgerChain ChainDomain = "notary/checkpoint/v1"
+	// GapChain is the domain of the gap log's hash chain. It is deliberately
+	// distinct from LedgerChain so a gap checkpoint can never be presented as a
+	// ledger checkpoint (or vice versa).
+	GapChain ChainDomain = "notary/gapcheckpoint/v1"
+)
 
 // Checkpoint is a signed statement that a hash chain reached a given head at a
 // given instant: "(Seq, Hash) at At", signed by the key identified by
@@ -37,7 +46,9 @@ const checkpointDomain = "notary/checkpoint/v1"
 // UnmarshalCheckpoint then rejects. See MarshalCheckpoint for the wire format.
 type Checkpoint struct {
 	// Seq is the chain position of the signed head: the sequence number of the
-	// record the head hash belongs to.
+	// record the head hash belongs to. For a GapChain checkpoint it is instead
+	// the gap log's Counter at the attested head -- the same field, carrying the
+	// other chain's position, so a checkpoint needs no second struct.
 	Seq uint64 `json:"seq"`
 	// Hash is the hash of the chain head at Seq.
 	Hash record.Hash `json:"hash"`
@@ -50,18 +61,33 @@ type Checkpoint struct {
 	Signature []byte `json:"signature"`
 }
 
-// NewCheckpoint signs a statement that the chain reached (seq, hash) at the
-// instant at, and returns the resulting Checkpoint. It fills SignerKeyID from
-// signer.KeyID().
+// NewCheckpoint signs a statement that the ledger chain reached (seq, hash) at
+// the instant at, and returns the resulting Checkpoint. It fills SignerKeyID
+// from signer.KeyID().
 //
 // at is normalised to UTC and the caller's time.Time is not mutated. A nil
 // signer is a returned error, never a panic.
+//
+// It is NewChainCheckpoint(LedgerChain, ...): the ledger chain's domain is fixed,
+// so callers that concern the ledger need not name it.
 func NewCheckpoint(seq uint64, hash record.Hash, at time.Time, signer *Signer) (Checkpoint, error) {
+	return NewChainCheckpoint(LedgerChain, seq, hash, at, signer)
+}
+
+// NewChainCheckpoint signs a statement that the chain identified by domain
+// reached (seq, hash) at the instant at, and returns the resulting Checkpoint.
+// It fills SignerKeyID from signer.KeyID().
+//
+// The domain is bound into the signed message, so a checkpoint signed under one
+// domain does not verify under another (see VerifyChainCheckpoint). at is
+// normalised to UTC and the caller's time.Time is not mutated. A nil signer is a
+// returned error, never a panic.
+func NewChainCheckpoint(domain ChainDomain, seq uint64, hash record.Hash, at time.Time, signer *Signer) (Checkpoint, error) {
 	if signer == nil {
 		return Checkpoint{}, errors.New("sign: cannot create checkpoint with a nil signer")
 	}
 	utc := at.UTC()
-	sig, err := signer.Sign(checkpointMessage(seq, hash, utc))
+	sig, err := signer.Sign(checkpointMessage(domain, seq, hash, utc))
 	if err != nil {
 		return Checkpoint{}, fmt.Errorf("sign: signing checkpoint: %w", err)
 	}
@@ -75,16 +101,32 @@ func NewCheckpoint(seq uint64, hash record.Hash, at time.Time, signer *Signer) (
 }
 
 // VerifyCheckpoint checks a checkpoint's signature under the public key trusted
-// for c.SignerKeyID. It reconstructs the canonical signed message from the
-// checkpoint's own fields, so any change to Seq, Hash, or At invalidates the
-// signature.
+// for c.SignerKeyID, over the ledger chain's domain. It reconstructs the
+// canonical signed message from the checkpoint's own fields, so any change to
+// Seq, Hash, or At invalidates the signature.
 //
 // It returns a wrapped ErrUnknownKey when c.SignerKeyID is absent from the
 // keyring and a wrapped ErrInvalidSignature when the signature does not match. A
 // zero-value Checkpoint is safe: verification reports the empty key ID as
 // unknown rather than panicking.
+//
+// It is VerifyChainCheckpoint(LedgerChain, c); a checkpoint signed for another
+// domain (for example GapChain) fails with ErrInvalidSignature.
 func (v *Verifier) VerifyCheckpoint(c Checkpoint) error {
-	if err := v.Verify(c.SignerKeyID, checkpointMessage(c.Seq, c.Hash, c.At), c.Signature); err != nil {
+	return v.VerifyChainCheckpoint(LedgerChain, c)
+}
+
+// VerifyChainCheckpoint checks a checkpoint's signature under the public key
+// trusted for c.SignerKeyID, over the chain identified by domain. Because the
+// domain is part of the signed bytes, a checkpoint signed for one chain fails
+// here when checked against another: the two chains cannot be crossed.
+//
+// It returns a wrapped ErrUnknownKey when c.SignerKeyID is absent from the
+// keyring and a wrapped ErrInvalidSignature when the signature does not match. A
+// zero-value Checkpoint is safe: verification reports the empty key ID as
+// unknown rather than panicking.
+func (v *Verifier) VerifyChainCheckpoint(domain ChainDomain, c Checkpoint) error {
+	if err := v.Verify(c.SignerKeyID, checkpointMessage(domain, c.Seq, c.Hash, c.At), c.Signature); err != nil {
 		return fmt.Errorf("sign: verifying checkpoint: %w", err)
 	}
 	return nil
@@ -92,22 +134,24 @@ func (v *Verifier) VerifyCheckpoint(c Checkpoint) error {
 
 // checkpointMessage builds the canonical bytes that a checkpoint signs:
 //
-//	"notary/checkpoint/v1" ‖ uint64-BE(Seq) ‖ Hash[:] ‖ Timestamp
+//	<domain> ‖ uint64-BE(Seq) ‖ Hash[:] ‖ Timestamp
 //
-// where Timestamp is At.UTC().Format(time.RFC3339Nano). This is the exact
-// documented form; there is no length prefix on the timestamp. The domain
-// prefix, Seq, and Hash are fixed width (19 + 8 + 32 = 59 bytes), and the
-// timestamp is the last segment, so everything after byte 59 is unambiguous —
-// no two distinct (Seq, Hash, At) triples can produce the same signed bytes.
-// In particular RFC3339Nano's trailing-zero trimming is injective over
-// nanosecond instants, so a whole second and a nanosecond later sign distinct
-// messages.
-func checkpointMessage(seq uint64, hash record.Hash, at time.Time) []byte {
+// where Timestamp is At.UTC().Format(time.RFC3339Nano). For LedgerChain the
+// domain is "notary/checkpoint/v1", so the bytes are exactly the historical
+// ledger form; the domain parameter only lets a second chain (GapChain) sign a
+// message that can never be confused with it. This is the exact documented form;
+// there is no length prefix on the timestamp. The domain prefix, Seq, and Hash
+// are fixed width (19 + 8 + 32 = 59 bytes for the v1 domains), and the timestamp
+// is the last segment, so everything after byte 59 is unambiguous — no two
+// distinct (Seq, Hash, At) triples can produce the same signed bytes. In
+// particular RFC3339Nano's trailing-zero trimming is injective over nanosecond
+// instants, so a whole second and a nanosecond later sign distinct messages.
+func checkpointMessage(domain ChainDomain, seq uint64, hash record.Hash, at time.Time) []byte {
 	ts := at.UTC().Format(time.RFC3339Nano)
 
 	var buf bytes.Buffer
-	buf.Grow(len(checkpointDomain) + 8 + len(hash) + len(ts))
-	buf.WriteString(checkpointDomain)
+	buf.Grow(len(domain) + 8 + len(hash) + len(ts))
+	buf.WriteString(string(domain))
 
 	var seqBuf [8]byte
 	binary.BigEndian.PutUint64(seqBuf[:], seq)
