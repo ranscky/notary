@@ -26,12 +26,26 @@ import (
 // request path.
 //
 // The int returned is the number of DISTINCT records reconciled in this run:
-// entries for which lookup returned a record and Append succeeded. Two gap
+// entries for which lookup returned a record and the append ACTUALLY STORED
+// that entry's record (see the keyed-no-op case below). Two gap
 // entries naming the same missing record (they share a correlation ID) are
 // reconciled once and counted once. A lookup that MISSES is not an error and is
 // not counted -- that entry is left unreconciled -- so a caller can tell
 // "nothing obtainable to reconcile" (a zero count, no error) from "a record
 // could not be stored" (a non-nil error).
+//
+// A keyed no-op is not a reconciliation. Because Append deduplicates on the
+// idempotency key and returns the EXISTING record's ID on a duplicate, a
+// lookup that returns a record whose key already exists under a DIFFERENT
+// record ID makes Append return that other ID with a nil error -- yet nothing
+// new is stored and this entry still matches no record. An entry is therefore
+// counted and marked reconciled only when the returned ID equals
+// record.RecordID(e.CorrelationID), the exact tuple ledger.GapBreaks matches on
+// (Ruling R45's single-definition rule). When the returned ID differs, the
+// entry is SKIPPED: not counted, no marker written, no error returned, and the
+// run continues with the remaining entries. The entry stays unreconciled and
+// visible to `notary verify` -- the loud channel here -- rather than being
+// papered over by a marker claiming a reconciliation that never happened.
 //
 // Reconcile-versus-stored is decided by ledger.GapBreaks -- the SAME function
 // `notary verify` uses -- never by a rule invented here. An entry is reconciled
@@ -44,13 +58,14 @@ import (
 // break after a successful reconciliation.
 //
 // Idempotency. A second run reconciles 0 and appends nothing: after the first
-// run every entry matches a stored record, so none is unreconciled. That relies
-// on the replayed record carrying its ORIGINAL IdempotencyKey -- Append treats
-// it as a no-op -- and on the record the caller's lookup returns being used
-// verbatim, never rebuilt or re-keyed. It also relies on the scheme's invariant
-// that the returned record's ID is the entry's correlation ID; a lookup that
-// returns a record under a different ID would not satisfy GapBreaks and would
-// be re-attempted (harmlessly, as an Append no-op) on the next run.
+// run every reconciled entry matches a stored record, so none is unreconciled.
+// That relies on the replayed record carrying its ORIGINAL IdempotencyKey --
+// Append treats it as a no-op -- and on the record the caller's lookup returns
+// being used verbatim, never rebuilt or re-keyed. It also relies on the
+// scheme's invariant that the returned record's ID is the entry's correlation
+// ID; a lookup that returns a record under a different ID, or whose key is
+// already stored under a different ID, does not reconcile the entry and is
+// skipped (see above), leaving it to be re-attempted on the next run.
 //
 // Errors. ReplayGaps reports rather than swallows:
 //   - ctx cancelled: returns the count reconciled so far and the wrapped
@@ -123,6 +138,19 @@ func (w *AuditWriter) ReplayGaps(
 		if err != nil {
 			return reconciled, fmt.Errorf(
 				"interceptor: replay gaps: append record %s: %w", rec.ID, err)
+		}
+		// Append returning a nil error is NOT proof the entry's record was
+		// stored: Append is a keyed no-op that returns the EXISTING record's
+		// ID. The entry is reconciled -- and earns a marker -- only when the
+		// returned ID is the one GapBreaks matches on, record.RecordID(e.
+		// CorrelationID). When it is not, the append stored nothing that
+		// accounts for this entry, so SKIP it: do not count it, do not append a
+		// marker, and do not error. The entry stays unreconciled and visible to
+		// `notary verify` (ledger.GapBreaks) -- the loud channel here -- and
+		// the run continues with the other entries, so one bad Lookup result
+		// cannot block the rest.
+		if id != record.RecordID(e.CorrelationID) {
+			continue
 		}
 		// Mark only what was actually reconciled, and only after the append
 		// succeeded: a marker that lied about reconciliation would be worse

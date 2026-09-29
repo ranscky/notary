@@ -302,8 +302,9 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 	}
 
 	contentHash := contentHashOf(res.Memory.Memory)
+	derivedID := derivedRecordID(correlationID, rank)
 	rec := record.Record{
-		ID:         derivedRecordID(correlationID, rank),
+		ID:         derivedID,
 		At:         at,
 		RecordedAt: at,
 		Event:      record.EventMemorySurfaced,
@@ -315,9 +316,24 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 		},
 		Content: &record.Content{Text: res.Memory.Memory},
 	}
-	// A memory_surfaced record has no Mem0 event id, so the correlation ID
-	// carries the identifier for the key.
-	rec.IdempotencyKey = idemKey(record.EventMemorySurfaced, record.ReasonReturnedBySearch, m.scope, "", correlationID, contentHash)
+	// The key must identify THIS record, not merely the search it belongs to.
+	// Every result of one search shares the correlation ID, and two results may
+	// carry identical memory text -- hence an identical content hash -- so
+	// keying on (correlationID, contentHash) would collapse them: Append would
+	// treat the second as a duplicate, return the first record's ID with a nil
+	// error, and write nothing -- the exact silent loss Task 18's Ruling R41
+	// exists to prevent. The record's derived ID (correlationID plus its 1-based
+	// "#rank" suffix) IS its identity and varies with rank even when the text
+	// does not, so it is the identifier the key is built from: identical text at
+	// different ranks derives different keys.
+	//
+	// The Mem0 memory ID (res.ID) travels on the record's Subject and is
+	// deliberately NOT folded into the key: like an add's response event id, it
+	// is response data, and keying on it would make deduplication depend on the
+	// response (see the add_recorded reasoning in observeAdd) rather than on the
+	// logical operation. The derived ID already distinguishes every record of a
+	// single search, so it is sufficient and stable across a retry.
+	rec.IdempotencyKey = idemKey(record.EventMemorySurfaced, record.ReasonReturnedBySearch, m.scope, "", string(derivedID), contentHash)
 	m.write(rec)
 }
 
@@ -354,8 +370,11 @@ func (m *Mem0Interceptor) write(rec record.Record) {
 // The identifier is the caller's correlation ID (eventID is empty): it
 // identifies the logical operation and is stable across a retry, whereas the
 // identifiers Mem0 returns are response data and would make deduplication
-// depend on the response. For memory_surfaced records the correlation ID
-// carries the identifier, since a surfaced record has no event id of its own.
+// depend on the response. A memory_surfaced record has no event id of its own,
+// so it carries its DERIVED record ID (correlationID + "#" + rank) as the
+// identifier instead -- the record's own identity, which distinguishes
+// records even when two results of one search share identical text and so an
+// identical digest.
 //
 // It is deliberately total. The caller's correlation ID is validated
 // non-empty before any Mem0 call (ErrMissingCorrelationID), and DeriveIdemKey

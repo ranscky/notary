@@ -166,6 +166,69 @@ func TestReplayGapsLookupMissLeavesGapUnreconciled(t *testing.T) {
 	assert.Len(t, after, 1, "a miss appends no marker")
 }
 
+// TestReplayGapsKeyedNoOpIsNotClaimedReconciled is Defect I2's regression.
+// Append returning a nil error is NOT proof that the entry's record was stored:
+// Append is a keyed no-op that returns the EXISTING record's ID. When lookup
+// returns a record whose idempotency key already exists under a DIFFERENT
+// record ID, nothing new is stored, the gap entry still matches no record, and
+// ReplayGaps must not claim -- or record -- a reconciliation that never
+// happened. The disagreement must stay visible to `notary verify`
+// (ledger.GapBreaks), and one bad lookup result must not error or block the run.
+func TestReplayGapsKeyedNoOpIsNotClaimedReconciled(t *testing.T) {
+	const corr = record.RecordID("rec-y")
+	w, l, orig, gapPath := recordGapWhileBroken(t, corr)
+
+	// A DIFFERENT record already carries the key the replay will reuse, so the
+	// replay's Append is a keyed no-op that resolves to rec-x.
+	const other = record.RecordID("rec-x")
+	const sharedKey = record.IdemKey("shared-idem-key")
+	prior := validRecord(t, other, nil)
+	prior.IdempotencyKey = sharedKey
+	_, err := l.Append(prior)
+	require.NoError(t, err, "the colliding record is stored under rec-x")
+
+	// Lookup hands back the missing record, but keyed under the key rec-x
+	// already owns.
+	orig.IdempotencyKey = sharedKey
+	lookup := func(c string) (record.Record, bool) {
+		if c == string(corr) {
+			return orig, true
+		}
+		return record.Record{}, false
+	}
+
+	before, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	require.Len(t, before, 1, "the broken write logged exactly one gap entry")
+
+	n, err := w.ReplayGaps(context.Background(), lookup)
+	require.NoError(t, err, "a keyed no-op is a skipped entry, not an error")
+	assert.Equal(t, 0, n, "a keyed no-op reconciles nothing")
+
+	// No new record: rec-x (from setup) is the only one; rec-y was never
+	// stored.
+	recs := replayList(t, l)
+	require.Len(t, recs, 1, "the keyed no-op stores no new record")
+	_, err = l.GetRecord(corr)
+	assert.Error(t, err, "rec-y is still absent from the ledger")
+
+	// No marker claiming a reconciliation that never happened.
+	after, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	assert.Len(t, after, 1, "no reconciliation marker is appended for a keyed no-op")
+
+	// The disagreement stays VISIBLE: GapBreaks still reports the entry.
+	breaks := ledger.GapBreaks(after, recs)
+	require.Len(t, breaks, 1,
+		"the still-unreconciled gap entry must surface as a break")
+	assert.Equal(t, corr, breaks[0].RecordID)
+
+	// The gap log's own chain stays intact.
+	chainBreaks, err := gap.Verify(gapPath)
+	require.NoError(t, err)
+	assert.Empty(t, chainBreaks, "the gap log's own chain must stay valid")
+}
+
 // TestReplayGapsHonoursContextCancellation pins that a cancelled context stops
 // the run before it reconciles anything and surfaces the wrapped error.
 func TestReplayGapsHonoursContextCancellation(t *testing.T) {

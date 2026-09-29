@@ -191,6 +191,27 @@ func twoResultSearchBody(t *testing.T) []byte {
 	return out
 }
 
+// identicalTextSearchBody takes the single recorded search result and
+// duplicates it with a distinct id and score but IDENTICAL memory text,
+// producing a two-result response. Identical text is the case that collapsed
+// two memory_surfaced records into one when the idempotency key was derived
+// from the search's content hash alone (Defect I1): both results share the
+// content hash, so both derived the same key.
+func identicalTextSearchBody(t *testing.T) []byte {
+	t.Helper()
+	var resp mem0.SearchResponse
+	require.NoError(t, json.Unmarshal(fixture(t, "search_response.json"), &resp))
+	require.Len(t, resp.Results, 1)
+	second := resp.Results[0]
+	second.ID = "second-memory-id"
+	// Memory text deliberately left IDENTICAL to the first result.
+	second.Score = 0.5
+	resp.Results = append(resp.Results, second)
+	out, err := json.Marshal(resp)
+	require.NoError(t, err)
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // DeriveCorrelationID (Ruling B/C)
 // ---------------------------------------------------------------------------
@@ -390,6 +411,71 @@ func TestSearchZeroResultsWritesOnlyPerformed(t *testing.T) {
 	require.Len(t, recs, 1, "the zero-results case writes only the search_performed record")
 	assert.Equal(t, record.EventSearchPerformed, recs[0].Event)
 	assert.Equal(t, record.RecordID("corr-empty"), recs[0].ID)
+}
+
+// TestSearchIdenticalTextResultsGetDistinctKeys is Defect I1's regression. Two
+// results of ONE search carrying IDENTICAL memory text must produce TWO
+// memory_surfaced records. Keying on the search's content hash alone collapsed
+// them into one: Ledger.Append treated the second as a duplicate, returned the
+// first record's ID with a nil error, and wrote nothing -- a silent loss that
+// left the search_performed evidence (count: 2) disagreeing with a ledger
+// holding a single surfaced record. The fix keys each surfaced record on its
+// own derived ID (correlationID + "#" + rank), so identical text at different
+// ranks derives different keys.
+func TestSearchIdenticalTextResultsGetDistinctKeys(t *testing.T) {
+	l, _, g, gapPath := newHarness(t)
+	body := identicalTextSearchBody(t)
+	srv := serve(t, &capture{}, http.StatusOK, body)
+
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	scope := record.Scope{UserID: "notary-fixture-user-a1b2c3"}
+	ic := library.New(mem0.NewClient(srv.URL, "k", nil), interceptor.NewAuditWriter(l, g, nil), scope, fixedNow(at))
+
+	resp, err := ic.Search(context.Background(), "corr-dup", mem0.SearchRequest{Query: "q"})
+	require.NoError(t, err)
+	require.Len(t, resp.Results, 2)
+
+	recs := listAll(t, l, at)
+	require.Len(t, recs, 3,
+		"a two-result search stores search_performed plus TWO memory_surfaced records")
+	assert.Equal(t, []string{"corr-dup", "corr-dup#1", "corr-dup#2"}, ids(recs),
+		"the primary record carries the correlation ID; each surfaced record adds a 1-based rank suffix")
+
+	// The two surfaced records share their memory text -- exactly the case
+	// that collided -- but must be distinct records with distinct IDs and
+	// distinct idempotency keys.
+	s1, err := l.GetRecord("corr-dup#1")
+	require.NoError(t, err)
+	s2, err := l.GetRecord("corr-dup#2")
+	require.NoError(t, err)
+	require.NotNil(t, s1.Content)
+	require.NotNil(t, s2.Content)
+	assert.Equal(t, s1.Content.Text, s2.Content.Text,
+		"the two results share identical memory text")
+	assert.NotEqual(t, s1.ID, s2.ID, "the two surfaced records have distinct IDs")
+	assert.NotEmpty(t, s1.IdempotencyKey, "every surfaced record carries a derived key")
+	assert.NotEmpty(t, s2.IdempotencyKey, "every surfaced record carries a derived key")
+	assert.NotEqual(t, s1.IdempotencyKey, s2.IdempotencyKey,
+		"identical text at different ranks must not derive the same idempotency key")
+
+	// The stored search_performed evidence agrees with the ledger it describes.
+	performed, err := l.GetRecord("corr-dup")
+	require.NoError(t, err)
+	penv := decodeReason(t, performed)
+	assert.EqualValues(t, 2, payloadMap(t, penv)["count"],
+		"the search_performed evidence says two results came back")
+	assert.Len(t, recs, 3, "and the ledger holds all three records")
+
+	entries, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "a healthy write logs no gap")
+
+	// Idempotency survives the fix: re-running the SAME search (same
+	// correlation ID, same body) adds NO new records.
+	_, err = ic.Search(context.Background(), "corr-dup", mem0.SearchRequest{Query: "q"})
+	require.NoError(t, err)
+	assert.Len(t, listAll(t, l, at), 3,
+		"a retried search with the same correlation ID must dedupe and add nothing")
 }
 
 // ---------------------------------------------------------------------------
