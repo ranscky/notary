@@ -66,14 +66,29 @@ func gapKey(kind record.EventType, scope record.Scope, correlationID string) str
 // remaining fields -- Field ("decode", "hash", "chain", or "counter") and
 // Detail -- are carried across unchanged.
 //
+// A truncation break (Field "truncation") has no file line: it reports that a
+// line is missing, so gap.VerifyAgainstCheckpoint leaves Line at its zero value.
+// Folding "line 0:" into that Detail would print the nonsense "gap log line 0"
+// to the auditor, so the prefix is added only when Line is positive. A
+// truncation break therefore carries its Detail through unchanged, while every
+// other break -- which always has a real 1-based line -- is prefixed exactly as
+// before.
+//
 // It is a pure function over its input and never panics.
 func GapIntegrityBreaks(gapBreaks []gap.Break) []Break {
 	breaks := make([]Break, 0, len(gapBreaks))
 	for _, b := range gapBreaks {
+		// Line is 1-based; 0 means "no file line" (a truncation break), so do
+		// not claim one. Every real break has Line >= 1 and is prefixed as
+		// before.
+		detail := b.Detail
+		if b.Line > 0 {
+			detail = fmt.Sprintf("gap log line %d: %s", b.Line, b.Detail)
+		}
 		breaks = append(breaks, Break{
 			Seq:    b.Counter,
 			Field:  b.Field,
-			Detail: fmt.Sprintf("gap log line %d: %s", b.Line, b.Detail),
+			Detail: detail,
 		})
 	}
 	return breaks

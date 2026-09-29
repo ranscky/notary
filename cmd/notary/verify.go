@@ -331,10 +331,26 @@ func writeCheckpoint(out io.Writer, cfg *config.Config, l *ledger.Ledger, path s
 // side effect, which is acceptable here because writing a checkpoint is an
 // operational action on a log we own. The audit path (--gap-checkpoint) instead
 // reads read-only and never uses Open.
+//
+// gap.Open opens the file with O_CREATE, so opening the log here would
+// manufacture an empty gap log as a side effect of a write that then fails on
+// an empty log -- turning the healthy "no gap log ever existed" state into the
+// semantically different "an empty gap log exists" state, and stranding a stray
+// file. So the path is stat'd first: when no log exists there is no head to
+// attest to, and that error is returned without opening (and so without
+// creating) the file. Any other result -- a log that exists, or an unexpected
+// stat failure -- falls through to the original open, so behaviour is unchanged
+// whenever a log legitimately exists.
 func writeGapCheckpoint(out io.Writer, cfg *config.Config, logPath, path string) error {
 	sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: cfg.SigningKeyEnv})
 	if err != nil {
 		return fmt.Errorf("loading signing key from %s: %w", cfg.SigningKeyEnv, err)
+	}
+	if _, statErr := os.Stat(logPath); errors.Is(statErr, os.ErrNotExist) {
+		// Mirror the error gap.(*Log).Checkpoint returns for an empty log,
+		// without opening the path and creating it.
+		return fmt.Errorf("creating gap checkpoint: %w",
+			errors.New("gap: checkpoint: gap log is empty, so there is no head to attest to"))
 	}
 	gl, err := gap.Open(logPath)
 	if err != nil {

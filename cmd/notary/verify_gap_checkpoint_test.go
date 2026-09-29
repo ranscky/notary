@@ -190,3 +190,34 @@ func TestRunVerifyWriteGapCheckpointRefusesBrokenLog(t *testing.T) {
 	_, statErr := os.Stat(gcpPath)
 	assert.True(t, os.IsNotExist(statErr), "no checkpoint file must be written for a broken log")
 }
+
+// TestRunVerifyWriteGapCheckpointMissingLogLeavesNoFile locks the no-side-effect
+// contract: --write-gap-checkpoint against a gap log that does not exist must
+// fail AND must not create the file. gap.Open opens with O_CREATE, so opening
+// the absent path as a side effect of a write that then fails would manufacture
+// an empty gap log -- turning the healthy "no gap log ever existed" state into
+// the semantically different "an empty gap log exists" state, and stranding a
+// stray file behind.
+func TestRunVerifyWriteGapCheckpointMissingLogLeavesNoFile(t *testing.T) {
+	sg, pub := newVerifySigner(t)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ledger.db")
+	buildLedger(t, dbPath, sg, 3)
+
+	// No gap log is ever created at this path.
+	gapPath := filepath.Join(dir, "gaps.log")
+	gcpPath := filepath.Join(dir, "gcp.json")
+	cfg := gapCheckpointConfig(t, dbPath, gapPath, writeTrustedKeys(t, pub))
+
+	cmd, _ := newTestVerifyCmd(t)
+	require.NoError(t, cmd.Flags().Set("write-gap-checkpoint", gcpPath))
+	err := runVerify(cmd, cfg, "", "")
+	require.Error(t, err, "writing a gap checkpoint for a missing gap log must exit non-zero")
+
+	_, statErr := os.Stat(gapPath)
+	assert.True(t, os.IsNotExist(statErr),
+		"--write-gap-checkpoint must not create the gap log as a side effect of a failed write")
+	_, cpStatErr := os.Stat(gcpPath)
+	assert.True(t, os.IsNotExist(cpStatErr),
+		"no checkpoint file must be written when the gap log is missing")
+}
