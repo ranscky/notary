@@ -52,3 +52,29 @@ func gapKey(kind record.EventType, scope record.Scope, correlationID string) str
 		scope.UserID + "\x00" + scope.AgentID + "\x00" + scope.AppID + "\x00" + scope.RunID + "\x00" +
 		correlationID
 }
+
+// GapIntegrityBreaks converts the breaks reported by gap.Verify -- failures of
+// the gap log's own hash chain, not of the ledger -- into ledger Breaks, so
+// `notary verify` can surface a corrupt, rewritten, or reordered gap-log line
+// and exit non-zero. Without this, a tampered gap line is invisible to the
+// auditor's command: gap.Read silently skips lines that fail to decode (and
+// checks no hashes), so the cross-check that uses it sees nothing wrong.
+//
+// Mirroring GapBreaks, Seq carries the GAP entry's Counter -- not a ledger
+// sequence -- and a break's own Line, the 1-based line number gap.Verify found
+// it on, is folded into Detail so an operator can locate it in the file. The
+// remaining fields -- Field ("decode", "hash", "chain", or "counter") and
+// Detail -- are carried across unchanged.
+//
+// It is a pure function over its input and never panics.
+func GapIntegrityBreaks(gapBreaks []gap.Break) []Break {
+	breaks := make([]Break, 0, len(gapBreaks))
+	for _, b := range gapBreaks {
+		breaks = append(breaks, Break{
+			Seq:    b.Counter,
+			Field:  b.Field,
+			Detail: fmt.Sprintf("gap log line %d: %s", b.Line, b.Detail),
+		})
+	}
+	return breaks
+}

@@ -139,6 +139,19 @@ func runVerify(cmd *cobra.Command, cfg *config.Config, checkpointPath, writeChec
 		breaks = append(breaks, ledger.GapBreaks(gapEntries, records)...)
 	}
 
+	// Check the gap log's own hash chain. gap.Read above only returns decodable
+	// entries -- it silently skips a line that fails to decode and checks no
+	// hashes -- so a corrupt, rewritten, or reordered gap-log line, the evidence
+	// an attacker would most want to erase, is invisible to the cross-check.
+	// gap.Verify reports exactly those breaks, so they exit non-zero here. A
+	// missing or empty log yields no breaks and no error, so a system that never
+	// logged a gap behaves exactly as before.
+	gapIntegrityBreaks, gverr := gap.Verify(cfg.GapLogPath)
+	if gverr != nil {
+		return fmt.Errorf("verifying gap log %s: %w", cfg.GapLogPath, gverr)
+	}
+	breaks = append(breaks, ledger.GapIntegrityBreaks(gapIntegrityBreaks)...)
+
 	// --write-checkpoint emits a fresh signed checkpoint. It happens only after
 	// the plain walk succeeds, so we never sign an attestation for a chain we
 	// have already found broken.
