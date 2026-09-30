@@ -139,14 +139,21 @@ func TestGetAllCompleteRejectsExcessivePages(t *testing.T) {
 	var requests int
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		mu.Lock()
 		requests++
 		mu.Unlock()
-		next := absoluteNext(r, 2) // always non-null: never reaches a last page
+
+		// A DISTINCT id per page, so the repeated-id guard never fires, and a
+		// stable count, so the count-stability guard never fires. Both guards
+		// are deliberately held off so the only branch that can end this walk
+		// is the page cap — otherwise this test would silently stop testing the
+		// cap. next stays non-null on every page: there is always another page.
+		next := absoluteNext(r, page+1)
 		writeMemPage(t, w, memPage{
 			Count:   1,
 			Next:    &next,
-			Results: []mem0.Memory{{ID: "m1"}},
+			Results: []mem0.Memory{{ID: "m" + strconv.Itoa(page)}},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -156,14 +163,18 @@ func TestGetAllCompleteRejectsExcessivePages(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, mem0.ErrEnumerationIncomplete)
-	assert.False(t, enum.Valid())
+	assert.False(t, enum.Valid(), "a capped walk must not yield a valid enumeration")
+	assert.Nil(t, enum.Items())
 
 	mu.Lock()
 	defer mu.Unlock()
-	// The cap bounds the number of round trips, so the walk terminates rather
-	// than following a non-null next forever.
-	assert.Greater(t, requests, 1, "at least two pages must have been attempted")
-	assert.LessOrEqual(t, requests, 1001, "the page cap must bound the number of requests")
+	// The walk requests exactly maxEnumerationPages pages before the guard
+	// fires, so pinning the exact count makes this the tripwire for the bound:
+	// raising or lowering the cap changes the request count and fails here, and
+	// removing the cap lets the walk follow a non-null next forever (failing on
+	// the test timeout rather than looping silently). maxEnumerationPages is
+	// unexported, so this literal mirrors it.
+	assert.Equal(t, 1000, requests, "the walk must stop after exactly maxEnumerationPages requests")
 }
 
 // TestZeroCompleteEnumerationIsInvalid pins the zero-value hazard: Go permits

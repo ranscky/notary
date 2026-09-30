@@ -289,10 +289,12 @@ writes, and the difference matters. With offset pagination a writer that deletes
 we read can shift offsets so that an item is never returned while the total still matches; a
 delete-plus-insert can even preserve the total while doing so. No count-based check can rule that out,
 and claiming otherwise would be exactly the kind of overstatement this product exists to avoid. So the
-guarantee is: *the enumeration is accepted only if it read a mutually consistent snapshot.* The
-residual risk is a scope being written to during the walk, which is why the check fails closed
-instead of guessing, and why absence claims remain `Reconstructed` with their basis recorded rather
-than being asserted as observed fact.
+guarantee is one direction only: *the enumeration is accepted only if the pages it read do not
+contradict one another.* It is emphatically **not** "a consistent snapshot was read" — the
+delete-at-front/insert-at-back case passes every check while an item is never returned, so pages that
+agree are evidence of consistency, never proof of completeness. The residual risk is a scope being
+written to during the walk, which is why the check fails closed instead of guessing, and why absence
+claims remain `Reconstructed` with their basis recorded rather than being asserted as observed fact.
 
 The existing one-page `GetAll` stays exactly as it is, with its misleading comment corrected, because
 the tests rely on it and "return one page" is a truthful description of the HTTP contract.
