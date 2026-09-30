@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -362,7 +363,8 @@ func TestReconcileFailureWritesNoGapAndLeavesChain(t *testing.T) {
 	baseURL := errorStatusServer(t, http.StatusInternalServerError)
 
 	cmd, _ := newTestReconcileCmd(t)
-	cfg := &config.Config{DBPath: dbPath, Mem0APIKey: "test-key", Mem0BaseURL: baseURL, SigningKeyEnv: verifyKeyEnv, ReconcileMode: reconcile.ReconcileCommand}
+	gapPath := filepath.Join(t.TempDir(), "gaps.log")
+	cfg := &config.Config{DBPath: dbPath, Mem0APIKey: "test-key", Mem0BaseURL: baseURL, SigningKeyEnv: verifyKeyEnv, ReconcileMode: reconcile.ReconcileCommand, GapLogPath: gapPath}
 	err := runReconcile(cmd, cfg)
 	require.Error(t, err, "a Mem0 outage must exit non-zero (spec §9.2)")
 
@@ -384,4 +386,12 @@ func TestReconcileFailureWritesNoGapAndLeavesChain(t *testing.T) {
 				"a failed pass must not invent an audit_gap (spec §9.2)")
 		}
 	}
+
+	// Stronger than the row check above, and what closes the gap: the pass must
+	// not even CREATE the gap-log file. Today the command never opens it, so
+	// asserting the file is absent checks the absence of a whole code path, not
+	// just of one row -- it would catch a future regression that added a gap
+	// writer on the failure path.
+	_, statErr := os.Stat(gapPath)
+	assert.True(t, os.IsNotExist(statErr), "a failed pass must not create the gap log: %v", statErr)
 }

@@ -48,7 +48,8 @@ func newReconcileCmd() *cobra.Command {
 			"printing one line per claim. It is a one-shot pass meant to be scheduled.\n" +
 			"\n" +
 			"Every pass is a pure function of the ledger and Mem0's current state and\n" +
-			"keys its claims on their subject and rule, never on the run, so re-running\n" +
+			"keys its claims on their subject and reason kind -- the rule version,\n" +
+			"where a rule justifies the inference -- never on the run, so re-running\n" +
 			"against an unchanged store appends nothing. It is not fail-open: a store or\n" +
 			"Mem0 error exits non-zero, and it writes no audit gap on failure.\n" +
 			"\n" +
@@ -174,12 +175,15 @@ func runReconcile(cmd *cobra.Command, cfg *config.Config) error {
 		return nil
 	}
 
-	for _, rec := range claims {
+	for i, rec := range claims {
 		id, aerr := l.Append(rec)
 		if aerr != nil {
 			// Each append is its own transaction, so a mid-pass failure leaves
-			// a consistent chain; no rollback and no audit_gap is written.
-			return fmt.Errorf("appending claim %s: %w", rec.ID, aerr)
+			// a consistent chain; no rollback and no audit_gap is written. i is
+			// how many claims this pass already appended before the failure, so
+			// the error reports how far the pass got rather than naming only the
+			// claim that failed.
+			return fmt.Errorf("appending claim %s (after %d appended): %w", rec.ID, i, aerr)
 		}
 		fmt.Fprintf(out, "claimed %s %s\n", rec.Event, id)
 	}

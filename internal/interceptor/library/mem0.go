@@ -205,7 +205,7 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 		return
 	}
 
-	contentHash := mem0.ContentHash(messages...)
+	contentHash := record.ContentHash(messages...)
 	rec := record.Record{
 		ID:         record.RecordID(correlationID),
 		At:         at,
@@ -265,7 +265,7 @@ func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.Sear
 		return
 	}
 
-	contentHash := mem0.ContentHash(q.Query)
+	contentHash := record.ContentHash(q.Query)
 	rec := record.Record{
 		ID:         record.RecordID(correlationID),
 		At:         at,
@@ -296,7 +296,7 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 		return
 	}
 
-	contentHash := mem0.ContentHash(res.Memory.Memory)
+	contentHash := record.ContentHash(res.Memory.Memory)
 	derivedID := derivedRecordID(correlationID, rank)
 	rec := record.Record{
 		ID:         derivedID,
@@ -422,11 +422,11 @@ func messagesToWire(messages []string) []mem0.Message {
 	return out
 }
 
-// contentHashOf and its domain tag now live in internal/mem0 as
-// mem0.ContentHash: the leaf package both this interceptor and the Phase 5
-// reconciler already depend on, so the content-hash scheme has a single
-// definition rather than two copies that could drift. See mem0.ContentHash and
-// internal/mem0/content_test.go.
+// The content-hash scheme now lives in internal/record as record.ContentHash:
+// beside Subject.ContentHash, the field it fills, and alongside record's other
+// domain-separated hashing. That gives the scheme a single definition rather
+// than two copies that could drift. See record.ContentHash and
+// internal/record/content_test.go.
 
 // DeriveCorrelationID derives a stable correlation ID for a caller with no
 // natural one:

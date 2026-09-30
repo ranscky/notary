@@ -30,7 +30,7 @@ func absentKnown(memoryID string, scope record.Scope) knownMemory {
 	return knownMemory{
 		MemoryID:    memoryID,
 		Scope:       scope,
-		ContentHash: mem0.ContentHash("hello world"),
+		ContentHash: record.ContentHash("hello world"),
 		Basis:       record.RecordID("memory_kept:stored_by_mem0:" + memoryID),
 		At:          fixedTime,
 	}
@@ -48,7 +48,7 @@ func searchRecord(t *testing.T, id string, scope record.Scope, p mem0.SearchPerf
 		RecordedAt: at,
 		Event:      record.EventSearchPerformed,
 		Reason:     observedReason(t, record.ReasonSearchPerformed, p),
-		Subject:    record.Subject{Scope: scope, ContentHash: mem0.ContentHash(p.Query)},
+		Subject:    record.Subject{Scope: scope, ContentHash: record.ContentHash(p.Query)},
 	}
 }
 
@@ -67,7 +67,7 @@ func surfacedRecord(t *testing.T, searchID string, rank int, memoryID string, sc
 		Subject: record.Subject{
 			MemoryID:    memoryID,
 			Scope:       scope,
-			ContentHash: mem0.ContentHash("surfaced " + memoryID),
+			ContentHash: record.ContentHash("surfaced " + memoryID),
 		},
 	}
 }
@@ -272,7 +272,7 @@ func TestAbsentNotClaimedForAMemoryThatWasNeverKnown(t *testing.T) {
 		Subject: record.Subject{
 			MemoryID:    "mem-ghost",
 			Scope:       absentScope,
-			ContentHash: mem0.ContentHash("ghost"),
+			ContentHash: record.ContentHash("ghost"),
 		},
 	}
 	// ...and a saturated search in the same scope, which would cover the ghost

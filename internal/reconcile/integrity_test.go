@@ -101,7 +101,7 @@ func addResolvedSeed(t *testing.T, id, eventID, memoryID string, scope record.Sc
 		Subject: record.Subject{
 			MemoryID:    memoryID,
 			Scope:       scope,
-			ContentHash: mem0.ContentHash("hello world"),
+			ContentHash: record.ContentHash("hello world"),
 		},
 	}
 }

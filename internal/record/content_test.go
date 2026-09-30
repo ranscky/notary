@@ -1,4 +1,4 @@
-package mem0
+package record
 
 import (
 	"encoding/hex"
@@ -9,18 +9,22 @@ import (
 
 // TestContentHashGoldenBytes pins the EXACT hex digest ContentHash produces.
 //
-// This is the SINGLE pin for Notary's subject content hash. It was moved into
-// internal/mem0 precisely so one test covers both sides: the interceptor writes
-// these bytes onto every record's Subject.ContentHash, and the reconciler
-// compares a listed memory's digest against an add's submitted text. Before the
-// move each side had its own copy of the scheme, so a drift on one side left the
-// other's tests green while kept_by_content_match silently stopped matching.
-// Now a drift on either side fails here.
+// This is the SINGLE pin for Notary's subject content hash. It lives in
+// internal/record beside the scheme itself, so one test covers both sides: the
+// interceptor writes these bytes onto every record's Subject.ContentHash, and
+// the reconciler compares a listed memory's digest against an add's submitted
+// text. The scheme and its pin were moved here together, out of internal/mem0
+// (a thin REST client that should not import the audit model to name a return
+// type). Before either move each side had its own copy of the scheme, so a
+// drift on one side left the other's tests green while kept_by_content_match
+// silently stopped matching. Now a drift on either side fails here.
 //
 // The expected values are the frozen wire contract: they are the bytes already
 // written into signed ledgers, so they must never change without a migration.
-// "hello world" is a single part; ["ab","c"] is multi-part; the empty-part cases
-// pin that a zero-length part still contributes its length prefix.
+// They are byte-for-byte the values this test asserted before the scheme moved
+// out of internal/mem0. "hello world" is a single part; ["ab","c"] is
+// multi-part; the empty-part cases pin that a zero-length part still
+// contributes its length prefix.
 func TestContentHashGoldenBytes(t *testing.T) {
 	hexOf := func(parts ...string) string {
 		h := ContentHash(parts...)

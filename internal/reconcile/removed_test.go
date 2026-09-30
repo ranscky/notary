@@ -147,7 +147,7 @@ func removedKnown(memoryID string) knownMemory {
 	return knownMemory{
 		MemoryID:    memoryID,
 		Scope:       removedScope,
-		ContentHash: mem0.ContentHash("hello world"),
+		ContentHash: record.ContentHash("hello world"),
 		Basis:       record.RecordID("memory_kept:stored_by_mem0:" + memoryID),
 		At:          fixedTime,
 	}
@@ -163,7 +163,7 @@ func ledgerKept(t *testing.T, memoryID string, scope record.Scope) record.Record
 		RecordedAt: fixedTime,
 		Event:      record.EventMemoryKept,
 		Reason:     observedReason(t, record.ReasonStoredByMem0, mem0.Memory{ID: memoryID, Memory: "hello world", UserID: scope.UserID}),
-		Subject:    record.Subject{MemoryID: memoryID, Scope: scope, ContentHash: mem0.ContentHash("hello world")},
+		Subject:    record.Subject{MemoryID: memoryID, Scope: scope, ContentHash: record.ContentHash("hello world")},
 	}
 }
 
@@ -527,7 +527,7 @@ func TestRemovedRejectsKnownMemoryFromAnotherScope(t *testing.T) {
 	otherKnown := knownMemory{
 		MemoryID:    "mem-other",
 		Scope:       otherScope,
-		ContentHash: mem0.ContentHash("hello world"),
+		ContentHash: record.ContentHash("hello world"),
 		Basis:       record.RecordID("memory_kept:stored_by_mem0:mem-other"),
 		At:          fixedTime,
 	}

@@ -69,17 +69,17 @@ func errorEnumerationClient(t *testing.T) *mem0.Client {
 	return mem0.NewClient(srv.URL, "test-key", nil)
 }
 
-// The fixture digests come from the SHARED scheme, mem0.ContentHash, which both
+// The fixture digests come from the SHARED scheme, record.ContentHash, which both
 // the interceptor and this reconciler now call. They are deliberately NOT
-// re-pinned as literals here: internal/mem0/content_test.go is the single place
+// re-pinned as literals here: internal/record/content_test.go is the single place
 // that pins the scheme's exact bytes, so one test covers both sides and a drift
 // cannot leave this file green while the shared scheme has moved. (helloWorldHash
 // is the digest of the text both the add and the listed memory carry;
 // differentMemoryHash is an unrelated digest, used to prove the id match takes
 // precedence over the content match.)
 var (
-	helloWorldHash      = mem0.ContentHash("hello world")
-	differentMemoryHash = mem0.ContentHash("a different memory")
+	helloWorldHash      = record.ContentHash("hello world")
+	differentMemoryHash = record.ContentHash("a different memory")
 )
 
 // firstKept calls resolveKept with a pre-built complete enumeration and requires
@@ -142,7 +142,7 @@ func TestKeptObservedWhenMemoryIDMatches(t *testing.T) {
 	assert.Equal(t, keptScope, rec.Subject.Scope)
 	assert.Equal(t, "mem-1", rec.Subject.MemoryID)
 	assert.Equal(t, helloWorldHash, rec.Subject.ContentHash,
-		"the subject content hash is the LISTED memory's digest, via the shared mem0.ContentHash scheme")
+		"the subject content hash is the LISTED memory's digest, via the shared record.ContentHash scheme")
 	assert.Equal(t, record.RecordID("memory_kept:stored_by_mem0:mem-1"), rec.ID,
 		"the record id is qualified by the reason kind, as records.id is UNIQUE while duplicate suppression matches only the idempotency key")
 	assert.Equal(t, fixedTime, rec.At, "At is the add event's time")

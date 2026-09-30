@@ -163,8 +163,9 @@ This is the **core ledger and the reconciler: phases 1–5** of the design, comp
   ledger cannot observe directly: it polls Mem0 for unresolved adds, enumerates a scope to classify
   memories as kept or removed, and reads recorded searches to classify a memory the search did not
   return as dropped. It is bounded by `--since` (on each record's event time, not its write time) and
-  the four scope flags, supports `--dry-run`, and keys every derived claim on its subject and rule
-  rather than on the run, so re-running it against an unchanged store appends nothing. Every
+  the four scope flags, supports `--dry-run`, and keys every derived claim on its subject and reason
+  kind (the rule version, where a rule justifies the inference) rather than on the run, so re-running
+  it against an unchanged store appends nothing. Every
   inference is named by a rule in a versioned registry. `notary reconcile` is the first command to
   consume `NOTARY_MEM0_API_KEY`.
 

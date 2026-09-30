@@ -10,13 +10,13 @@ import (
 	"notary/internal/record"
 )
 
-// The content digest is mem0.ContentHash, which lives in internal/mem0 -- the
-// leaf package both this reconciler and internal/interceptor/library already
-// depend on -- so the scheme has ONE definition. It must be the same scheme the
-// interceptor used to compute the add record's Subject.ContentHash, or the
-// comparison below can never fire and kept_by_content_match would silently stop
-// matching, a failure that looks exactly like "nothing happened". That is why
-// the scheme was not duplicated here: see mem0.ContentHash and its golden test.
+// The content digest is record.ContentHash, which lives in internal/record
+// beside Subject.ContentHash -- the field the digest fills -- so the scheme has
+// ONE definition. It must be the same scheme the interceptor used to compute
+// the add record's Subject.ContentHash, or the comparison below can never fire
+// and kept_by_content_match would silently stop matching, a failure that looks
+// exactly like "nothing happened". That is why the scheme was not duplicated
+// here: see record.ContentHash and its golden test.
 
 // scopeFilters projects a record.Scope onto the mem0.Filters an enumeration
 // takes. Entity ids must travel nested in "filters" (mem0.Filters), never at
@@ -155,11 +155,11 @@ func keptRecords(km knownMemory, scope record.Scope, memories []mem0.Memory, at 
 
 	for _, m := range memories {
 		// The submitted text digest is km.ContentHash (the add record's
-		// Subject.ContentHash). Comparing it against mem0.ContentHash(m.Memory)
+		// Subject.ContentHash). Comparing it against record.ContentHash(m.Memory)
 		// requires the interceptor's exact scheme, now shared (see
-		// mem0.ContentHash). A zero km.ContentHash cannot match: SHA-256 never
+		// record.ContentHash). A zero km.ContentHash cannot match: SHA-256 never
 		// produces the zero digest.
-		if km.ContentHash != (record.Hash{}) && mem0.ContentHash(m.Memory) == km.ContentHash {
+		if km.ContentHash != (record.Hash{}) && record.ContentHash(m.Memory) == km.ContentHash {
 			reconstructed, err := buildKeptReconstructed(km, scope, m, at)
 			if err != nil {
 				return nil, err
@@ -193,7 +193,7 @@ func buildKeptObserved(scope record.Scope, m mem0.Memory, at time.Time) (record.
 		return record.Record{}, fmt.Errorf("resolve kept: build observed reason for %s: %w", m.ID, err)
 	}
 
-	contentHash := mem0.ContentHash(m.Memory)
+	contentHash := record.ContentHash(m.Memory)
 	// No rule justifies an observation, so the rule version is empty; the key is
 	// still a pure function of (kind, reasonKind, memoryID, contentHash) and
 	// stable across passes.
@@ -237,7 +237,7 @@ func buildKeptReconstructed(km knownMemory, scope record.Scope, m mem0.Memory, a
 		return record.Record{}, fmt.Errorf("resolve kept: build reconstructed reason for %s: %w", m.ID, err)
 	}
 
-	contentHash := mem0.ContentHash(m.Memory)
+	contentHash := record.ContentHash(m.Memory)
 	// The claim identity is per memory, per rule: the listed memory id, the
 	// content hash and the rule version. Nothing about the run enters it, so a
 	// second pass over an unchanged store derives the identical key and
