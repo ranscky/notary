@@ -278,10 +278,21 @@ details being right, because it verifies completeness instead of assuming it.
    returns an **explicit error** on any mismatch, or when the page cap is hit.
 
 Step 2 is the point. Rather than trusting that the loop followed every page, the enumeration checks
-its result against the number Mem0 itself says should be there. A mismatch means the enumeration is
-incomplete, and an incomplete enumeration must never yield an absence claim — so it fails loudly.
-Failing in that direction is always safe: a spurious error costs a retry, a spurious absence claim
-corrupts the audit trail.
+its result against the number Mem0 itself says should be there, and requires that number to stay
+stable across pages. A mismatch, a page that disagrees with the first page's count, or a repeated
+memory id means the store changed underneath us: completeness cannot be established, so it fails
+loudly. Failing in that direction is always safe — a spurious error costs a retry, a spurious absence
+claim corrupts the audit trail.
+
+**What this check is, stated honestly.** It is a *consistency* check, not immunity to concurrent
+writes, and the difference matters. With offset pagination a writer that deletes near the front while
+we read can shift offsets so that an item is never returned while the total still matches; a
+delete-plus-insert can even preserve the total while doing so. No count-based check can rule that out,
+and claiming otherwise would be exactly the kind of overstatement this product exists to avoid. So the
+guarantee is: *the enumeration is accepted only if it read a mutually consistent snapshot.* The
+residual risk is a scope being written to during the walk, which is why the check fails closed
+instead of guessing, and why absence claims remain `Reconstructed` with their basis recorded rather
+than being asserted as observed fact.
 
 The existing one-page `GetAll` stays exactly as it is, with its misleading comment corrected, because
 the tests rely on it and "return one page" is a truthful description of the HTTP contract.

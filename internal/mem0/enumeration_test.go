@@ -214,3 +214,72 @@ func TestGetAllSendsPagingAsQueryParametersNotBody(t *testing.T) {
 	assert.Contains(t, query, "page=3")
 	assert.Contains(t, query, "page_size=200")
 }
+
+// TestGetAllCompleteRejectsCountDrift reproduces the reviewer's counterexample.
+// With 201 memories and page_size 200: page 1 reports count=201 and serves 200
+// memories; a deletion at the front then makes page 2 report count=200 and
+// serve nothing. Reading count only from the LAST page would see 200 collected
+// against 200 reported and accept a listing that never returned the memory at
+// index 200 — a fabricated absence. The first page's count is the snapshot
+// total, so the drift must surface as ErrEnumerationIncomplete with nothing
+// usable returned.
+func TestGetAllCompleteRejectsCountDrift(t *testing.T) {
+	page1 := make([]mem0.Memory, 200)
+	for i := range page1 {
+		page1[i] = mem0.Memory{ID: "m" + strconv.Itoa(i)}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		switch page {
+		case 1:
+			next := absoluteNext(r, 2)
+			writeMemPage(t, w, memPage{Count: 201, Next: &next, Results: page1})
+		default:
+			// The count drifted down to 200 (a front deletion) while this page
+			// serves nothing: the store changed under the walk.
+			writeMemPage(t, w, memPage{Count: 200, Results: []mem0.Memory{}})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	enum, err := c.GetAllComplete(context.Background(), mem0.GetAllRequest{})
+
+	require.Error(t, err, "a page disagreeing with the first page's count must not certify completeness")
+	assert.ErrorIs(t, err, mem0.ErrEnumerationIncomplete)
+	assert.False(t, enum.Valid())
+	assert.Nil(t, enum.Items())
+}
+
+// TestGetAllCompleteRejectsRepeatedID pins the duplicate direction explicitly.
+// The counts stay consistent (4 on both pages) and the collected length matches
+// the count (4), so only the repeated id reveals the race: an insertion at the
+// front shifted m2 from the tail of page 1 onto page 2. De-duplication is what
+// catches this; a repeated id means the walk has no trustworthy account of the
+// scope, so it must error with nothing usable returned.
+func TestGetAllCompleteRejectsRepeatedID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		switch page {
+		case 1:
+			next := absoluteNext(r, 2)
+			writeMemPage(t, w, memPage{Count: 4, Next: &next, Results: []mem0.Memory{{ID: "m1"}, {ID: "m2"}}})
+		case 2:
+			// m2 was on page 1 and is served again: an insert at the front
+			// pushed it forward.
+			writeMemPage(t, w, memPage{Count: 4, Results: []mem0.Memory{{ID: "m2"}, {ID: "m3"}}})
+		default:
+			writeMemPage(t, w, memPage{Count: 4, Results: []mem0.Memory{}})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	enum, err := c.GetAllComplete(context.Background(), mem0.GetAllRequest{})
+
+	require.Error(t, err, "a repeated memory id must not certify completeness")
+	assert.ErrorIs(t, err, mem0.ErrEnumerationIncomplete)
+	assert.False(t, enum.Valid())
+	assert.Nil(t, enum.Items())
+}
