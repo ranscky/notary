@@ -233,14 +233,56 @@ signed records.
 
 ## 7. The exhaustiveness guarantee
 
-`internal/mem0` gains a paginating enumeration that follows `next` until exhaustion, with a page cap
-that returns an **explicit error** rather than a short slice when the cap is hit. A silently truncated
-enumeration is the one outcome that must be impossible, because it converts "we did not look
-everywhere" into a false claim of absence.
+### 7.1 How Mem0 paginates (verified against primary sources)
 
-**The guarantee is enforced in the type system.** Absence rules take a `CompleteEnumeration` value
-that only the paginating call can construct. An incomplete or single-page listing therefore cannot be
-passed to an absence rule: the invalid claim does not compile.
+The client as written cannot paginate at all: `GetAllRequest` carries only `Filters`, so there is no
+way to ask for a second page. Its comment — "`Next` and `Previous` are opaque cursors" — is also
+wrong about the wire format.
+
+Per Mem0's official API reference and the `get-memories.mdx` source, `POST /v3/memories/` paginates by
+**offset, through URL query parameters**:
+
+| Parameter | Rules |
+|---|---|
+| `page` | integer, **1-indexed**, minimum 1 |
+| `page_size` | integer, 1–200; a community MCP wrapper reports the default as 10 |
+
+`next` and `previous` are **ready-to-follow full URLs**, not cursor tokens, and `count` is the
+**total number of memories matching the filters** — not the size of the current page.
+
+Source: <https://docs.mem0.ai/api-reference/memory/get-memories> and
+<https://github.com/mem0ai/mem0/blob/3e6ab394/docs/api-reference/memory/get-memories.mdx>.
+
+Two caveats, recorded deliberately. The query-parameter mechanism, the `count` semantics, and the
+URL form of `next` are corroborated by Mem0's own documentation. The default `page_size` of 10 comes
+from a third-party wrapper and is **not** relied on. And this project's own history is the reason for
+saying so: in Phase 3, five documented response-shape guesses were proven wrong by recording real
+fixtures. Nothing here is re-guessed silently — the design below does not depend on any of these
+details being right, because it verifies completeness instead of assuming it.
+
+### 7.2 Completeness is proven, not assumed
+
+`internal/mem0` gains a paginating enumeration. It:
+
+1. Requests `page_size` at the documented maximum (200) to minimise round trips, iterating `page`
+   until `next` is null, under a page cap.
+2. **Verifies `len(collected) == count`** — the authoritative total Mem0 reports for the filter — and
+   returns an **explicit error** on any mismatch, or when the page cap is hit.
+
+Step 2 is the point. Rather than trusting that the loop followed every page, the enumeration checks
+its result against the number Mem0 itself says should be there. A mismatch means the enumeration is
+incomplete, and an incomplete enumeration must never yield an absence claim — so it fails loudly.
+Failing in that direction is always safe: a spurious error costs a retry, a spurious absence claim
+corrupts the audit trail.
+
+The existing one-page `GetAll` stays exactly as it is, with its misleading comment corrected, because
+the tests rely on it and "return one page" is a truthful description of the HTTP contract.
+
+### 7.3 The guarantee is enforced in the type system
+
+Absence rules take a `CompleteEnumeration` value that only the paginating call can construct. An
+incomplete or single-page listing therefore cannot be passed to an absence rule: the invalid claim
+does not compile.
 
 This mirrors the trick already used for `VisibilityTier`, where three constructors with disjoint
 evidence types make "record a guess as a fact" unrepresentable. The same reasoning applies here — the
