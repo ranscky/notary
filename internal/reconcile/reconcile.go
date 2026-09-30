@@ -101,9 +101,10 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 	}
 
 	// Stage 3 -- coverage candidates (§9.1.3). resolveAbsent, implemented in
-	// absent.go, claims a memory_dropped for each known memory a saturated
-	// search in scope covers. It needs no Mem0 client.
-	produced, err := rc.resolveAbsent(wl.known, wl.searches)
+	// absent.go, claims a memory_dropped for each known memory a COVERING search
+	// (saturated AND not returning the memory) in scope covers. It needs no Mem0
+	// client.
+	produced, err := rc.resolveAbsent(wl.known, wl.searches, wl.surfaced)
 	if err != nil {
 		return nil, fmt.Errorf("reconcile: resolve absent: %w", err)
 	}

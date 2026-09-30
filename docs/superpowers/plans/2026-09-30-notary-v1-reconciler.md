@@ -524,6 +524,19 @@ Emits `EventMemoryDropped` + `ReasonAbsentFromSearch`, `Reconstructed`, rule `ab
 
 **The saturation predicate is the whole rule:** claim only when `search.Count < search.TopK`. When the result set was truncated by `top_k`, absence proves nothing and no claim is written. Read `TopK` and `Count` from the `searchPerformedPayload`.
 
+> **Corrected after execution — this instruction was WRONG, and it caused a Critical defect.** Saturation
+> is necessary but NOT sufficient, so "the saturation predicate is the whole rule" is logically unsound.
+> A saturated search returns everything above the threshold, so a memory such a search *returned* was
+> above the threshold and did not drop; claiming it was absent contradicts `ReasonAbsentFromSearch`'s own
+> meaning ("a memory expected to surface did not appear in a search's results"). Implemented literally,
+> the rule fabricated an absence claim for **every** known memory that any saturated same-scope search
+> returned — the ordinary list-then-search workflow — and wrote it into a signed, append-only ledger.
+> A reviewer caught it; a RED test now pins it. The real rule is two conditions: the search was
+> **saturated** *and* **did not return the memory**, the second established from the `memory_surfaced`
+> records (IDs `<correlationID>#<rank>`, while the `search_performed` record's ID *is* the correlation
+> ID, so membership is an unambiguous prefix test). The producer's signature also had to grow to carry
+> those surfaced records, which this plan's `resolveAbsent(known, searches)` did not anticipate.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```go

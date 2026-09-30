@@ -36,7 +36,7 @@ This has three instantiations, and none of them is optional:
 
 | Claim | Exhaustiveness proof |
 |---|---|
-| A memory was absent from a search | the search returned **fewer** results than its `top_k`, so the store had nothing further above the threshold to give |
+| A memory was absent from a search | the search returned **fewer** results than its `top_k` — so the store had nothing further above the threshold to give — **and** the memory in question was not among the results it did return |
 | A memory was absent from a listing | **every page** of the enumeration was read |
 | A memory was removed from the store | it is absent from a **complete** enumeration **and** its history shows a `DELETE`/`UPDATE` |
 
@@ -55,7 +55,7 @@ invent one.
 |---|---|---|---|
 | 1 | Operating model | CLI one-shot `notary reconcile`; `InProcess` defined but reserved | A compliance pass should be a schedulable job with its own exit code and logs, not a hidden goroutine inside a customer's application. Matches how `FailClosed` is already defined-and-unused. Scheduling stays in the operator's security domain. |
 | 2 | Rule registry | Closed, code-internal, versioned; not operator-tunable | The inference logic *is* part of the evidence. Operator-tunable inference would let a deployment silently weaken what Notary is willing to claim. |
-| 3 | Covering search | Saturation predicate: claim only when `len(results) < top_k` | When the result set is truncated by `top_k`, absence proves nothing. When it is not, the store genuinely had nothing more above the threshold, so absence is a real fact about the threshold. Computable from the ledger alone — `top_k` and the result count are both already on the `search_performed` record. |
+| 3 | Covering search | Saturation predicate, **plus** non-return: claim only when `len(results) < top_k` **and** the search did not return the memory | When the result set is truncated by `top_k`, absence proves nothing. When it is not, the store genuinely had nothing more above the threshold, so absence is a real fact about the threshold. Computable from the ledger alone — `top_k` and the result count are both already on the `search_performed` record. **Corrected after implementation:** saturation alone is NOT sufficient, and the original wording here ("the saturation predicate") was wrong. A saturated search can still have returned the very memory being claimed absent — a saturated search returns everything above the threshold, so a memory it returned was above the threshold and did not drop. Claiming absence then contradicts the reason kind's own meaning (`ReasonAbsentFromSearch` is "a memory expected to surface did not appear in a search's results"). Non-return is established from the `memory_surfaced` records, whose IDs are `<correlationID>#<rank>` while the `search_performed` record's ID *is* the correlation ID, so membership is a prefix test that cannot be confused by the `#` separator. |
 | 4 | Claim identity | Per memory, keyed on memory id + content hash + rule + rule version | Makes re-running a no-op and keeps the ledger bounded. Also covers memories Notary never watched being added — a large blind spot otherwise. The link back to the originating add survives via the memory id that both the event-status response and `get_all` expose. |
 | 5 | `confidence` | Left unset, and made explicit by **omission** from the encoded reason | See §8. |
 | 6 | Exhaustiveness | Enforced by the type system, not convention | See §7. |
@@ -221,7 +221,7 @@ it justifies, and the tier that implies.
 | Rule | Version | Justifies |
 |---|---|---|
 | `kept_by_content_match` | 1 | memory present in a complete enumeration whose id differs from the add's produced id, but whose content hash equals the submitted text |
-| `absent_from_search` | 1 | known memory absent from a search with `len(results) < top_k` |
+| `absent_from_search` | 1 | known memory absent from a search that was **saturated** (`len(results) < top_k`) **and** did not return that memory |
 | `no_facts_extracted` | 1 | event resolved `SUCCEEDED` with an empty `results` array |
 | `removed_by_mem0` | 1 | absent from a complete enumeration, and history shows `DELETE`/`UPDATE` exposing no reason |
 

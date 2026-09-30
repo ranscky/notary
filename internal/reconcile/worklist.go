@@ -16,8 +16,11 @@ import (
 //
 // The stages are kept apart rather than flattened because later stages consume
 // earlier results: scopes come from memory-bearing records, coverage candidates
-// pair known memories with later same-scope searches, and removal candidates
-// are known memories absent from an enumeration.
+// need the known memories together with the later same-scope searches and the
+// memories those searches returned, and removal candidates are known memories
+// absent from an enumeration. The fold SUPPLIES these lists in ledger order; it
+// does not pair a memory with a search. The producer does that pairing (see
+// resolveAbsent), because only it knows which condition it is applying.
 type worklist struct {
 	// unresolvedAdds are add_requested records whose Mem0 event id has no
 	// corresponding add_resolved (§9.1.1).
@@ -31,6 +34,11 @@ type worklist struct {
 	// searches are the search_performed records that may cover a known memory
 	// (§9.1.3).
 	searches []record.Record
+	// surfaced are the memory_surfaced records, the observed evidence of WHICH
+	// memories each search returned. The producer needs them to refuse a claim
+	// for a memory a search actually returned (see resolveAbsent); the fold only
+	// supplies them, it does not pair them with searches.
+	surfaced []record.Record
 }
 
 // knownMemory is a memory the ledger establishes Notary knows exists: its Mem0
@@ -99,6 +107,7 @@ func buildWorklist(records []record.Record) (worklist, error) {
 	wl.scopes = scopesToEnumerate(records)
 	wl.known = knownMemories(records)
 	wl.searches = searchPerformed(records)
+	wl.surfaced = memorySurfaced(records)
 	return wl, nil
 }
 
@@ -222,6 +231,23 @@ func searchPerformed(records []record.Record) []record.Record {
 	var out []record.Record
 	for _, r := range records {
 		if r.Event == record.EventSearchPerformed {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// memorySurfaced returns the memory_surfaced records, in order.
+//
+// These are the observed evidence of WHICH memories a search returned, and the
+// producer needs them to tell "the covering search did not return this memory"
+// from "it did". Their record id carries the linkage: a memory_surfaced id is
+// "<search correlation id>#<rank>", and the returned memory id is on
+// Subject.MemoryID (see resolveAbsent).
+func memorySurfaced(records []record.Record) []record.Record {
+	var out []record.Record
+	for _, r := range records {
+		if r.Event == record.EventMemorySurfaced {
 			out = append(out, r)
 		}
 	}
