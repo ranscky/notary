@@ -75,8 +75,8 @@ type Config struct {
 	// reconcile.ReconcileInProcess is defined but reserved -- no code path
 	// implements it -- so exposing the mode via the environment would invite an
 	// operator to select a mode this build cannot honour. When InProcess is
-	// implemented, an env override can be added and validated against
-	// reconcile.ReconcileMode.Valid.
+	// implemented, an env override can be added and validated with
+	// reconcile.ReconcileMode.Validate.
 	ReconcileMode reconcile.ReconcileMode
 	// Verbose enables verbose output.
 	Verbose bool

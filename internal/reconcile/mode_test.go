@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"notary/config"
 	"notary/internal/reconcile"
 )
 
@@ -47,22 +46,36 @@ func TestReconcileInProcessIsReservedNotImplemented(t *testing.T) {
 	assert.False(t, zero.Valid())
 }
 
-// TestConfigDefaultsToReconcileCommand verifies LoadFrom defaults the new field
-// to the only mode implemented in v1. There is deliberately no environment
-// variable for it.
-func TestConfigDefaultsToReconcileCommand(t *testing.T) {
-	cfg, err := config.LoadFrom(map[string]string{})
-	require.NoError(t, err)
-	require.NotNil(t, cfg)
-	assert.Equal(t, reconcile.ReconcileCommand, cfg.ReconcileMode)
-	assert.True(t, cfg.ReconcileMode.Valid(), "the default must be a valid mode")
+// TestReconcileModeValidate separates IMPLEMENTATION from VOCABULARY: Valid is
+// the closed-vocabulary check, Validate is the this-build-can-run-it check.
+// Validate is nil only for ReconcileCommand, the one mode v1 implements; the
+// reserved ReconcileInProcess is valid vocabulary (Valid == true) yet Validate
+// rejects it with a matchable sentinel; and an out-of-range or zero value is
+// rejected too, so an unset mode can never be run.
+func TestReconcileModeValidate(t *testing.T) {
+	require.NoError(t, reconcile.ReconcileCommand.Validate(),
+		"ReconcileCommand is the one implemented mode, so Validate must accept it")
 
-	// An environment that names an unknown key leaves the default intact --
-	// there is no env override for ReconcileMode.
-	cfg, err = config.LoadFrom(map[string]string{
-		"NOTARY_RECONCILE_MODE": "in_process",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, reconcile.ReconcileCommand, cfg.ReconcileMode,
-		"there is no env override for ReconcileMode; the default must stand")
+	// InProcess is valid vocabulary but NOT implemented: the two checks must
+	// disagree, and that disagreement is the whole point.
+	assert.True(t, reconcile.ReconcileInProcess.Valid(),
+		"Valid stays vocabulary-only: InProcess is a named mode")
+	err := reconcile.ReconcileInProcess.Validate()
+	require.Error(t, err, "the reserved in-process mode must be rejected")
+	assert.ErrorIs(t, err, reconcile.ErrReconcileInProcessUnimplemented,
+		"the rejection must be the matchable sentinel so a caller can branch on it")
+
+	// An out-of-range value is rejected, and rejected as "invalid", not as the
+	// reserved-mode sentinel.
+	var outOfRange reconcile.ReconcileMode = 99
+	oerr := outOfRange.Validate()
+	require.Error(t, oerr, "an out-of-range mode must be rejected")
+	assert.NotErrorIs(t, oerr, reconcile.ErrReconcileInProcessUnimplemented,
+		"an out-of-range value is not the reserved in-process mode")
+
+	// The zero value is rejected too, so an unset or defaulted mode is never
+	// mistaken for a runnable one.
+	var zero reconcile.ReconcileMode
+	assert.Error(t, zero.Validate(), "the zero value must be rejected")
+	assert.NotErrorIs(t, zero.Validate(), reconcile.ErrReconcileInProcessUnimplemented)
 }

@@ -9,6 +9,7 @@ import (
 
 	"notary/config"
 	"notary/internal/interceptor"
+	"notary/internal/reconcile"
 )
 
 // TestLoadFrom verifies LoadFrom applies documented defaults and that every
@@ -137,5 +138,29 @@ func TestLoadFromFailMode(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, interceptor.FailOpenLoud, cfg.FailMode,
 			"there is no env override for FailMode; the default must stand")
+	})
+}
+
+// TestConfigDefaultsToReconcileCommand verifies Config.ReconcileMode defaults to
+// the only mode implemented in v1 -- reconcile.ReconcileCommand -- and that the
+// default is one this build can actually run. There is deliberately no
+// environment variable for it, so an environment that names an unknown key
+// leaves the default intact. It is the direct peer of TestLoadFromFailMode.
+func TestConfigDefaultsToReconcileCommand(t *testing.T) {
+	t.Run("defaults to ReconcileCommand", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{})
+		require.NoError(t, err)
+		assert.Equal(t, reconcile.ReconcileCommand, cfg.ReconcileMode)
+		require.NoError(t, cfg.ReconcileMode.Validate(),
+			"the default must be a mode this build can run")
+	})
+
+	t.Run("no env var overrides it", func(t *testing.T) {
+		cfg, err := config.LoadFrom(map[string]string{
+			"NOTARY_RECONCILE_MODE": "in_process",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, reconcile.ReconcileCommand, cfg.ReconcileMode,
+			"there is no env override for ReconcileMode; the default must stand")
 	})
 }
