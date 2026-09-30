@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"notary/internal/interceptor"
+	"notary/internal/reconcile"
 )
 
 // Default values applied when the corresponding environment variable is unset.
@@ -66,6 +67,17 @@ type Config struct {
 	// only fail. When FailClosed is implemented, an env override can be added
 	// and validated with interceptor.FailMode.Validate.
 	FailMode interceptor.FailMode
+	// ReconcileMode selects how reconciliation is driven. It defaults to
+	// reconcile.ReconcileCommand, the only mode implemented in v1: a one-shot
+	// pass commanded by the CLI.
+	//
+	// There is deliberately NO environment variable for this field.
+	// reconcile.ReconcileInProcess is defined but reserved -- no code path
+	// implements it -- so exposing the mode via the environment would invite an
+	// operator to select a mode this build cannot honour. When InProcess is
+	// implemented, an env override can be added and validated against
+	// reconcile.ReconcileMode.Valid.
+	ReconcileMode reconcile.ReconcileMode
 	// Verbose enables verbose output.
 	Verbose bool
 }
@@ -92,6 +104,7 @@ func LoadFrom(env map[string]string) (*Config, error) {
 		SigningKeyEnv:   DefaultSigningKeyEnv,
 		TrustedKeysPath: env[EnvTrustedKeysPath],
 		FailMode:        interceptor.FailOpenLoud,
+		ReconcileMode:   reconcile.ReconcileCommand,
 	}
 	return cfg, nil
 }
