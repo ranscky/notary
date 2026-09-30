@@ -113,19 +113,58 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 	}
 
 	// Stage 4 -- removal candidates (§9.1.4). A known memory absent from a
-	// complete enumeration, corroborated against History, yields memory_dropped
-	// (Internal). Task 9 owns this stage, including the per-scope enumeration
-	// that must precede it, so the loop is added there:
+	// COMPLETE enumeration of its scope, whose Mem0 history corroborates the
+	// removal (a DELETE or UPDATE entry), yields memory_dropped (Internal).
 	//
-	//   for _, scope := range wl.scopes {
-	//       e, err := rc.client.GetAllComplete(ctx, mem0.GetAllRequest{Filters: scopeFilters(scope)})
-	//       ...
-	//       produced, err := rc.resolveRemoved(ctx, e, wl.known)
-	//       if out, err = collectStage(out, "resolveRemoved", produced); err != nil { ... }
-	//   }
+	// The enumeration is per scope and is fetched through GetAllComplete -- the
+	// only constructor of a mem0.CompleteEnumeration, whose zero value is
+	// deliberately invalid -- so the producer can never read absence from
+	// anything but a proven-exhaustive listing.
 	//
-	// It is left unwired here so this task makes no Mem0 call and its tests
-	// need only a fake Reader.
+	// knownInScope is passed rather than wl.known: a CompleteEnumeration carries
+	// no scope, so resolveRemoved cannot tell which scope it enumerates and must
+	// be handed exactly the memories of that scope. Comparing a memory in one
+	// scope against another scope's listing says nothing about whether it was
+	// removed.
+	//
+	// Each scope with known memories is enumerated TWICE per pass: once here and
+	// once inside resolveKept (Stage 2). This is not avoidable within this
+	// task's frozen interfaces -- resolveKept's signature (Task 7, kept.go) does
+	// not hand back the enumeration it built, so the two producers cannot share
+	// one walk without changing it. The scope's enumeration is a pure read of
+	// current Mem0 state, so the second walk is a cost, not a correctness
+	// problem; threading one enumeration through both producers is a clean
+	// follow-up.
+	for _, scope := range wl.scopes {
+		scoped := knownInScope(wl.known, scope)
+		if len(scoped) == 0 {
+			// No known memory in this scope is a subject to claim about, so
+			// there is nothing to compare an enumeration against. Mirror
+			// resolveKept and skip the Mem0 call rather than make one with no
+			// possible conclusion.
+			continue
+		}
+		if rc.client == nil {
+			// A nil client is a misconfigured reconciler, not a "nothing to
+			// claim" state (spec §9.2). resolveKept reports this for its own
+			// scope; report it here for a scope that reaches this stage.
+			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: %w", scopeKey(scope), ErrNoMem0Client)
+		}
+		enum, err := rc.client.GetAllComplete(ctx, mem0.GetAllRequest{Filters: scopeFilters(scope)})
+		if err != nil {
+			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: enumerate scope: %w", scopeKey(scope), err)
+		}
+		if !enum.Valid() {
+			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: complete enumeration is invalid", scopeKey(scope))
+		}
+		produced, err := rc.resolveRemoved(ctx, enum, scoped)
+		if err != nil {
+			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: %w", scopeKey(scope), err)
+		}
+		if out, err = collectStage(out, "resolveRemoved", produced); err != nil {
+			return nil, err
+		}
+	}
 
 	return out, nil
 }
@@ -183,7 +222,8 @@ func collectStage(out []record.Record, stage string, produced []record.Record) (
 // resolveAdd (the add-resolution producer, Task 6, spec §5 rows 1-3) is
 // implemented in adds.go; resolveKept (the memory_kept producer, Task 7, spec §5
 // rows 4-5) is implemented in kept.go; resolveAbsent (the absent_from_search
-// producer, Task 8, spec §5 row 6) is implemented in absent.go. Task 9 adds
-// resolveRemoved (the removed_by_mem0 producer, spec §5 row 7), whose seam is
-// left unwired in Reconcile above so this task makes no Mem0 call. The
-// signatures are fixed so each task plugs in without touching Reconcile.
+// producer, Task 8, spec §5 row 6) is implemented in absent.go; and
+// resolveRemoved (the removed_by_mem0 producer, Task 9, spec §5 row 7) is
+// implemented in removed.go. Each is wired into its own stage of Reconcile
+// above. The signatures are fixed so a producer plugs in without the others
+// changing.
