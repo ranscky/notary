@@ -185,9 +185,11 @@ Everything Phase 5 can produce. Nothing outside this table is written by the rec
 | 1 | `add_resolved` | event status terminal **SUCCEEDED** | `stored_by_mem0` | `Observed` |
 | 2 | `add_resolved` | event status terminal **FAILED** | `add_failed` | `Observed` |
 | 3 | `add_resolved` | SUCCEEDED, **zero** memories produced | `no_facts_extracted` | `Reconstructed` |
-| 4 | `memory_kept` | present in a complete enumeration, id matches the add's produced id | `stored_by_mem0` | `Observed` |
+| 4 | `memory_kept` | present in a complete enumeration, and **either** its id matches the add's produced id **or** it was identified by content match (row 5) | `stored_by_mem0` | `Observed` |
 | 5 | `memory_kept` | present in a complete enumeration, **id differs** but content hash matches | `kept_by_content_match` | `Reconstructed` |
-| 6 | `memory_dropped` | known memory absent from a **covering** search | `absent_from_search` | `Reconstructed` |
+| 6 | `memory_dropped` | known memory absent from a **covering** search (saturated **and** did not return it) | `absent_from_search` | `Reconstructed` |
+
+**Rows 4 and 5 fire together, and that is deliberate.** A content match tells us *which* memory the add produced; the memory being present in the enumeration we just read is separately witnessed, so the Observed claim is written in the SAME pass rather than a later one. Writing it later would mean the first re-run appended a record, which is exactly the idempotence promise (`re-running against an unchanged store appends nothing`) this design makes to operators who schedule the command.
 | 7 | `memory_dropped` | absent from a **complete** enumeration, history shows `DELETE`/`UPDATE` | `removed_by_mem0` | `Internal` |
 
 ### 5.1 The `add_resolved` reason kinds (resolves a gap in the parent spec)
