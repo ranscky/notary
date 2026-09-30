@@ -201,7 +201,7 @@ func TestRemovedInternalWhenHistoryShowsDelete(t *testing.T) {
 	)
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.NoError(t, err)
 	require.Len(t, got, 1, "a known memory absent from a complete enumeration and corroborated by history warrants one memory_dropped claim")
 
@@ -240,7 +240,7 @@ func TestRemovedInternalWhenHistoryShowsDelete(t *testing.T) {
 	// The claim identity is per memory, per rule: a second identical call
 	// derives the identical key so ledger.Append suppresses the duplicate.
 	require.NotEmpty(t, rec.IdempotencyKey)
-	again, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	again, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.NoError(t, err)
 	require.Len(t, again, 1)
 	assert.Equal(t, rec.IdempotencyKey, again[0].IdempotencyKey,
@@ -265,7 +265,7 @@ func TestRemovedInternalWhenHistoryShowsUpdate(t *testing.T) {
 	})
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.NoError(t, err)
 	require.Len(t, got, 1, "an UPDATE entry corroborates a removal just as a DELETE does")
 	assert.Equal(t, record.Internal, got[0].Reason.Tier())
@@ -282,7 +282,7 @@ func TestRemovedNotClaimedWhenMemoryIsStillListed(t *testing.T) {
 	)
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.NoError(t, err)
 	assert.Empty(t, got, "a memory still present in the complete enumeration must not be claimed removed")
 	assert.Zero(t, fetcher.historyCallCount(),
@@ -307,7 +307,7 @@ func TestRemovedNotClaimedWhenHistoryShowsOnlyAdd(t *testing.T) {
 	})
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.NoError(t, err)
 	assert.Empty(t, got, "an ADD entry is not a removal: absence from a listing alone must not become a claim")
 }
@@ -318,7 +318,7 @@ func TestRemovedNotClaimedWhenHistoryShowsOnlyAdd(t *testing.T) {
 // absence to read.
 func TestRemovedNotClaimedFromAnIncompleteEnumeration(t *testing.T) {
 	rc := New(&fakeReader{}, nil)
-	got, err := rc.resolveRemoved(context.Background(), mem0.CompleteEnumeration{}, []knownMemory{removedKnown("mem-1")})
+	got, err := rc.resolveRemoved(context.Background(), mem0.CompleteEnumeration{}, removedScope, []knownMemory{removedKnown("mem-1")})
 	require.Error(t, err, "an invalid enumeration is a contract violation to report, not a listing to read absence from")
 	assert.Empty(t, got)
 }
@@ -352,7 +352,7 @@ func TestRemovedPrefersCreatedAtAndFallsBackToUpdatedAt(t *testing.T) {
 			historyDelete("2024-01-01T12:00:00Z", "2024-01-01T12:05:00Z"))
 		rc := New(&fakeReader{}, client)
 
-		got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+		got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC), got[0].At,
@@ -365,7 +365,7 @@ func TestRemovedPrefersCreatedAtAndFallsBackToUpdatedAt(t *testing.T) {
 			historyDelete("", "2024-01-01T12:05:00Z"))
 		rc := New(&fakeReader{}, client)
 
-		got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+		got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, time.Date(2024, 1, 1, 12, 5, 0, 0, time.UTC), got[0].At)
@@ -382,14 +382,14 @@ func TestRemovedFailsLoudlyOnAnUnparseableHistoryTimestamp(t *testing.T) {
 		historyDelete("not-a-timestamp", "2024-01-01T12:05:00Z"))
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.Error(t, err, "an unparseable history timestamp must fail loudly")
 	assert.Empty(t, got, "no claim may be written with an unparseable At")
 
 	// An entry with no timestamp at all is equally a loud failure.
 	client2, _ := removedClient(t, removedPage(), historyDelete("", ""))
 	rc2 := New(&fakeReader{}, client2)
-	got2, err2 := rc2.resolveRemoved(context.Background(), mustEnum(t, client2, removedScope), []knownMemory{known})
+	got2, err2 := rc2.resolveRemoved(context.Background(), mustEnum(t, client2, removedScope), removedScope, []knownMemory{known})
 	require.Error(t, err2, "a corroborating entry with no timestamp must fail loudly")
 	assert.Empty(t, got2)
 }
@@ -403,7 +403,7 @@ func TestRemovedPropagatesHistoryError(t *testing.T) {
 	})
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.Error(t, err, "a History error must fail the pass, not be mistaken for \"no removal\"")
 	var httpErr *mem0.HTTPError
 	require.ErrorAs(t, err, &httpErr, "the underlying Mem0 error must survive wrapping")
@@ -419,7 +419,7 @@ func TestRemovedFailsLoudlyWithoutAClient(t *testing.T) {
 	enum := mustEnum(t, client, removedScope)
 
 	rc := New(&fakeReader{}, nil)
-	got, err := rc.resolveRemoved(context.Background(), enum, []knownMemory{removedKnown("mem-1")})
+	got, err := rc.resolveRemoved(context.Background(), enum, removedScope, []knownMemory{removedKnown("mem-1")})
 	require.Error(t, err, "a nil client is a misconfigured reconciler, not a clean pass")
 	assert.ErrorIs(t, err, ErrNoMem0Client)
 	assert.Empty(t, got)
@@ -439,7 +439,7 @@ func TestRemovedRecordsNoGuessAtWhy(t *testing.T) {
 		historyDelete("2024-01-01T12:00:00Z", "2024-01-01T12:00:00Z"))
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), []knownMemory{known})
+	got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 
@@ -503,4 +503,137 @@ func TestReconcileRemovedIsScopedToTheEnumeratedScope(t *testing.T) {
 	assert.True(t, fetcher.sawHistory("mem-a"), "mem-a's history corroborates its removal")
 	assert.False(t, fetcher.sawHistory("mem-b"),
 		"a still-listed memory in another scope must never have its history consulted for a removal")
+}
+
+// ---------------------------------------------------------------------------
+// Finding 3: resolveRemoved's scope contract is a structural guard.
+// ---------------------------------------------------------------------------
+
+// TestRemovedRejectsKnownMemoryFromAnotherScope pins the guard: a
+// CompleteEnumeration carries no scope, so resolveRemoved is handed the scope it
+// enumerates explicitly and must REJECT any known memory from a different scope
+// rather than compare it against the listing. Comparing a memory in one scope
+// against another scope's enumeration would silently mis-attribute a removal --
+// so the convention is enforced, not merely documented.
+func TestRemovedRejectsKnownMemoryFromAnotherScope(t *testing.T) {
+	// A valid, complete enumeration of removedScope (u1). It is empty, so a
+	// memory IN u1 would be claimed removed -- which makes the guard's effect
+	// (no claim, an error) meaningful.
+	client, _ := removedClient(t, removedPage(),
+		historyDelete("2024-01-01T12:00:00Z", "2024-01-01T12:00:00Z"))
+	enum := mustEnum(t, client, removedScope)
+
+	otherScope := record.Scope{UserID: "u2"}
+	otherKnown := knownMemory{
+		MemoryID:    "mem-other",
+		Scope:       otherScope,
+		ContentHash: mem0.ContentHash("hello world"),
+		Basis:       record.RecordID("memory_kept:stored_by_mem0:mem-other"),
+		At:          fixedTime,
+	}
+	rc := New(&fakeReader{}, client)
+
+	got, err := rc.resolveRemoved(context.Background(), enum, removedScope, []knownMemory{otherKnown})
+	require.Error(t, err, "a known memory from a different scope must be rejected, not compared against this enumeration")
+	assert.ErrorIs(t, err, ErrScopeMismatch, "the rejection must be the matchable ErrScopeMismatch")
+	assert.Empty(t, got, "no claim may be derived for a memory outside the enumerated scope")
+
+	// The SAME memory, handed with its OWN scope, is a legitimate subject (an
+	// absent memory whose history shows a DELETE): the guard fires on the scope
+	// mismatch, not on the memory.
+	got2, err2 := rc.resolveRemoved(context.Background(),
+		mustEnum(t, client, otherScope), otherScope, []knownMemory{otherKnown})
+	require.NoError(t, err2)
+	require.Len(t, got2, 1,
+		"with its own scope the memory is a legitimate removal candidate, proving the guard rejects the mismatch, not the memory")
+}
+
+// ---------------------------------------------------------------------------
+// Finding 4: a parseable-but-ZERO history timestamp is rejected.
+// ---------------------------------------------------------------------------
+
+// TestRemovedFailsLoudlyOnAZeroHistoryTimestamp pins the IsZero guard: Mem0 can
+// return a parseable-but-zero timestamp (0001-01-01T00:00:00Z), which
+// time.Parse accepts but which would date a signed claim at year 1 and hide it
+// from every windowed read -- the exact silent-wrong historyEntryTime warns
+// against. It must fail as loudly as an unparseable timestamp.
+func TestRemovedFailsLoudlyOnAZeroHistoryTimestamp(t *testing.T) {
+	known := removedKnown("mem-1")
+
+	// CreatedAt is the literal zero time.
+	t.Run("zero CreatedAt", func(t *testing.T) {
+		client, _ := removedClient(t, removedPage(),
+			historyDelete("0001-01-01T00:00:00Z", "2024-01-01T12:05:00Z"))
+		rc := New(&fakeReader{}, client)
+
+		got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
+		require.Error(t, err, "a zero CreatedAt must fail loudly, never date a claim at year 1")
+		assert.Empty(t, got, "no claim may be written with a zero At")
+	})
+
+	// The UpdatedAt fallback is guarded too: a zero UpdatedAt is equally a loud
+	// failure.
+	t.Run("zero UpdatedAt fallback", func(t *testing.T) {
+		client, _ := removedClient(t, removedPage(),
+			historyDelete("", "0001-01-01T00:00:00Z"))
+		rc := New(&fakeReader{}, client)
+
+		got, err := rc.resolveRemoved(context.Background(), mustEnum(t, client, removedScope), removedScope, []knownMemory{known})
+		require.Error(t, err, "a zero UpdatedAt fallback must also fail loudly")
+		assert.Empty(t, got)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Finding 2: each scope is enumerated exactly ONCE per pass.
+// ---------------------------------------------------------------------------
+
+// TestReconcileEnumeratesEachScopeOncePerPass pins that resolveKept and
+// resolveRemoved SHARE one enumeration per scope. They used to each call
+// GetAllComplete -- a paginated Mem0 walk up to a 1000-page bound -- doubling
+// network and rate-limit cost per scope and, worse, letting a write that landed
+// between the two walks yield BOTH a stored_by_mem0 and a removed_by_mem0 claim
+// about the same memory in one pass. This counts the get_all requests: exactly
+// one per pass for a scope that both producers consider.
+func TestReconcileEnumeratesEachScopeOncePerPass(t *testing.T) {
+	scope := record.Scope{UserID: "u1"}
+
+	var mu sync.Mutex
+	enumCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/memories/":
+			mu.Lock()
+			enumCalls++
+			mu.Unlock()
+			// A complete, EMPTY listing: resolveKept claims nothing, and
+			// resolveRemoved consults mem-1's history for a possible removal.
+			writeRemovedJSON(w, enumPage{Count: 0, Results: nil})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/memories/"):
+			// ADD-only history: absence from the listing alone does not
+			// corroborate a removal, so resolveRemoved claims nothing.
+			writeRemovedJSON(w, mem0.HistoryResponse{{
+				ID:        "hist-1",
+				MemoryID:  "mem-1",
+				NewMemory: strPtr("hello world"),
+				Event:     "ADD",
+				CreatedAt: "2024-01-01T12:00:00Z",
+			}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := mem0.NewClient(srv.URL, "test-key", nil)
+
+	r := &fakeReader{records: []record.Record{ledgerKept(t, "mem-1", scope)}}
+	rc := New(r, client)
+
+	_, err := rc.Reconcile(context.Background(), Window{})
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, enumCalls,
+		"each scope must be enumerated exactly ONCE per pass, shared by resolveKept and resolveRemoved")
 }

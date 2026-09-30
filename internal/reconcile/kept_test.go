@@ -82,11 +82,13 @@ var (
 	differentMemoryHash = mem0.ContentHash("a different memory")
 )
 
-// firstKept calls resolveKept and requires it to yield exactly one record that
-// ledger.Append would accept (a valid claim).
-func firstKept(t *testing.T, rc *Reconciler, scope record.Scope, known []knownMemory) record.Record {
+// firstKept calls resolveKept with a pre-built complete enumeration and requires
+// it to yield exactly one record that ledger.Append would accept (a valid
+// claim). The content-match path yields TWO records and is asserted directly in
+// TestKeptReconstructedWhenOnlyContentHashMatches rather than through here.
+func firstKept(t *testing.T, rc *Reconciler, scope record.Scope, enum mem0.CompleteEnumeration, known []knownMemory) record.Record {
 	t.Helper()
-	got, err := rc.resolveKept(context.Background(), scope, known)
+	got, err := rc.resolveKept(scope, enum, known)
 	require.NoError(t, err)
 	require.Len(t, got, 1, "expected exactly one produced memory_kept record")
 	require.NoError(t, got[0].Validate(), "the produced record must be a valid claim the caller can append")
@@ -99,6 +101,17 @@ var keptScope = record.Scope{UserID: "u1"}
 // keptAddRecordID is the id of the add_resolved record that produced the
 // fixture memory; it is the basis a reconstructed claim rests on.
 const keptAddRecordID = record.RecordID("add_resolved:stored_by_mem0:evt-1")
+
+// enumerateKeptScope builds the complete enumeration of keptScope through c --
+// the only constructor of a CompleteEnumeration -- so a producer test never
+// hand-writes one.
+func enumerateKeptScope(t *testing.T, c *mem0.Client) mem0.CompleteEnumeration {
+	t.Helper()
+	enum, err := c.GetAllComplete(context.Background(), mem0.GetAllRequest{Filters: scopeFilters(keptScope)})
+	require.NoError(t, err)
+	require.True(t, enum.Valid())
+	return enum
+}
 
 // ---------------------------------------------------------------------------
 // Spec §5 rows 4-5: memory_kept from a complete enumeration of the scope.
@@ -118,8 +131,9 @@ func TestKeptObservedWhenMemoryIDMatches(t *testing.T) {
 	}
 	client := enumerationClient(t, completePage(listed))
 	rc := New(&fakeReader{}, client)
+	enum := enumerateKeptScope(t, client)
 
-	rec := firstKept(t, rc, keptScope, []knownMemory{known})
+	rec := firstKept(t, rc, keptScope, enum, []knownMemory{known})
 
 	assert.Equal(t, record.EventMemoryKept, rec.Event)
 	assert.Equal(t, record.ReasonStoredByMem0, rec.Reason.Kind())
@@ -143,14 +157,30 @@ func TestKeptObservedWhenMemoryIDMatches(t *testing.T) {
 	assert.Equal(t, listed.Memory, back.Memory)
 
 	assert.NotEmpty(t, rec.IdempotencyKey)
-	assert.Equal(t, rec.IdempotencyKey, firstKept(t, rc, keptScope, []knownMemory{known}).IdempotencyKey,
+	assert.Equal(t, rec.IdempotencyKey, firstKept(t, rc, keptScope, enum, []knownMemory{known}).IdempotencyKey,
 		"a second identical call must re-derive the identical key so ledger.Append suppresses the duplicate")
+}
+
+// keptOfKind returns the single produced record of the given reason kind.
+func keptOfKind(t *testing.T, recs []record.Record, kind record.ReasonKind) record.Record {
+	t.Helper()
+	var found []record.Record
+	for _, r := range recs {
+		if r.Reason.Kind() == kind {
+			found = append(found, r)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one produced record of kind %q", kind)
+	return found[0]
 }
 
 // TestKeptReconstructedWhenOnlyContentHashMatches covers row 5: the produced id
 // is absent from the complete enumeration, but a listed memory's content hash
 // equals the add's submitted text, so the memory is kept under a different id.
-// The claim is an inference and must say so.
+// The claim is an inference and must say so -- and, because the matched memory
+// is present in the very enumeration being read, the same call ALSO emits the
+// Observed stored_by_mem0 claim for it, so the fixpoint is reached in one pass
+// (see keptRecords).
 func TestKeptReconstructedWhenOnlyContentHashMatches(t *testing.T) {
 	listed := mem0.Memory{ID: "mem-other", Memory: "hello world", UserID: "u1"}
 	known := knownMemory{
@@ -162,8 +192,20 @@ func TestKeptReconstructedWhenOnlyContentHashMatches(t *testing.T) {
 	}
 	client := enumerationClient(t, completePage(listed))
 	rc := New(&fakeReader{}, client)
+	enum := enumerateKeptScope(t, client)
 
-	rec := firstKept(t, rc, keptScope, []knownMemory{known})
+	got, err := rc.resolveKept(keptScope, enum, []knownMemory{known})
+	require.NoError(t, err)
+	require.Len(t, got, 2,
+		"a content match emits BOTH the Reconstructed inference and the Observed presence of the matched memory, so the fixpoint is reached in one pass")
+
+	rec := keptOfKind(t, got, record.ReasonKeptByContentMatch)
+	observed := keptOfKind(t, got, record.ReasonStoredByMem0)
+	assert.Equal(t, record.EventMemoryKept, observed.Event)
+	assert.Equal(t, record.Observed, observed.Reason.Tier(),
+		"the matched memory is present in the enumeration being read, so its presence is an Observed fact")
+	assert.Equal(t, "mem-other", observed.Subject.MemoryID)
+	assert.Equal(t, record.RecordID("memory_kept:stored_by_mem0:mem-other"), observed.ID)
 
 	assert.Equal(t, record.EventMemoryKept, rec.Event)
 	assert.Equal(t, record.ReasonKeptByContentMatch, rec.Reason.Kind())
@@ -203,7 +245,9 @@ func TestKeptReconstructedWhenOnlyContentHashMatches(t *testing.T) {
 		"confidence is left at ZERO, which the encoding omits rather than rendering as \"0% confident\"")
 
 	assert.NotEmpty(t, rec.IdempotencyKey)
-	assert.Equal(t, rec.IdempotencyKey, firstKept(t, rc, keptScope, []knownMemory{known}).IdempotencyKey,
+	again, err := rc.resolveKept(keptScope, enum, []knownMemory{known})
+	require.NoError(t, err)
+	assert.Equal(t, rec.IdempotencyKey, keptOfKind(t, again, record.ReasonKeptByContentMatch).IdempotencyKey,
 		"a second identical call must re-derive the identical key")
 }
 
@@ -221,25 +265,46 @@ func TestKeptWritesNothingWhenMemoryIsNeitherMatchedNorPresent(t *testing.T) {
 	}
 	client := enumerationClient(t, completePage(listed))
 	rc := New(&fakeReader{}, client)
+	enum := enumerateKeptScope(t, client)
 
-	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
+	got, err := rc.resolveKept(keptScope, enum, []knownMemory{known})
 	require.NoError(t, err, "a memory that is neither present nor content-matched is a clean non-event, not an error")
 	assert.Empty(t, got, "nothing may be claimed when the memory is neither matched nor present")
 }
 
-// TestKeptOnlyClaimsFromACompleteEnumeration is the load-bearing test for
-// requirement 1: a first page that omits the memory while COUNT reports it
-// exists cannot certify the scope exhaustive, so the pass must ERROR and write
-// NO memory_kept claim at all. An incomplete read must never look like a
-// (smaller) complete scope.
-func TestKeptOnlyClaimsFromACompleteEnumeration(t *testing.T) {
-	known := knownMemory{
+// ---------------------------------------------------------------------------
+// The shared enumeration step (Finding 2). resolveKept and resolveRemoved no
+// longer fetch anything; enumerateScopes is now the ONE place a scope is walked
+// per pass. The enumeration-failure coverage that used to live on resolveKept
+// moves here with the code. enumerateScopes is exercised again end to end by
+// TestNoAbsenceClaimIsProducedFromAnIncompleteEnumeration and
+// TestReconcileRemovedFailsOnAnIncompleteEnumeration.
+// ---------------------------------------------------------------------------
+
+// scopesWorklist builds a worklist whose single scope is keptScope and whose
+// known memories are known, so enumerateScopes will walk keptScope.
+func scopesWorklist(known ...knownMemory) worklist {
+	return worklist{scopes: []record.Scope{keptScope}, known: known}
+}
+
+// knownInKeptScope is a known memory in keptScope, so a scope becomes a subject
+// for enumeration.
+func knownInKeptScope() knownMemory {
+	return knownMemory{
 		MemoryID:    "mem-produced",
 		Scope:       keptScope,
 		ContentHash: helloWorldHash,
 		Basis:       keptAddRecordID,
 		At:          fixedTime,
 	}
+}
+
+// TestEnumerateScopesOnlyClaimsFromACompleteEnumeration is the load-bearing test
+// for requirement 1: a first page that omits a memory while COUNT reports it
+// exists cannot certify the scope exhaustive, so the walk must ERROR and return
+// NO enumeration. An incomplete read must never look like a (smaller) complete
+// scope.
+func TestEnumerateScopesOnlyClaimsFromACompleteEnumeration(t *testing.T) {
 	// The first page reports count 1 (the memory exists) but serves no results
 	// and no next page: the walk collects 0 of a reported 1.
 	client := enumerationClient(t, func(int, *http.Request) enumPage {
@@ -247,62 +312,54 @@ func TestKeptOnlyClaimsFromACompleteEnumeration(t *testing.T) {
 	})
 	rc := New(&fakeReader{}, client)
 
-	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
+	enums, err := rc.enumerateScopes(context.Background(), scopesWorklist(knownInKeptScope()))
 
 	require.Error(t, err, "an enumeration that disagrees with its own count must fail the pass loudly")
 	assert.ErrorIs(t, err, mem0.ErrEnumerationIncomplete, "the incomplete-enumeration error must survive wrapping")
-	assert.Empty(t, got, "no memory_kept claim may be derived from an incomplete enumeration")
+	assert.Empty(t, enums, "no enumeration may be returned from an incomplete walk")
 }
 
-// TestKeptPropagatesEnumerationError pins that a Mem0 outage fails loudly and
-// emits nothing, so it can never be mistaken for a memory that is absent.
-func TestKeptPropagatesEnumerationError(t *testing.T) {
-	known := knownMemory{
-		MemoryID:    "mem-produced",
-		Scope:       keptScope,
-		ContentHash: helloWorldHash,
-		Basis:       keptAddRecordID,
-		At:          fixedTime,
-	}
+// TestEnumerateScopesPropagatesEnumerationError pins that a Mem0 outage fails
+// loudly and returns nothing, so it can never be mistaken for an absent memory.
+func TestEnumerateScopesPropagatesEnumerationError(t *testing.T) {
 	rc := New(&fakeReader{}, errorEnumerationClient(t))
 
-	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
+	enums, err := rc.enumerateScopes(context.Background(), scopesWorklist(knownInKeptScope()))
 
 	require.Error(t, err, "a Mem0 outage must fail loudly, never be misread as an absent memory")
 	var httpErr *mem0.HTTPError
 	require.ErrorAs(t, err, &httpErr, "the underlying Mem0 error must survive wrapping")
 	assert.Equal(t, http.StatusInternalServerError, httpErr.StatusCode)
-	assert.Empty(t, got, "no record may be emitted on a Mem0 error")
+	assert.Empty(t, enums, "no enumeration may be returned on a Mem0 error")
 }
 
-// TestKeptFailsLoudlyWithoutAClient mirrors resolveAdd: a nil Mem0 client is a
-// misconfigured reconciler, not a "nothing to claim" state.
-func TestKeptFailsLoudlyWithoutAClient(t *testing.T) {
-	known := knownMemory{
-		MemoryID:    "mem-produced",
-		Scope:       keptScope,
-		ContentHash: helloWorldHash,
-		Basis:       keptAddRecordID,
-		At:          fixedTime,
-	}
+// TestEnumerateScopesFailsLoudlyWithoutAClient mirrors resolveAdd: a nil Mem0
+// client is a misconfigured reconciler, not a "nothing to claim" state.
+func TestEnumerateScopesFailsLoudlyWithoutAClient(t *testing.T) {
 	rc := New(&fakeReader{}, nil)
 
-	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
+	enums, err := rc.enumerateScopes(context.Background(), scopesWorklist(knownInKeptScope()))
 
 	require.Error(t, err, "a nil client is a misconfigured reconciler, not a clean pass")
 	assert.ErrorIs(t, err, ErrNoMem0Client)
-	assert.Empty(t, got)
+	assert.Empty(t, enums)
 }
 
-// TestKeptDoesNotEnumerateWhenNoMemoryIsKnown pins the early exit: with no known
-// memory in the scope there is no subject to claim about, so the producer must
+// TestEnumerateScopesSkipsScopeWithNoKnownMemory pins the early exit: with no
+// known memory in the scope there is no subject to claim about, so the walk must
 // not make a Mem0 call at all (proved here by a nil client, which would
 // otherwise fail the pass loudly).
-func TestKeptDoesNotEnumerateWhenNoMemoryIsKnown(t *testing.T) {
+func TestEnumerateScopesSkipsScopeWithNoKnownMemory(t *testing.T) {
 	other := knownMemory{MemoryID: "mem-other", Scope: record.Scope{UserID: "u2"}, ContentHash: testHash(0x33), Basis: "r-other"}
 	rc := New(&fakeReader{}, nil)
 
-	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{other})
-	require.NoError(t, err, "a scope with no known memory has nothing to resolve and must not touch Mem0")
+	enums, err := rc.enumerateScopes(context.Background(), scopesWorklist(other))
+	require.NoError(t, err, "a scope with no known memory has nothing to enumerate and must not touch Mem0")
+	assert.Empty(t, enums)
+
+	// resolveKept likewise writes nothing for a scope with no known memory,
+	// without touching its (invalid) enumeration.
+	got, err := rc.resolveKept(keptScope, mem0.CompleteEnumeration{}, []knownMemory{other})
+	require.NoError(t, err, "a scope with no known memory has nothing to resolve")
 	assert.Empty(t, got)
 }

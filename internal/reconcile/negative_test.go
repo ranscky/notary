@@ -144,7 +144,7 @@ func TestNegativeZeroCompleteEnumerationIsInert(t *testing.T) {
 	// otherwise claim removed. It must error and emit nothing: if it read the
 	// zero value as an empty listing, every memory would look removed.
 	rc := New(&fakeReader{}, nil)
-	got, err := rc.resolveRemoved(context.Background(), zero, []knownMemory{
+	got, err := rc.resolveRemoved(context.Background(), zero, removedScope, []knownMemory{
 		removedKnown("mem-1"),
 	})
 

@@ -1,7 +1,6 @@
 package reconcile
 
 import (
-	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -31,47 +30,38 @@ func scopeFilters(sc record.Scope) mem0.Filters {
 	}
 }
 
-// resolveKept is the memory_kept producer (spec §5 rows 4-5). It takes a scope
-// and the known memories and returns the memory_kept claims a COMPLETE
-// enumeration of that scope warrants, or none.
+// resolveKept is the memory_kept producer (spec §5 rows 4-5). It takes a scope,
+// the COMPLETE enumeration of that scope (already fetched once per pass by
+// Reconcile.enumerateScopes, and shared with resolveRemoved), and the known
+// memories, and returns the memory_kept claims the enumeration warrants, or
+// none.
 //
-// For each known memory in scope, against one complete enumeration of the scope:
+// For each known memory in scope, against the enumeration:
 //
 //	the produced memory id is present -> memory_kept + stored_by_mem0     (Observed)
 //	the id is absent, but a listed memory's content hash equals the
 //	  add's submitted text             -> memory_kept + kept_by_content_match (Reconstructed, rule v1)
+//	                                      AND memory_kept + stored_by_mem0   (Observed) for the matched memory
 //	neither                            -> nothing
 //
 // The enumeration must be COMPLETE, and the type enforces that: absence may only
 // be concluded from a mem0.CompleteEnumeration, which only GetAllComplete can
 // construct. This producer never fabricates one -- it rejects an invalid value
 // loudly -- and a walk that cannot prove itself exhaustive (a count mismatch, a
-// repeated id, the page cap, or a transport error) yields an error and NO
-// memory_kept claim, never a partial conclusion (requirement 1).
+// repeated id, the page cap, or a transport error) fails in Reconcile before it
+// reaches here, yielding an error and NO memory_kept claim, never a partial
+// conclusion (requirement 1).
 //
 // It writes nothing itself: it returns records whose Seq and Hash are zero, for
 // the caller to append. It never panics.
-func (rc *Reconciler) resolveKept(ctx context.Context, scope record.Scope, known []knownMemory) ([]record.Record, error) {
+func (rc *Reconciler) resolveKept(scope record.Scope, enum mem0.CompleteEnumeration, known []knownMemory) ([]record.Record, error) {
 	scoped := knownInScope(known, scope)
 	if len(scoped) == 0 {
 		// No known memory in this scope is a subject to claim about, so there is
-		// nothing to compare a listing against. Enumerating anyway would be a
-		// Mem0 call with no possible conclusion; skip it rather than require a
-		// client a pass might not need.
+		// nothing to compare the listing against.
 		return nil, nil
 	}
 
-	if rc.client == nil {
-		// A nil client is a misconfigured reconciler, not a "nothing to
-		// claim" state: report it loudly rather than let a broken deployment
-		// look like a clean pass (spec §9.2).
-		return nil, fmt.Errorf("resolve kept for scope %s: %w", scopeKey(scope), ErrNoMem0Client)
-	}
-
-	enum, err := rc.client.GetAllComplete(ctx, mem0.GetAllRequest{Filters: scopeFilters(scope)})
-	if err != nil {
-		return nil, fmt.Errorf("resolve kept for scope %s: enumerate scope: %w", scopeKey(scope), err)
-	}
 	if !enum.Valid() {
 		// GetAllComplete never returns a valid-looking incomplete enumeration,
 		// so an invalid one here is a contract violation, not data. Treat it as
@@ -83,23 +73,23 @@ func (rc *Reconciler) resolveKept(ctx context.Context, scope record.Scope, known
 	var out []record.Record
 	emitted := make(map[record.RecordID]struct{})
 	for _, km := range scoped {
-		rec, ok, err := keptRecord(km, scope, memories, km.At)
+		recs, err := keptRecords(km, scope, memories, km.At)
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
-			continue
+		for _, rec := range recs {
+			// Two known memories can warrant the SAME claim (e.g. two adds
+			// with identical text producing one listed memory, or the id-match
+			// and content-match paths naming one memory). The subject -- and so
+			// the record id -- is identical, so emit it once: a second copy
+			// would be the same claim, and returning it twice would invite a raw
+			// UNIQUE error on records.id.
+			if _, dup := emitted[rec.ID]; dup {
+				continue
+			}
+			emitted[rec.ID] = struct{}{}
+			out = append(out, rec)
 		}
-		// Two known memories can warrant the SAME claim (e.g. two adds with
-		// identical text producing one listed memory). The subject -- and so the
-		// record id -- is identical, so emit it once: a second copy would be the
-		// same claim, and returning it twice would invite a raw UNIQUE error on
-		// records.id.
-		if _, dup := emitted[rec.ID]; dup {
-			continue
-		}
-		emitted[rec.ID] = struct{}{}
-		out = append(out, rec)
 	}
 	return out, nil
 }
@@ -125,19 +115,41 @@ func knownInScope(known []knownMemory, scope record.Scope) []knownMemory {
 // At). Mem0's own CreatedAt/UpdatedAt -- on the event status and on the listed
 // memory -- are deliberately NOT used: neither is when the event happened.
 
-// keptRecord builds the memory_kept claim a single known memory warrants against
-// an already-complete set of listed memories, or ok=false when it warrants none.
+// keptRecords builds the memory_kept claims a single known memory warrants
+// against an already-complete set of listed memories, or nil when it warrants
+// none.
 //
 // The produced id is tried first: an exact id match is the strongest evidence
 // (the very memory Mem0 said it produced is in the listing) and yields the
 // Observed stored_by_mem0 claim, exactly as an add_resolved success does. Only
 // when the id is ABSENT is the content-hash rule consulted -- "absent but
 // content-equal" is an inference, so it is Reconstructed and carries the rule.
-func keptRecord(km knownMemory, scope record.Scope, memories []mem0.Memory, at time.Time) (record.Record, bool, error) {
+//
+// # Two claims from a content match, so the fixpoint is reached in ONE pass
+//
+// A content match names a listed memory as the add's memory. That listing entry
+// was read from the very enumeration in hand, so its PRESENCE is an Observed
+// fact for which the evidence is already in scope -- not something a later pass
+// must discover. The content-match branch therefore emits the Observed
+// stored_by_mem0 claim for the matched memory in the SAME pass, alongside the
+// Reconstructed kept_by_content_match inference.
+//
+// This is what makes the documented promise true. The Reconstructed claim's
+// SUBJECT is the matched memory, so a second pass folds that memory back in as
+// KNOWN; were the Observed claim not emitted now, the second pass would append
+// it -- the first re-run after a content-match discovery would add a record,
+// contradicting "re-running against an unchanged store appends nothing".
+// Emitting both now is truthful (the memory IS in the listing) and loses
+// nothing: the same two records are re-derived, with the same ids and keys, on
+// every later pass.
+func keptRecords(km knownMemory, scope record.Scope, memories []mem0.Memory, at time.Time) ([]record.Record, error) {
 	for _, m := range memories {
 		if m.ID == km.MemoryID {
 			rec, err := buildKeptObserved(scope, m, at)
-			return rec, err == nil, err
+			if err != nil {
+				return nil, err
+			}
+			return []record.Record{rec}, nil
 		}
 	}
 
@@ -148,12 +160,19 @@ func keptRecord(km knownMemory, scope record.Scope, memories []mem0.Memory, at t
 		// mem0.ContentHash). A zero km.ContentHash cannot match: SHA-256 never
 		// produces the zero digest.
 		if km.ContentHash != (record.Hash{}) && mem0.ContentHash(m.Memory) == km.ContentHash {
-			rec, err := buildKeptReconstructed(km, scope, m, at)
-			return rec, err == nil, err
+			reconstructed, err := buildKeptReconstructed(km, scope, m, at)
+			if err != nil {
+				return nil, err
+			}
+			observed, err := buildKeptObserved(scope, m, at)
+			if err != nil {
+				return nil, err
+			}
+			return []record.Record{reconstructed, observed}, nil
 		}
 	}
 
-	return record.Record{}, false, nil
+	return nil, nil
 }
 
 // buildKeptObserved assembles the Observed memory_kept (spec §5 row 4): the

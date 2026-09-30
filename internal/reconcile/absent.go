@@ -198,14 +198,19 @@ func firstCoveringSearch(km knownMemory, searches []record.Record, surfaced []re
 		//
 		//   1. SATURATION: Count < TopK. (top_k == 0 falls out here -- Count is
 		//      never negative, so Count < 0 is false and a zero window is never
-		//      a covering search.)
+		//      a covering search.) This is tested FIRST, and the surfaced-slice
+		//      scan below runs only when it holds, so every non-saturated
+		//      candidate avoids scanning the surfaced slice unnecessarily.
 		//   2. NON-RETURN, PROVEN: the surfaced records tied to this search
 		//      account for exactly Count result memories, and none of them is
 		//      km. A shortfall, a surplus, or no records at all means the ledger
 		//      is inconsistent for this search: non-return is unproven, so the
 		//      claim is withheld and we move on to the next candidate search.
+		if params.Count >= params.TopK {
+			continue
+		}
 		hits := searchSurfaced(s, surfaced)
-		if params.Count < params.TopK && len(hits) == params.Count && !returnedMemory(hits, km.MemoryID) {
+		if len(hits) == params.Count && !returnedMemory(hits, km.MemoryID) {
 			return s, true, nil
 		}
 	}

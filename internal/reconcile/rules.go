@@ -72,7 +72,7 @@ func v1Rules() []Rule {
 			Name:    RuleAbsentFromSearch,
 			Version: ruleVersionV1,
 			Kind:    record.ReasonAbsentFromSearch,
-			Summary: "known memory absent from a search with len(results) < top_k",
+			Summary: "known memory absent from a search that was saturated (len(results) < top_k) and did not return that memory",
 		},
 		{
 			Name:    RuleNoFactsExtracted,

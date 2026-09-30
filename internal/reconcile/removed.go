@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,9 +31,16 @@ const (
 // the tamper-evident chain. A test asserts none of those words appear.
 const removedNote = "absent from a complete enumeration of its scope; Mem0's history records the removal and Mem0 exposed no reason"
 
+// ErrScopeMismatch reports that resolveRemoved was handed a known memory from a
+// scope other than the one its enumeration enumerates. A CompleteEnumeration
+// carries no scope, so this is the structural guard that keeps a removal from
+// being mis-attributed to the wrong scope.
+var ErrScopeMismatch = errors.New("reconcile: known memory scope does not match the enumerated scope")
+
 // resolveRemoved is the removed_by_mem0 producer (spec §5 row 7, §9.1.4). It
-// takes a COMPLETE enumeration of one scope and the known memories, and returns
-// the memory_dropped claims a corroborated removal warrants, or none.
+// takes a COMPLETE enumeration of one scope, that scope, and the known memories,
+// and returns the memory_dropped claims a corroborated removal warrants, or
+// none.
 //
 // For each known memory, against the complete enumeration e:
 //
@@ -62,24 +70,39 @@ const removedNote = "absent from a complete enumeration of its scope; Mem0's his
 // ERRORS fails the whole pass loudly; it is never read as "no removal", which
 // would silently suppress a claim on a transient outage (spec §9.2).
 //
-// # Eligibility is the caller's scope
+// # Eligibility is the caller's scope, enforced structurally
 //
 // e carries no scope (a CompleteEnumeration exposes only its items and count),
-// so the producer cannot tell which scope it enumerates. It therefore trusts
-// known to be EXACTLY the memories of the scope e enumerates, which Reconcile
-// supplies via knownInScope. A memory in another scope must never reach here:
-// it is not absent from e for any meaningful reason, and corroborating its
-// history would manufacture a claim about a scope this enumeration says nothing
-// about.
+// so the producer cannot tell which scope it enumerates from e alone. It is
+// therefore handed that scope explicitly as scope, and it TRUSTS known to be
+// EXACTLY the memories of that scope -- which Reconcile supplies via
+// scope-filtered knownInScope. Passing the wrong set would silently mis-attribute
+// a removal, so this is enforced rather than merely documented: any memory in
+// known whose scope differs from scope is REJECTED with ErrScopeMismatch rather
+// than compared against e. A memory in another scope is not absent from e for
+// any meaningful reason, and corroborating its history would manufacture a claim
+// about a scope this enumeration says nothing about.
 //
 // It never panics and writes nothing itself: it returns records whose Seq and
 // Hash are zero, for the caller to append.
-func (rc *Reconciler) resolveRemoved(ctx context.Context, e mem0.CompleteEnumeration, known []knownMemory) ([]record.Record, error) {
+func (rc *Reconciler) resolveRemoved(ctx context.Context, e mem0.CompleteEnumeration, scope record.Scope, known []knownMemory) ([]record.Record, error) {
 	if !e.Valid() {
 		// GetAllComplete never returns a valid-looking incomplete enumeration,
 		// so an invalid one here is a contract violation, not data. Treat it as
 		// an error rather than a value to read absence from (requirement 1).
 		return nil, fmt.Errorf("resolve removed: complete enumeration is invalid")
+	}
+
+	// Structural guard: a CompleteEnumeration carries no scope, so the caller
+	// must hand exactly the memories of the scope it enumerates. Reject any that
+	// does not match rather than compare a memory across scopes, which would
+	// mis-attribute a removal.
+	for _, km := range known {
+		if km.Scope != scope {
+			return nil, fmt.Errorf(
+				"resolve removed: known memory %s is in scope %s, not the enumerated scope %s: %w",
+				km.MemoryID, scopeKey(km.Scope), scopeKey(scope), ErrScopeMismatch)
+		}
 	}
 
 	listing := listedIDs(e)
@@ -191,11 +214,13 @@ func removalEntry(history mem0.HistoryResponse) (mem0.HistoryEvent, bool) {
 //
 // # Failure is loud, never a wrong date
 //
-// If the chosen timestamp is present but unparseable, or neither field is
-// present, this returns a wrapped error rather than falling back to the memory's
-// event time, the zero time, or the wall clock. A claim dated at the zero time
-// is invisible to any windowed read -- silently wrong in exactly the way this
-// product exists to prevent -- so the pass must fail instead.
+// If the chosen timestamp is present but unparseable, is a literal zero
+// (0001-01-01T00:00:00Z, which time.Parse accepts but which dates the claim at
+// year 1 -- invisible to every windowed read, the exact silent-wrong this rule
+// exists to prevent), or neither field is present, this returns a wrapped error
+// rather than falling back to the memory's event time, the zero time, or the
+// wall clock. A claim dated at the zero time is invisible to any windowed read,
+// so the pass must fail instead.
 func historyEntryTime(entry mem0.HistoryEvent) (time.Time, error) {
 	raw := entry.CreatedAt
 	if raw == "" {
@@ -207,6 +232,12 @@ func historyEntryTime(entry mem0.HistoryEvent) (time.Time, error) {
 	at, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse history timestamp %q: %w", raw, err)
+	}
+	if at.IsZero() {
+		// A parseable-but-zero timestamp (e.g. 0001-01-01T00:00:00Z) would date
+		// a signed claim at year 1 and hide it from every windowed read. Reject
+		// it as loudly as an unparseable one.
+		return time.Time{}, fmt.Errorf("history entry %s carries a zero timestamp %q", entry.ID, raw)
 	}
 	return at, nil
 }

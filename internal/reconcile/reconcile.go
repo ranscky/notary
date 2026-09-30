@@ -88,10 +88,30 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 	}
 
 	// Stage 2 -- scopes to enumerate (§9.1.2), which also yields memory_kept
-	// (§9.1 row 4-5). Task 7 fills resolveKept, which enumerates the scope
-	// completely.
+	// (§9.1 row 4-5).
+	//
+	// Each scope with a known memory is enumerated EXACTLY ONCE per pass, here,
+	// and the resulting CompleteEnumeration is shared by both resolveKept
+	// (Stage 2) and resolveRemoved (Stage 4). Enumerating per producer would
+	// walk the same scope twice -- doubling Mem0 and rate-limit cost -- and,
+	// worse, two SEPARATE walks could straddle a write and yield BOTH a
+	// stored_by_mem0 and a removed_by_mem0 claim about one memory in a single
+	// pass, a within-ledger contradiction. One snapshot is MORE internally
+	// consistent than two, and CompleteEnumeration is immutable with Items()
+	// already returning a copy, so sharing it is safe.
+	enums, err := rc.enumerateScopes(ctx, wl)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile: %w", err)
+	}
+
 	for _, scope := range wl.scopes {
-		produced, err := rc.resolveKept(ctx, scope, wl.known)
+		enum, ok := enums[scopeKey(scope)]
+		if !ok {
+			// No known memory in this scope: enumerateScopes skipped it and
+			// there is nothing to resolve kept for it.
+			continue
+		}
+		produced, err := rc.resolveKept(scope, enum, wl.known)
 		if err != nil {
 			return nil, fmt.Errorf("reconcile: resolve kept for scope %s: %w", scopeKey(scope), err)
 		}
@@ -116,48 +136,27 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 	// COMPLETE enumeration of its scope, whose Mem0 history corroborates the
 	// removal (a DELETE or UPDATE entry), yields memory_dropped (Internal).
 	//
-	// The enumeration is per scope and is fetched through GetAllComplete -- the
-	// only constructor of a mem0.CompleteEnumeration, whose zero value is
-	// deliberately invalid -- so the producer can never read absence from
-	// anything but a proven-exhaustive listing.
+	// The enumeration is the SAME one resolveKept (Stage 2) read -- it is never
+	// re-fetched here -- and it was constructed only by GetAllComplete (the sole
+	// constructor of a mem0.CompleteEnumeration, whose zero value is deliberately
+	// invalid), so the producer can never read absence from anything but a
+	// proven-exhaustive listing.
 	//
-	// knownInScope is passed rather than wl.known: a CompleteEnumeration carries
-	// no scope, so resolveRemoved cannot tell which scope it enumerates and must
-	// be handed exactly the memories of that scope. Comparing a memory in one
-	// scope against another scope's listing says nothing about whether it was
-	// removed.
-	//
-	// Each scope with known memories is enumerated TWICE per pass: once here and
-	// once inside resolveKept (Stage 2). This is not avoidable within this
-	// task's frozen interfaces -- resolveKept's signature (Task 7, kept.go) does
-	// not hand back the enumeration it built, so the two producers cannot share
-	// one walk without changing it. The scope's enumeration is a pure read of
-	// current Mem0 state, so the second walk is a cost, not a correctness
-	// problem; threading one enumeration through both producers is a clean
-	// follow-up.
+	// scope is passed to resolveRemoved as well as the enumeration: a
+	// CompleteEnumeration carries no scope, so the producer cannot tell which
+	// scope it enumerates and must be handed that scope explicitly. It rejects
+	// (see resolveRemoved) any known memory from a different scope, so a removal
+	// can never be mis-attributed. scoped is knownInScope(wl.known, scope):
+	// exactly the memories of the enumerated scope.
 	for _, scope := range wl.scopes {
-		scoped := knownInScope(wl.known, scope)
-		if len(scoped) == 0 {
-			// No known memory in this scope is a subject to claim about, so
-			// there is nothing to compare an enumeration against. Mirror
-			// resolveKept and skip the Mem0 call rather than make one with no
-			// possible conclusion.
+		enum, ok := enums[scopeKey(scope)]
+		if !ok {
+			// No known memory in this scope: nothing to compare the (skipped)
+			// enumeration against.
 			continue
 		}
-		if rc.client == nil {
-			// A nil client is a misconfigured reconciler, not a "nothing to
-			// claim" state (spec §9.2). resolveKept reports this for its own
-			// scope; report it here for a scope that reaches this stage.
-			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: %w", scopeKey(scope), ErrNoMem0Client)
-		}
-		enum, err := rc.client.GetAllComplete(ctx, mem0.GetAllRequest{Filters: scopeFilters(scope)})
-		if err != nil {
-			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: enumerate scope: %w", scopeKey(scope), err)
-		}
-		if !enum.Valid() {
-			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: complete enumeration is invalid", scopeKey(scope))
-		}
-		produced, err := rc.resolveRemoved(ctx, enum, scoped)
+		scoped := knownInScope(wl.known, scope)
+		produced, err := rc.resolveRemoved(ctx, enum, scope, scoped)
 		if err != nil {
 			return nil, fmt.Errorf("reconcile: resolve removed for scope %s: %w", scopeKey(scope), err)
 		}
@@ -167,6 +166,39 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 	}
 
 	return out, nil
+}
+
+// enumerateScopes walks each scope that has a known memory exactly ONCE and
+// returns the resulting complete enumerations keyed by scopeKey.
+//
+// It is called once per pass from Reconcile, and its result is shared by both
+// resolveKept and resolveRemoved, so no scope is ever enumerated twice in one
+// pass. A scope with no known memory is skipped: there is no subject to claim
+// about, so enumerating it would be a Mem0 call with no possible conclusion.
+//
+// A nil client is a misconfigured reconciler, not a "nothing to enumerate"
+// state: it fails loudly (spec §9.2). So does a Mem0 error, and an
+// enumeration that is not Valid -- GetAllComplete never returns a valid-looking
+// incomplete one, so an invalid value here is a contract violation, not data.
+func (rc *Reconciler) enumerateScopes(ctx context.Context, wl worklist) (map[string]mem0.CompleteEnumeration, error) {
+	enums := make(map[string]mem0.CompleteEnumeration)
+	for _, scope := range wl.scopes {
+		if len(knownInScope(wl.known, scope)) == 0 {
+			continue
+		}
+		if rc.client == nil {
+			return nil, fmt.Errorf("enumerate scope %s: %w", scopeKey(scope), ErrNoMem0Client)
+		}
+		enum, err := rc.client.GetAllComplete(ctx, mem0.GetAllRequest{Filters: scopeFilters(scope)})
+		if err != nil {
+			return nil, fmt.Errorf("enumerate scope %s: %w", scopeKey(scope), err)
+		}
+		if !enum.Valid() {
+			return nil, fmt.Errorf("enumerate scope %s: complete enumeration is invalid", scopeKey(scope))
+		}
+		enums[scopeKey(scope)] = enum
+	}
+	return enums, nil
 }
 
 // bounds returns explicit, non-zero bounds for a whole-ledger read, narrowed at

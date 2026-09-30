@@ -211,6 +211,110 @@ func TestSecondPassAppendsZeroRecords(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The fixpoint is reached in ONE pass, including when the first pass discovers a
+// memory by CONTENT MATCH rather than by id.
+// ---------------------------------------------------------------------------
+
+// TestContentMatchSecondPassAppendsZeroRecords pins the headline idempotence
+// property on the content-match path -- the one the id-match fixture does not
+// exercise.
+//
+// Scenario: the add produced mem-produced, which is ABSENT from the complete
+// listing, but a listed memory (mem-other) carries the add's submitted content,
+// so the first pass infers kept_by_content_match for it. That inference's
+// SUBJECT is mem-other, so a second pass folds it back in as a KNOWN memory --
+// and because mem-other IS present in the listing, a producer that only emitted
+// the Reconstructed claim on the first pass would append a fresh Observed
+// stored_by_mem0 claim on the second. The fixpoint would then take TWO passes,
+// breaking the documented promise that re-running against an unchanged store
+// appends nothing.
+//
+// The fix makes the first pass ALSO emit the Observed stored_by_mem0 claim for
+// the matched memory, since that memory is present in the very enumeration being
+// read -- so the fixpoint is reached in one pass. This test asserts BOTH halves
+// so it cannot pass by producing nothing: the second pass DERIVES a non-empty
+// claim set identical to the first, and appending each second-pass claim returns
+// the EXISTING record, leaving Seq, head hash and row count unchanged.
+func TestContentMatchSecondPassAppendsZeroRecords(t *testing.T) {
+	st, l := newIntegrityLedger(t)
+	scope := record.Scope{UserID: "u1"}
+	appendAll(t, l,
+		addResolvedSeed(t, "add_resolved:stored_by_mem0:evt-1", "evt-1", "mem-produced", scope, fixedTime),
+	)
+
+	// mem-produced is absent from the listing; mem-other carries the same
+	// content the add submitted. mem-produced's history is ADD-only, so the
+	// removal stage claims nothing (absence alone is not a removal).
+	client, _ := removedClient(t,
+		removedPage(mem0.Memory{ID: "mem-other", Memory: "hello world", UserID: "u1"}),
+		func(memoryID string) (mem0.HistoryResponse, int) {
+			return mem0.HistoryResponse{{
+				ID:        "hist-1",
+				MemoryID:  memoryID,
+				NewMemory: strPtr("hello world"),
+				Event:     "ADD",
+				CreatedAt: "2024-01-01T12:00:00Z",
+			}}, http.StatusOK
+		},
+	)
+	rc := New(l, client)
+	ctx := context.Background()
+
+	// PASS 1: derive and append everything.
+	first, err := rc.Reconcile(ctx, Window{})
+	require.NoError(t, err)
+	require.NotEmpty(t, first, "the fixture must derive at least one claim, or this test is vacuous")
+
+	// The fixture must actually exercise the content-match branch, or this test
+	// proves nothing about the path it exists to pin.
+	var sawContentMatch bool
+	for _, rec := range first {
+		if rec.ID == record.RecordID("memory_kept:kept_by_content_match:mem-other") {
+			sawContentMatch = true
+		}
+	}
+	require.True(t, sawContentMatch,
+		"the fixture must derive the kept_by_content_match claim, or it does not exercise the content-match path")
+
+	for _, rec := range first {
+		_, err := l.Append(rec)
+		require.NoError(t, err)
+	}
+	headAfterFirst, ok, err := st.Head()
+	require.NoError(t, err)
+	require.True(t, ok)
+	rowsAfterFirst := rowCount(t, st)
+
+	// PASS 2: fold the SAME store and ledger again. It must still DERIVE the
+	// claims (a pass that produced nothing would make "appends nothing"
+	// vacuous), and every derived key must already exist.
+	second, err := rc.Reconcile(ctx, Window{})
+	require.NoError(t, err)
+	require.NotEmpty(t, second,
+		"the second pass must derive a NON-EMPTY claim set: it cannot pass by producing nothing")
+	require.Len(t, second, len(first),
+		"the second pass must DERIVE the same number of claims as the first; the content-match pass must reach the fixpoint in ONE pass")
+	assert.ElementsMatch(t, claimIDs(first), claimIDs(second),
+		"the second pass must re-derive the identical claim set over unchanged state")
+
+	for _, rec := range second {
+		_, present, err := st.ByIdemKey(rec.IdempotencyKey)
+		require.NoError(t, err)
+		require.True(t, present, "every key the second pass derived must already exist")
+		id, err := l.Append(rec)
+		require.NoError(t, err)
+		assert.Equal(t, rec.ID, id, "ledger.Append must return the EXISTING record's id, not write a new one")
+	}
+
+	headAfterSecond, ok, err := st.Head()
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, headAfterFirst.Seq, headAfterSecond.Seq, "the second pass must not advance the chain position")
+	assert.Equal(t, headAfterFirst.Hash, headAfterSecond.Hash, "the second pass must not change the head hash")
+	assert.Equal(t, rowsAfterFirst, rowCount(t, st), "the second pass must append zero rows")
+}
+
+// ---------------------------------------------------------------------------
 // A dry run and the real pass that follows it write exactly the same claims.
 // ---------------------------------------------------------------------------
 
