@@ -187,7 +187,15 @@ func TestWindowScopeFilter(t *testing.T) {
 func TestReconcileReadsWholeLedgerWithNonZeroBounds(t *testing.T) {
 	req := mustAddRequested(t, "r-add-1", "evt-1", fixedTime)
 	r := &fakeReader{records: []record.Record{req}}
-	rc := New(r, nil)
+	// The ledger holds an unresolved add, so the pass now polls Mem0 for it; a
+	// nil client is a misconfigured reconciler that fails loudly, so the test
+	// supplies a working httptest-backed client. The ledger stays non-empty --
+	// the point of the test is that Reconcile reads the WHOLE ledger under
+	// explicit non-zero bounds.
+	client, _ := eventStatusClient(t, staticEventStatus(mem0.EventStatusResponse{
+		ID: "evt-1", Status: "SUCCEEDED", Results: []mem0.EventResult{{ID: "mem-1"}},
+	}))
+	rc := New(r, client)
 
 	// Window.Since is zero (the default). The reconciler must still pass
 	// explicit, non-zero bounds, because the store filters `at >= from AND

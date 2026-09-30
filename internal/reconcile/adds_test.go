@@ -62,6 +62,20 @@ func staticEventStatus(resp mem0.EventStatusResponse) func(string) mem0.EventSta
 	return func(string) mem0.EventStatusResponse { return resp }
 }
 
+// errorStatusClient starts an httptest server that answers every EventStatus
+// request with a non-2xx status and a small JSON error body, so a test can prove
+// a Mem0 outage is reported rather than mistaken for a pending add.
+func errorStatusClient(t *testing.T, status int) *mem0.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":"mem0 outage"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return mem0.NewClient(srv.URL, "test-key", nil)
+}
+
 // resolveOne calls resolveAdd and requires it to yield exactly one record that
 // would be accepted by ledger.Append (a valid claim).
 func resolveOne(t *testing.T, rc *Reconciler, add record.Record) record.Record {
@@ -206,4 +220,60 @@ func TestResolveAddIdempotencyKeyIsEventAndReasonSpecific(t *testing.T) {
 	otherRec := resolveOne(t, New(&fakeReader{}, otherClient), other)
 	assert.NotEqual(t, success.IdempotencyKey, otherRec.IdempotencyKey,
 		"two different event ids must derive different keys")
+}
+
+// TestResolveAddOneEventTwoKindsCoexist pins that BOTH the record id and the
+// idempotency key vary with the reason kind, so two resolutions of the SAME
+// event with different kinds are two records the store can hold side by side.
+// records.id is UNIQUE and duplicate suppression matches only the
+// idempotency_key column, so an id that ignored the kind would make the second
+// append die on a raw SQLite UNIQUE violation while the key was telling the
+// ledger it was a distinct claim.
+func TestResolveAddOneEventTwoKindsCoexist(t *testing.T) {
+	add := mustAddRequested(t, "r-add-1", "evt-1", fixedTime)
+
+	successClient, _ := eventStatusClient(t, staticEventStatus(mem0.EventStatusResponse{
+		ID: "evt-1", Status: "SUCCEEDED", Results: []mem0.EventResult{{ID: "mem-1"}},
+	}))
+	failedClient, _ := eventStatusClient(t, staticEventStatus(mem0.EventStatusResponse{ID: "evt-1", Status: "FAILED"}))
+
+	success := resolveOne(t, New(&fakeReader{}, successClient), add)
+	failed := resolveOne(t, New(&fakeReader{}, failedClient), add)
+
+	require.Equal(t, record.ReasonStoredByMem0, success.Reason.Kind())
+	require.Equal(t, record.ReasonAddFailed, failed.Reason.Kind())
+	assert.NotEqual(t, success.ID, failed.ID,
+		"records.id is UNIQUE, so the two kinds must have distinct ids or the second append fails on id")
+	assert.NotEqual(t, success.IdempotencyKey, failed.IdempotencyKey,
+		"duplicate suppression matches only idempotency_key, so the keys must differ for both to coexist")
+}
+
+// TestResolveAddFailsLoudlyWithoutAClient pins that a nil Mem0 client is a
+// misconfiguration, not a "nothing to resolve" state: it must fail the pass
+// loudly (spec §9.2), never look like a clean pass that found nothing.
+func TestResolveAddFailsLoudlyWithoutAClient(t *testing.T) {
+	add := mustAddRequested(t, "r-add-1", "evt-1", fixedTime)
+	rc := New(&fakeReader{}, nil)
+
+	got, err := rc.resolveAdd(context.Background(), add)
+	require.Error(t, err, "a nil client is a misconfigured reconciler, not a clean pass")
+	assert.ErrorIs(t, err, ErrNoMem0Client)
+	assert.Empty(t, got, "no record may be emitted when the reconciler cannot poll Mem0")
+}
+
+// TestResolveAddPropagatesMem0Error pins that a Mem0 outage fails loudly and
+// emits nothing, so it can never be misread as a not-yet-resolved add.
+func TestResolveAddPropagatesMem0Error(t *testing.T) {
+	add := mustAddRequested(t, "r-add-1", "evt-1", fixedTime)
+	rc := New(&fakeReader{}, errorStatusClient(t, http.StatusInternalServerError))
+
+	got, err := rc.resolveAdd(context.Background(), add)
+	require.Error(t, err, "a Mem0 outage must fail loudly, never be misread as pending")
+	assert.Contains(t, err.Error(), "evt-1", "the wrapped error must name the event it failed to poll")
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr, "the underlying Mem0 error must survive wrapping")
+	assert.Equal(t, http.StatusInternalServerError, httpErr.StatusCode)
+
+	assert.Empty(t, got, "no record may be emitted on a Mem0 error")
 }

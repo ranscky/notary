@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"notary/internal/mem0"
@@ -15,6 +16,14 @@ const (
 	mem0StatusSucceeded = "SUCCEEDED"
 	mem0StatusFailed    = "FAILED"
 )
+
+// ErrNoMem0Client reports that resolveAdd was asked to resolve an add but the
+// reconciler holds no Mem0 client, so the event cannot be polled. A nil client
+// is a MISCONFIGURED reconciler, not a "nothing to resolve" state: returning no
+// record would make a broken deployment look like a clean pass that found
+// nothing, conflating "not configured" with "still PENDING". The pass fails
+// loudly instead (spec §9.2). It is exported so a caller can detect it.
+var ErrNoMem0Client = errors.New("reconcile: no Mem0 client configured")
 
 // resolveAdd derives the add_resolved claim (spec §5 rows 1-3) for one
 // unresolved add_requested record, or none when the add has no terminal
@@ -38,8 +47,8 @@ const (
 // error and writes NOTHING. The add is simply not resolved yet, so the producer
 // invents no resolution; the add stays in the worklist on every pass, which
 // keeps a stuck add visible to an operator without a placeholder polluting the
-// signed chain (spec §9.1). A Mem0 error, by contrast, fails the pass loudly
-// (spec §9.2).
+// signed chain (spec §9.1). A Mem0 error, and a nil Mem0 client (a
+// misconfigured reconciler), by contrast, fail the pass loudly (spec §9.2).
 //
 // It never panics and writes nothing itself: it returns records whose Seq and
 // Hash are zero, for the caller to append.
@@ -54,11 +63,11 @@ func (rc *Reconciler) resolveAdd(ctx context.Context, add record.Record) ([]reco
 		return nil, nil
 	}
 	if rc.client == nil {
-		// A nil client means the reconciler was built without Mem0 access, so
-		// it cannot poll the event and no claim is justified. It must not panic
-		// (never panic in library code) and does not fail the pass: reporting
-		// nothing is the same output as an add that is not resolved yet.
-		return nil, nil
+		// A nil client is a misconfigured reconciler, not a state that means
+		// "nothing to resolve". It must not panic (never panic in library
+		// code), and it must not look like a clean pass that found nothing:
+		// report the misconfiguration loudly (spec §9.2).
+		return nil, fmt.Errorf("resolve add %s: %w", add.ID, ErrNoMem0Client)
 	}
 
 	status, err := rc.client.EventStatus(ctx, eventID)
@@ -91,9 +100,20 @@ func (rc *Reconciler) resolveAdd(ctx context.Context, add record.Record) ([]reco
 //
 // The record carries the add's scope and content hash, so it describes the same
 // operation as the add_requested it resolves and stays inside that operation's
-// scope for the fold. At is the add event's time: the resolution is a fact
-// about that same Mem0 event, so it belongs to that event's window (RecordedAt
-// is left zero for ledger.Append to stamp).
+// scope for the fold.
+//
+// At is the ADD EVENT's time (the add record's At): the resolution is a fact
+// about that same Mem0 event, so it belongs to that event's window. Mem0's
+// CompletedAt and UpdatedAt are deliberately NOT used -- neither is when the
+// event happened, and the record's own write time belongs in RecordedAt, which
+// is left zero for ledger.Append to stamp at append time. That stamping is what
+// keeps a late write honest: a record reconciled hours after its event still
+// carries the true write time on RecordedAt while At keeps the event's time.
+//
+// Subject.Scope and Subject.ContentHash are COPIED FROM THE ADD record: the
+// ContentHash is the ADD's submitted content digest (the hash of the text the
+// caller asked Mem0 to store), NOT the stored memory's digest. A reader must
+// not mistake it for the produced memory's content hash.
 //
 // An observed storage additionally carries the produced memory's id on the
 // Subject, which is the link a later coverage claim uses to pair the memory
@@ -116,7 +136,7 @@ func buildAddResolved(add record.Record, eventID string, kind record.ReasonKind,
 	}
 
 	return record.Record{
-		ID:     addResolvedID(eventID),
+		ID:     addResolvedID(kind, eventID),
 		At:     add.At,
 		Event:  record.EventAddResolved,
 		Reason: reason,
@@ -136,9 +156,14 @@ func buildAddResolved(add record.Record, eventID string, kind record.ReasonKind,
 // The resolution of a given event is a unique and stable fact about that
 // event, so re-running the reconciler derives the identical key and
 // Ledger.Append treats the second write as a duplicate rather than appending a
-// second add_resolved. The reason kind is part of the key, so a
-// FAILED-then-SUCCEEDED transition still writes a distinct record: later
-// knowledge appends rather than mutating the first.
+// second add_resolved.
+//
+// The reason kind is part of the key, exactly as it is part of the record id
+// (addResolvedID): a different kind for the same event is a DIFFERENT claim, so
+// it must both derive a different key -- or the store's duplicate suppression,
+// which matches on idempotency_key alone, would silently drop it -- and carry a
+// different id -- or the store's UNIQUE records.id column would reject it with
+// a raw SQLite error. Key and id move together so the two constraints agree.
 //
 // This does NOT contradict the design spec's "never key on Mem0's event_id"
 // rule for the request path. That rule exists because a RETRIED add comes back
@@ -212,10 +237,18 @@ func firstResultID(results []mem0.EventResult) string {
 	return ""
 }
 
-// addResolvedID is the stable record id for the add_resolved of eventID. It is
-// prefixed with the event type so it can never collide with the add_requested
-// record's id (the caller's correlation id), which describes the same
-// operation.
-func addResolvedID(eventID string) record.RecordID {
-	return record.RecordID(string(record.EventAddResolved) + ":" + eventID)
+// addResolvedID is the stable record id for the add_resolved of eventID with
+// the given reason kind. It is qualified by BOTH the event type and the reason
+// kind.
+//
+// The event-type prefix keeps it from colliding with the add_requested record's
+// id (the caller's correlation id), which describes the same operation. The
+// kind qualifier keeps it from colliding with a DIFFERENT claim about the SAME
+// event: records.id is UNIQUE, and duplicate suppression matches only the
+// idempotency_key column, so two kinds sharing one id would make the second
+// append die on a raw SQLite UNIQUE violation instead of appending the
+// legitimate second claim. Qualifying the id mirrors the kind the idempotency
+// key already carries, so both constraints agree.
+func addResolvedID(kind record.ReasonKind, eventID string) record.RecordID {
+	return record.RecordID(string(record.EventAddResolved) + ":" + string(kind) + ":" + eventID)
 }
