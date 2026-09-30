@@ -100,7 +100,9 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 		}
 	}
 
-	// Stage 3 -- coverage candidates (§9.1.3). Task 8 fills resolveAbsent.
+	// Stage 3 -- coverage candidates (§9.1.3). resolveAbsent, implemented in
+	// absent.go, claims a memory_dropped for each known memory a saturated
+	// search in scope covers. It needs no Mem0 client.
 	produced, err := rc.resolveAbsent(wl.known, wl.searches)
 	if err != nil {
 		return nil, fmt.Errorf("reconcile: resolve absent: %w", err)
@@ -179,13 +181,8 @@ func collectStage(out []record.Record, stage string, produced []record.Record) (
 //
 // resolveAdd (the add-resolution producer, Task 6, spec §5 rows 1-3) is
 // implemented in adds.go; resolveKept (the memory_kept producer, Task 7, spec §5
-// rows 4-5) is implemented in kept.go. resolveAbsent remains a stub here; Tasks
-// 8-9 replace the remaining bodies, and the signatures are fixed so those tasks
-// plug in without touching Reconcile.
-
-// resolveAbsent is the absent_from_search producer (Task 8, spec §5 row 6). It
-// takes the known memories and the search_performed records that may cover them
-// and returns the memory_dropped claims a saturated search warrants, or none.
-func (rc *Reconciler) resolveAbsent(known []knownMemory, searches []record.Record) ([]record.Record, error) {
-	return nil, nil
-}
+// rows 4-5) is implemented in kept.go; resolveAbsent (the absent_from_search
+// producer, Task 8, spec §5 row 6) is implemented in absent.go. Task 9 adds
+// resolveRemoved (the removed_by_mem0 producer, spec §5 row 7), whose seam is
+// left unwired in Reconcile above so this task makes no Mem0 call. The
+// signatures are fixed so each task plugs in without touching Reconcile.
