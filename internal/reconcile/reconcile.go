@@ -178,16 +178,10 @@ func collectStage(out []record.Record, stage string, produced []record.Record) (
 // reach the chain: ledger.Append alone assigns Seq and computes Hash.
 //
 // resolveAdd (the add-resolution producer, Task 6, spec §5 rows 1-3) is
-// implemented in adds.go. resolveKept and resolveAbsent remain stubs here;
-// Tasks 7-9 replace each body, and the signatures are fixed so those tasks plug
-// in without touching Reconcile.
-
-// resolveKept is the memory_kept producer (Task 7, spec §5 rows 4-5). It takes
-// a scope and the known memories and returns the memory_kept claims a complete
-// enumeration of that scope warrants, or none.
-func (rc *Reconciler) resolveKept(ctx context.Context, scope record.Scope, known []knownMemory) ([]record.Record, error) {
-	return nil, nil
-}
+// implemented in adds.go; resolveKept (the memory_kept producer, Task 7, spec §5
+// rows 4-5) is implemented in kept.go. resolveAbsent remains a stub here; Tasks
+// 8-9 replace the remaining bodies, and the signatures are fixed so those tasks
+// plug in without touching Reconcile.
 
 // resolveAbsent is the absent_from_search producer (Task 8, spec §5 row 6). It
 // takes the known memories and the search_performed records that may cover them
