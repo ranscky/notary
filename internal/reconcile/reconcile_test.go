@@ -208,10 +208,18 @@ func TestReconcileReadsWholeLedgerWithNonZeroBounds(t *testing.T) {
 
 func TestReconcileReturnedRecordsCarryNoChainPosition(t *testing.T) {
 	req := mustAddRequested(t, "r-add-1", "evt-1", fixedTime)
-	rc := New(&fakeReader{records: []record.Record{req}}, nil)
+	// The producer polls Mem0 now, so this reconciler needs a client that
+	// resolves the add; a still-stubbed producer would return nothing and make
+	// the loop below vacuous.
+	client, _ := eventStatusClient(t, staticEventStatus(mem0.EventStatusResponse{
+		ID: "evt-1", Status: "SUCCEEDED", Results: []mem0.EventResult{{ID: "mem-1"}},
+	}))
+	rc := New(&fakeReader{records: []record.Record{req}}, client)
 
 	got, err := rc.Reconcile(context.Background(), Window{})
 	require.NoError(t, err)
+	require.NotEmpty(t, got,
+		"an empty result makes the loop below vacuous: it would pass even if the reconciler assigned a chain position")
 	for _, r := range got {
 		assert.Zero(t, r.Seq, "reconciler must not assign a chain position; ledger.Append does")
 		assert.Equal(t, record.Hash{}, r.Hash, "reconciler must not compute a digest; ledger.Append does")
