@@ -201,7 +201,7 @@ func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q me
 func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, resp mem0.AddResponse) {
 	at := m.now().UTC()
 
-	payload, err := json.Marshal(addPayload{EventID: resp.EventID, Status: resp.Status})
+	payload, err := json.Marshal(mem0.AddPayload{EventID: resp.EventID, Status: resp.Status})
 	if err != nil {
 		return
 	}
@@ -254,7 +254,7 @@ func (m *Mem0Interceptor) observeSearch(correlationID string, q mem0.SearchReque
 // Subject.ContentHash still hashes the query, so the record's Subject is never
 // the zero hash.
 func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.SearchRequest, count int, at time.Time) {
-	payload, err := json.Marshal(searchPerformedPayload{
+	payload, err := json.Marshal(mem0.SearchPerformedPayload{
 		Query:     q.Query,
 		Filters:   q.Filters,
 		TopK:      q.TopK,
@@ -292,7 +292,7 @@ func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.Sear
 // search result. rank is 1-based and supplies both the record ID's "#rank"
 // suffix and the rank carried in the evidence payload.
 func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0.SearchResult, at time.Time) {
-	payload, err := json.Marshal(memorySurfacedPayload{Score: res.Score, Rank: rank})
+	payload, err := json.Marshal(mem0.MemorySurfacedPayload{Score: res.Score, Rank: rank})
 	if err != nil {
 		return
 	}
@@ -479,29 +479,11 @@ func DeriveCorrelationID(scope record.Scope, seed string) string {
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }
 
-// addPayload is the Observed evidence payload of an add_requested record: the
-// acknowledgement Mem0 returned. It carries only the event id and status,
-// which are exactly what the add response reported.
-type addPayload struct {
-	EventID string `json:"event_id"`
-	Status  string `json:"status"`
-}
-
-// searchPerformedPayload is the Observed evidence payload of a
-// search_performed record: what was asked and how much came back.
-type searchPerformedPayload struct {
-	Query     string       `json:"query"`
-	Filters   mem0.Filters `json:"filters"`
-	TopK      int          `json:"top_k"`
-	Threshold float64      `json:"threshold"`
-	Rerank    bool         `json:"rerank"`
-	Count     int          `json:"count"`
-}
-
-// memorySurfacedPayload is the Observed evidence payload of a
-// memory_surfaced record: the ranking evidence that caused the memory to
-// surface.
-type memorySurfacedPayload struct {
-	Score float64 `json:"score"`
-	Rank  int     `json:"rank"`
-}
+// The Observed evidence payloads that observeAdd, writeSearchPerformed and
+// writeSurfaced marshal -- mem0.AddPayload, mem0.SearchPerformedPayload and
+// mem0.MemorySurfacedPayload -- live in internal/mem0, beside the response
+// types they project. They are shared with the Phase 5 reconciler, which reads
+// the same payloads back and must not import its sibling interceptor. Their
+// bytes are inside the canonical record hash, so their field order, names and
+// tags are frozen; internal/interceptor/library/evidence_golden_test.go pins
+// them.
