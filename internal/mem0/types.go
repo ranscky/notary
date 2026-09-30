@@ -141,10 +141,19 @@ type SearchResponse struct {
 // entity scope lives in Filters and nowhere else.
 type GetAllRequest struct {
 	Filters Filters `json:"filters"`
+	// Page and PageSize paginate POST /v3/memories/. They are URL QUERY
+	// PARAMETERS, not body fields, so they carry json:"-": Mem0 would ignore
+	// them in the body, and a silently ignored page_size would make missing
+	// pagination invisible. Zero means "omit the parameter".
+	Page     int `json:"-"`
+	PageSize int `json:"-"`
 }
 
-// GetAllResponse is the paginated envelope returned by GetAll. Next and
-// Previous are opaque cursors, null on the first and last page.
+// GetAllResponse is the paginated envelope returned by GetAll. Count is the
+// total number of memories matching the filters — not the size of Results.
+// Next and Previous are ready-to-follow full URLs for the adjacent pages,
+// emitted as null on the first and last page respectively (they are not opaque
+// cursor tokens).
 type GetAllResponse struct {
 	Count    int      `json:"count"`
 	Next     *string  `json:"next"`

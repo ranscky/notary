@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -117,13 +118,35 @@ func (c *Client) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 }
 
 // GetAll runs POST /v3/memories/ and returns one page of memories. As with
-// Search, the entity scope belongs in req.Filters.
+// Search, the entity scope belongs in req.Filters. A non-zero req.Page or
+// req.PageSize is sent as the page/page_size URL query parameters; when both
+// are zero the request carries no query string and the platform defaults
+// apply. This still returns a single page — GetAllComplete is what walks them.
 func (c *Client) GetAll(ctx context.Context, req GetAllRequest) (GetAllResponse, error) {
 	var out GetAllResponse
-	if err := c.do(ctx, http.MethodPost, "/v3/memories/", req, &out); err != nil {
+	if err := c.do(ctx, http.MethodPost, getAllPath(req), req, &out); err != nil {
 		return GetAllResponse{}, err
 	}
 	return out, nil
+}
+
+// getAllPath builds the POST /v3/memories/ request path, appending page and
+// page_size as query parameters when they are set. Mem0 takes pagination from
+// the URL, not the JSON body, so the body must never carry them (see
+// GetAllRequest). A zero value omits the parameter rather than sending 0,
+// which is below page's documented minimum of 1.
+func getAllPath(req GetAllRequest) string {
+	q := url.Values{}
+	if req.Page > 0 {
+		q.Set("page", strconv.Itoa(req.Page))
+	}
+	if req.PageSize > 0 {
+		q.Set("page_size", strconv.Itoa(req.PageSize))
+	}
+	if len(q) == 0 {
+		return "/v3/memories/"
+	}
+	return "/v3/memories/?" + q.Encode()
 }
 
 // History runs GET /v1/memories/{id}/history/ and returns the memory's change
