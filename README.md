@@ -1,12 +1,15 @@
-# Notary
+<img src="docs/assets/banner.png" alt="Notary — a signed, tamper-evident audit trail for agent memory. Three chain links labelled OBSERVED, RECONSTRUCTED and INTERNAL, drawn solid, dashed and dotted to show decreasing confidence." width="100%">
 
-**A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
+# Notary
 
 ![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-modernc.org%2Fsqlite-003B57?logo=sqlite&logoColor=white)
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
 ![Dependencies](https://img.shields.io/badge/direct_dependencies-3-blue)
 ![Scope](https://img.shields.io/badge/scope-core_ledger_(phases_1--4)-orange)
+
+**A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
+
 
 Mem0 will tell you what it stored. It will not tell you why it *didn't* retrieve something — and for a
 team under audit, "the model didn't return it" is not an answer anyone can accept.
@@ -186,3 +189,17 @@ individually if you are on a short timeout.
 Tests never touch the network. The Mem0 client is tested against **recorded response fixtures** in
 `internal/mem0/testdata/`, whose provenance is documented in `FIXTURES.md`. A live test is opt-in
 behind a build tag and is never a gate.
+
+### The README banner
+
+`docs/assets/banner.svg` is the source; `docs/assets/banner.png` is the rendered 2x raster that the
+README actually displays. If you edit the SVG, re-render the PNG or the two will disagree:
+
+```bash
+google-chrome --headless --disable-gpu --force-device-scale-factor=2 --hide-scrollbars \
+  --window-size=1600,400 --screenshot=docs/assets/banner.png docs/assets/banner.svg
+```
+
+The PNG is committed rather than referenced as an SVG because an SVG renders with the *viewer's*
+fonts — on a machine without Inter, the fallback would reflow the text.
+
