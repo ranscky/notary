@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newVerifyCmd())
 	cmd.AddCommand(newGapsCmd())
+	cmd.AddCommand(newReconcileCmd())
 
 	return cmd
 }
