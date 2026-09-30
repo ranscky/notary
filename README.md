@@ -147,7 +147,7 @@ All configuration is environment-only:
 
 ## Status
 
-This is the **core ledger: phases 1–4** of the design, complete and tested.
+This is the **core ledger and the reconciler: phases 1–5** of the design, complete and tested.
 
 **Working today**
 
@@ -157,17 +157,26 @@ This is the **core ledger: phases 1–4** of the design, complete and tested.
 - `notary verify` (chain, truncation, gap cross-check) and `notary gaps`
 - Gap log with its own chain and signed checkpoints
 - Fail-open-loud interceptor and the in-process Mem0 interceptor (`Add`, `Search`)
-- Gap reconciliation as a library API (`AuditWriter.ReplayGaps`)
+- Gap reconciliation as a library API (`AuditWriter.ReplayGaps`) — **no CLI** yet, because a gap
+  entry records which record is missing, not the record itself, so replay needs the caller's records
+- **`notary reconcile`** — a one-shot, schedulable pass that derives and records the claims the
+  ledger cannot observe directly: it polls Mem0 for unresolved adds, enumerates a scope to classify
+  memories as kept or removed, and reads recorded searches to classify a memory the search did not
+  return as dropped. It is bounded by `--since` (on each record's event time, not its write time) and
+  the four scope flags, supports `--dry-run`, and keys every derived claim on its subject and rule
+  rather than on the run, so re-running it against an unchanged store appends nothing. Every
+  inference is named by a rule in a versioned registry. `notary reconcile` is the first command to
+  consume `NOTARY_MEM0_API_KEY`.
 
 **Not built yet** — the README will be updated as these land rather than describing intent as fact
 
 - **Proxy mode** (an HTTP proxy in front of Mem0) — library mode only today
-- **The reconciler** — event polling, `get_all` diffing, kept/dropped classification, the rule
-  registry, and `reconcile-mode`. `ReplayGaps` exists but has **no CLI**: a gap entry records which
-  record is missing, not the record itself, so replay needs the caller's records
+- **`ReconcileMode.InProcess`** — a reconcile mode that is **reserved, not implemented**: it is
+  defined and explicitly rejected by validation, so a caller that runs only what this build
+  implements gets a matchable error. `notary reconcile` is the one-shot command mode; no long-running
+  in-process driver exists
 - **`export`** and redaction-at-render
 - **`replay`** and **`explain`**
-- No command calls Mem0 yet, so `NOTARY_MEM0_API_KEY` is read into config but not yet consumed
 
 There is no `LICENSE` file yet. Until one is added, all rights are reserved by default.
 
@@ -182,7 +191,7 @@ gofmt -l .         # no output expected
 go test ./...
 ```
 
-`go test ./...` runs ten packages. `internal/ledger` is the slow one (a subprocess crash test
+`go test ./...` runs eleven packages. `internal/ledger` is the slow one (a subprocess crash test
 SIGKILLs a writer mid-transaction, ~30s), so a full run takes a couple of minutes — run packages
 individually if you are on a short timeout.
 

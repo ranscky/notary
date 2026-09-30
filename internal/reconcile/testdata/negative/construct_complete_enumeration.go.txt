@@ -1,0 +1,12 @@
+package fixture
+
+import "notary/internal/mem0"
+
+// Naming the unexported field e of mem0.CompleteEnumeration must not compile
+// outside the package. CompleteEnumeration is the token the reconciler trusts
+// to mean "this listing was proven exhaustive"; only GetAllComplete may set its
+// one unexported field, so no caller can forge an exhaustive-looking listing
+// (which would let the absence rule conclude a memory was removed from a short
+// or absent read). The composite literal below names that field directly and
+// the Go compiler must refuse it.
+var _ = mem0.CompleteEnumeration{e: nil}
