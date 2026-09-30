@@ -136,16 +136,24 @@ projections of Mem0's own response types, and both consumers already import `mem
 the sibling relationship.
 
 **Hard constraint, because these payloads are hashed.** `ObservedEvidence.Payload` is embedded in
-`Reason.Encode()` output, which `CanonicalBytes` writes directly into the hash input. So the *encoded
-JSON bytes* of these payloads are part of every record's hash. `add_requested`, `search_performed`
-and `memory_surfaced` records already exist in real ledgers written by Phases 3–4, so a change of a
-single byte — a reordered struct field, an added tag — would make every existing record in those
-ledgers fail verification.
+`Reason.Encode()` output, which `CanonicalBytes` writes directly into the hash input. So the encoded
+JSON of these payloads is part of every record's hash. `add_requested`, `search_performed` and
+`memory_surfaced` records already exist in real ledgers written by Phases 3–4, so a changed field
+**name or tag** would make every existing record of that kind fail verification.
 
-Therefore the move must preserve field order, field names, and all JSON tags exactly. A
-**golden-bytes regression test** pins the exact encoded payload for all three, so a careless refactor
-cannot invalidate existing ledgers. Struct field order matters here precisely because Go's
-`encoding/json` emits fields in declaration order.
+A correction to an earlier draft of this section, which claimed that declaration order was hashed
+too "because `encoding/json` emits fields in declaration order". That is wrong, and verifying it
+matters: `NewObservedEvidence` decodes the payload into an `any` with `UseNumber()` and **re-marshals
+it**, so for a JSON object the keys come out **sorted**. The bytes that reach the hash are therefore
+canonical, sorted-key JSON, and *declaration order does not affect any record hash*. Renaming a field
+or editing a tag does; reordering does not. `internal/record/reason.go` states this ("insignificant
+key order and whitespace … cannot perturb a downstream record hash") and
+`TestNewObservedEvidenceCanonicalises` asserts it.
+
+The move therefore must preserve field names and all JSON tags exactly. A **golden-bytes regression
+test** pins the exact encoded payload for all three, which is deliberately *stricter* than the hash
+requires — it also pins declaration order and the absence of `omitempty` — so a careless refactor
+cannot invalidate existing ledgers.
 
 `--dry-run` is how an operator inspects the inference logic against their real store before letting
 it sign claims into the chain. It is not a debugging convenience; for a tool that writes to an

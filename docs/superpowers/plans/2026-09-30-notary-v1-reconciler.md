@@ -129,6 +129,22 @@ type MemorySurfacedPayload struct {
 
 **Why this task is a refactor with a byte-identity guard.** `ObservedEvidence.Payload` is embedded in `Reason.Encode()` output, which `CanonicalBytes` writes straight into the hash input. These three payloads are therefore already hashed inside real ledgers written by Phases 3–4. Go's `encoding/json` emits struct fields in declaration order, so reordering a field would change the bytes and make every one of those records fail `verify`. The golden test is the guard, and it is written against the *old* types first so it characterises current behaviour rather than restating the intended one.
 
+> **Corrected after execution.** The reasoning above about *ordering* is wrong, and the correction is
+> worth keeping because it is counter-intuitive. `NewObservedEvidence` (internal/record/reason.go)
+> decodes a payload into an `any` with `UseNumber()` and re-marshals it, so for a JSON object the keys
+> come out **sorted**. What enters the hash is therefore canonical, sorted-key JSON: a changed field
+> **name or tag** would break verification on every historical record of that kind, but **reordering a
+> field would not**. `TestNewObservedEvidenceCanonicalises` asserts exactly this. The golden-bytes test
+> is still the right guard — it is deliberately *stricter* than the hash requires, also pinning
+> declaration order and the absence of `omitempty` — but only names and tags are load-bearing.
+>
+> Two further changes made during execution: the duplicate golden test in
+> `internal/interceptor/library/` was deleted (after the move it exercised nothing library-specific),
+> and each payload gained an all-zero golden case, because a suite of entirely non-zero fixtures
+> cannot detect an `omitempty` being added to a field — which *would* change the hashed key set for
+> real records.
+
+
 - [ ] **Step 1: Write a characterisation test against the current types**
 
 `internal/interceptor/library/evidence_golden_test.go`, white-box (package `library`), marshalling the existing unexported types with fixed values and pinning the exact JSON:

@@ -21,13 +21,22 @@ import (
 // Reason.Encode's output, and CanonicalBytes writes that output straight into
 // the canonical record hash, so the encoded form of each payload is part of
 // every add_requested, search_performed and memory_surfaced record ever
-// signed. Go's encoding/json emits struct fields in declaration order, which
-// is why field ORDER is hashed too, not just field names. Changing a field's
-// order, name or tag would make every historical record of that kind fail
-// verify.
+// signed. What actually enters that hash is the payload AFTER
+// NewObservedEvidence canonicalises it, decoding the JSON and re-marshalling
+// it with sorted keys (internal/record/reason.go). So a field's NAME and JSON
+// TAG are hashed; declaration ORDER is not, because canonicalisation sorts the
+// keys regardless. This test pins BOTH: it asserts the direct-marshal bytes,
+// which additionally pin declaration order as a deliberately stricter (and
+// harmless) extra on top of the hashed contract.
 //
-// Every field of every struct is set to a non-zero value so the marshaler
-// cannot drop one unnoticed.
+// Each struct is exercised twice: once with every field set to a non-zero
+// value, and once with every field left at its zero value. The all-zero cases
+// are what catch a field gaining an ",omitempty" tag -- that would silently
+// drop the key for real records where the field is zero (Threshold 0, Rerank
+// false, Count 0, Score 0, an empty Query), changing the hashed key set while
+// the fully-populated cases still passed. mem0.Filters has ",omitempty" on all
+// four of its fields, so an all-zero SearchPerformedPayload legitimately emits
+// an empty "filters" object.
 func TestEvidencePayloadGoldenBytes(t *testing.T) {
 	add, err := json.Marshal(mem0.AddPayload{EventID: "evt-1", Status: "PENDING"})
 	require.NoError(t, err)
@@ -49,4 +58,22 @@ func TestEvidencePayloadGoldenBytes(t *testing.T) {
 	surfaced, err := json.Marshal(mem0.MemorySurfacedPayload{Score: 0.87, Rank: 2})
 	require.NoError(t, err)
 	assert.Equal(t, `{"score":0.87,"rank":2}`, string(surfaced))
+
+	// All-zero cases: no field may silently disappear behind an ",omitempty",
+	// which would change the hashed key set for real records carrying a zero
+	// value. The empty "filters" object is expected: all four Filters fields
+	// carry ",omitempty".
+	addZero, err := json.Marshal(mem0.AddPayload{})
+	require.NoError(t, err)
+	assert.Equal(t, `{"event_id":"","status":""}`, string(addZero))
+
+	searchZero, err := json.Marshal(mem0.SearchPerformedPayload{})
+	require.NoError(t, err)
+	assert.Equal(t,
+		`{"query":"","filters":{},"top_k":0,"threshold":0,"rerank":false,"count":0}`,
+		string(searchZero))
+
+	surfacedZero, err := json.Marshal(mem0.MemorySurfacedPayload{})
+	require.NoError(t, err)
+	assert.Equal(t, `{"score":0,"rank":0}`, string(surfacedZero))
 }

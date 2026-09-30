@@ -484,6 +484,8 @@ func DeriveCorrelationID(scope record.Scope, seed string) string {
 // mem0.MemorySurfacedPayload -- live in internal/mem0, beside the response
 // types they project. They are shared with the Phase 5 reconciler, which reads
 // the same payloads back and must not import its sibling interceptor. Their
-// bytes are inside the canonical record hash, so their field order, names and
-// tags are frozen; internal/interceptor/library/evidence_golden_test.go pins
-// them.
+// bytes are inside the canonical record hash, so their field NAMES and JSON
+// TAGS are frozen; declaration order is not hashed (NewObservedEvidence
+// canonicalises to sorted-key JSON), but mem0/evidence_test.go still pins it.
+// internal/ledger's real-record fixtures are what guard this package's actual
+// emitted bytes end to end.

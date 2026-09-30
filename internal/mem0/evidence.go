@@ -18,12 +18,15 @@ package mem0
 // renders and CanonicalBytes writes straight into the canonical record hash.
 // The encoded bytes of these payloads are therefore part of every
 // add_requested, search_performed and memory_surfaced record already signed
-// against real ledgers. encoding/json emits struct fields in declaration
-// order, so a field's ORDER is hashed as much as its name: reordering a field,
-// renaming one, or changing a JSON tag would make every historical record of
-// that kind fail verify. Field order, names and tags must be preserved exactly
-// as declared; internal/interceptor/library/evidence_golden_test.go and
-// internal/mem0/evidence_test.go pin them.
+// against real ledgers. What enters that hash is the payload AFTER
+// NewObservedEvidence canonicalises it: it decodes the JSON and re-marshals it
+// with sorted keys (internal/record/reason.go). So a field's NAME and its JSON
+// TAG are hashed -- renaming a field or changing a tag would make every
+// historical record of that kind fail verify -- while declaration ORDER is
+// NOT, because canonicalisation sorts the keys regardless of how they were
+// declared. Keep names and tags fixed. The golden test in
+// internal/mem0/evidence_test.go pins the declaration order as well, a
+// deliberately stricter (and harmless) extra on top of the hashed contract.
 
 // AddPayload is the Observed evidence payload of an add_requested record: the
 // acknowledgement Mem0 returned. It carries only the event id and status,
