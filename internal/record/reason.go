@@ -162,6 +162,22 @@ func (ev ObservedEvidence) clone() ObservedEvidence {
 	return ObservedEvidence{source: ev.source, payload: append([]byte(nil), ev.payload...)}
 }
 
+// Payload returns a copy of the evidence's payload bytes: the canonical JSON
+// NewObservedEvidence produced.
+//
+// It returns a COPY, never the slice held inside the evidence. The payload is
+// held inside a Reason, and the same reasoning that makes clone unexported
+// applies here: no caller may mutate evidence in place, because a record's
+// evidence is hashed into the signed chain and a caller that could rewrite it
+// would be able to change what a record attests to.
+//
+// This is the exported read path for a consumer in another package (for
+// example the reconciler, which decodes recorded payloads back into mem0.*
+// types); it adds no wire behaviour and changes no encoding.
+func (ev ObservedEvidence) Payload() []byte {
+	return append([]byte(nil), ev.payload...)
+}
+
 // validate reports whether ev is a well-formed observed evidence value.
 func (ev ObservedEvidence) validate() error {
 	if err := ev.source.validate(); err != nil {

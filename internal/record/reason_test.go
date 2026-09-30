@@ -341,3 +341,50 @@ func TestReconstructedReasonKeepsNonZeroConfidence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, r, got)
 }
+
+// TestObservedEvidencePayload pins the exported read path the reconciler uses.
+// Payload returns the evidence's canonical JSON bytes -- both for a freshly
+// built Observed reason and for one reconstructed from storage via
+// ParseReason. The reconstructed case is the one that matters: the reconciler
+// reads records that came back FROM the database, not ones it just built, so
+// the accessor must work on a parsed reason. It also verifies Payload hands
+// back a copy, not the slice held inside the evidence.
+func TestObservedEvidencePayload(t *testing.T) {
+	// The canonical form NewObservedEvidence produces for the input below:
+	// keys sorted, and the literal number 2.50 preserved by json.Number.
+	const canonical = `{"a":2.50,"b":1}`
+
+	t.Run("freshly built", func(t *testing.T) {
+		ev, err := record.NewObservedEvidence(record.SourceMem0Response, []byte(`{ "b": 1 , "a": 2.50 }`))
+		require.NoError(t, err)
+		assert.Equal(t, canonical, string(ev.Payload()),
+			"Payload must return the canonicalised bytes, not the input")
+	})
+
+	t.Run("reconstructed from storage", func(t *testing.T) {
+		ev, err := record.NewObservedEvidence(record.SourceMem0Response, []byte(canonical))
+		require.NoError(t, err)
+		r, err := record.NewObservedReason(record.ReasonReturnedBySearch, ev)
+		require.NoError(t, err)
+		b, err := r.Encode()
+		require.NoError(t, err)
+
+		parsed, err := record.ParseReason(b)
+		require.NoError(t, err)
+		gotEv, ok := parsed.Observed()
+		require.True(t, ok)
+		assert.Equal(t, canonical, string(gotEv.Payload()),
+			"Payload must survive Encode -> ParseReason with its canonical bytes intact")
+	})
+
+	t.Run("returns a copy, not the internal slice", func(t *testing.T) {
+		ev, err := record.NewObservedEvidence(record.SourceMem0Response, []byte(canonical))
+		require.NoError(t, err)
+
+		p := ev.Payload()
+		require.Equal(t, canonical, string(p))
+		p[0] = 'X' // mutate the returned slice
+		assert.Equal(t, canonical, string(ev.Payload()),
+			"Payload must not hand out the internal slice")
+	})
+}

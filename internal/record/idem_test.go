@@ -230,3 +230,75 @@ func TestDeriveIdemKeyUnavailable(t *testing.T) {
 	require.ErrorIs(t, err, record.ErrIdemKeyUnavailable)
 	assert.Equal(t, record.IdemKey(""), k, "unavailable derivation must return an empty key")
 }
+
+// TestDeriveClaimIdemKeyIsStableAndSubjectSpecific pins requirement 1 of the
+// reconciler's claim key: identical inputs produce an identical key across
+// calls, a change to ANY input produces a different key, and a derived-claim
+// key never equals a request-path key from DeriveIdemKey.
+func TestDeriveClaimIdemKeyIsStableAndSubjectSpecific(t *testing.T) {
+	const (
+		kind = record.EventAddResolved
+		rk   = record.ReasonStoredByMem0
+	)
+
+	base, err := record.DeriveClaimIdemKey(kind, rk, "mem-1", "content-a", "1")
+	require.NoError(t, err)
+
+	// Stable across wall-clock time: a second call after a real sleep is
+	// identical, which a clock- or randomness-derived key would fail.
+	time.Sleep(2 * time.Millisecond)
+	again, err := record.DeriveClaimIdemKey(kind, rk, "mem-1", "content-a", "1")
+	require.NoError(t, err)
+	assert.Equal(t, base, again, "claim key changed across wall-clock time")
+
+	// Pure function: same arguments, repeatedly, same key.
+	for i := 0; i < 100; i++ {
+		got, err := record.DeriveClaimIdemKey(kind, rk, "mem-1", "content-a", "1")
+		require.NoError(t, err)
+		assert.Equal(t, base, got, "claim key is not a pure function of its arguments (iteration %d)", i)
+	}
+
+	// Lowercase hex of the 32-byte digest, matching DeriveIdemKey.
+	s := string(base)
+	assert.Len(t, s, 64, "a SHA-256 hex digest is 64 characters")
+	assert.Equal(t, strings.ToLower(s), s, "claim key must be lowercase hex")
+	_, decErr := hex.DecodeString(s)
+	require.NoError(t, decErr, "claim key must be valid hex")
+
+	// Subject-specific: a change to ANY single input yields a different key.
+	variants := []struct {
+		name        string
+		kind        record.EventType
+		rk          record.ReasonKind
+		mem, ch, rv string
+	}{
+		{"kind", record.EventMemoryKept, rk, "mem-1", "content-a", "1"},
+		{"reasonKind", kind, record.ReasonKeptByContentMatch, "mem-1", "content-a", "1"},
+		{"memoryID", kind, rk, "mem-2", "content-a", "1"},
+		{"contentHash", kind, rk, "mem-1", "content-b", "1"},
+		{"ruleVersion", kind, rk, "mem-1", "content-a", "2"},
+	}
+	for _, v := range variants {
+		t.Run(v.name, func(t *testing.T) {
+			got, err := record.DeriveClaimIdemKey(v.kind, v.rk, v.mem, v.ch, v.rv)
+			require.NoError(t, err)
+			assert.NotEqual(t, base, got, "a change to %s must derive a different claim key", v.name)
+		})
+	}
+
+	// Cross-domain: a derived-claim key never equals a request-path key, even
+	// when the identifying bytes are the same. The distinct domain constant is
+	// what makes the separation structural.
+	request, err := record.DeriveIdemKey(kind, rk, record.Scope{UserID: "mem-1"}, "content-a", "", digest(0x01))
+	require.NoError(t, err)
+	assert.NotEqual(t, base, request, "a claim key must never equal a request-path key")
+}
+
+// TestDeriveClaimIdemKeyUnavailableWithoutASubject pins that a claim with no
+// subject (neither a memory id nor a content hash) cannot be keyed, mirroring
+// DeriveIdemKey's "no identifier" rule.
+func TestDeriveClaimIdemKeyUnavailableWithoutASubject(t *testing.T) {
+	k, err := record.DeriveClaimIdemKey(record.EventAddResolved, record.ReasonStoredByMem0, "", "", "1")
+	require.ErrorIs(t, err, record.ErrIdemKeyUnavailable)
+	assert.Equal(t, record.IdemKey(""), k, "unavailable derivation must return an empty key")
+}

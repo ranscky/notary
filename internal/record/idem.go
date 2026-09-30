@@ -88,3 +88,59 @@ func DeriveIdemKey(kind EventType, reasonKind ReasonKind, scope Scope, eventID, 
 	sum := sha256.Sum256(buf.Bytes())
 	return IdemKey(hex.EncodeToString(sum[:])), nil
 }
+
+// claimIdemDomain separates the idempotency keys of claims the reconciler
+// DERIVES from every other domain. It differs from idemDomain
+// ("notary/idem/v1"), so a derived-claim key can never collide with a
+// request-path key, and from hashDomain ("notary/record/v1"), so it can never
+// be confused with a record digest. A distinct domain is what lets
+// DeriveClaimIdemKey reuse the same length-prefixed, lowercase-hex shape as
+// DeriveIdemKey without any chance of the two encoders agreeing on a key.
+const claimIdemDomain = "notary/idem/claim/v1"
+
+// DeriveClaimIdemKey returns the deterministic idempotency key for a claim the
+// reconciler derives about a memory:
+//
+//	sha256(claimIdemDomain | kind | reasonKind | memoryID | contentHash | ruleVersion)
+//
+// where every field is length-prefixed with the shared writeLengthPrefixed
+// helper, so no field's bytes can be read as another field's boundary.
+//
+// The key is a pure function of its arguments: it carries no clock, no
+// randomness, no counter and no package-level mutable state. Crucially, and by
+// design, NOTHING about the reconciliation RUN enters it -- neither the time
+// the pass started, nor a pass or attempt counter, nor a cursor. That is the
+// single property that makes a second pass a no-op: the same subject, the same
+// reason and the same rule always derive the same key, so Ledger.Append treats
+// the second write as a duplicate and the reconciler never re-claims.
+//
+// memoryID is the Mem0 memory the claim concerns and contentHash is the
+// subject's content digest (rendered as a string, e.g. hex); at least one must
+// be non-empty, since a claim with no subject cannot be keyed. ruleVersion is
+// the version of the rule that justified the inference -- not decoration: a
+// rule whose meaning changes records a new version, and that version belongs in
+// the key so the new claim appends rather than silently deduplicating the old.
+// reasonKind is the claim's reason kind and kind its event type; both are in
+// the key for the same reason DeriveIdemKey includes them: the same event at a
+// different tier, or on a different basis, is a different claim.
+//
+// If memoryID and contentHash are both empty there is no subject to key on, so
+// it returns ErrIdemKeyUnavailable and a zero key. The key is lowercase hex,
+// matching DeriveIdemKey and how hashes are rendered elsewhere.
+// DeriveClaimIdemKey never panics; SHA-256 over a byte slice cannot fail.
+func DeriveClaimIdemKey(kind EventType, reasonKind ReasonKind, memoryID, contentHash, ruleVersion string) (IdemKey, error) {
+	if memoryID == "" && contentHash == "" {
+		return IdemKey(""), ErrIdemKeyUnavailable
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString(claimIdemDomain)
+	writeLengthPrefixed(&buf, []byte(kind))
+	writeLengthPrefixed(&buf, []byte(reasonKind))
+	writeLengthPrefixed(&buf, []byte(memoryID))
+	writeLengthPrefixed(&buf, []byte(contentHash))
+	writeLengthPrefixed(&buf, []byte(ruleVersion))
+
+	sum := sha256.Sum256(buf.Bytes())
+	return IdemKey(hex.EncodeToString(sum[:])), nil
+}
