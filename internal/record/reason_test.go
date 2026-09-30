@@ -311,3 +311,33 @@ func TestParseReasonRejectsBadInput(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestReconstructedReasonOmitsUnsetConfidence(t *testing.T) {
+	ev, err := record.NewReconstructedEvidence([]record.RecordID{"r-1"}, "absent_from_search", "1", 0)
+	require.NoError(t, err)
+	r, err := record.NewReconstructedReason(record.ReasonAbsentFromSearch, ev)
+	require.NoError(t, err)
+	b, err := r.Encode()
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "confidence",
+		"an unset confidence must be absent, not rendered as 0")
+
+	// An absent confidence must still decode back to the zero value.
+	got, err := record.ParseReason(b)
+	require.NoError(t, err)
+	assert.Equal(t, r, got)
+}
+
+func TestReconstructedReasonKeepsNonZeroConfidence(t *testing.T) {
+	ev, err := record.NewReconstructedEvidence([]record.RecordID{"r-1"}, "absent_from_search", "1", 0.5)
+	require.NoError(t, err)
+	r, err := record.NewReconstructedReason(record.ReasonAbsentFromSearch, ev)
+	require.NoError(t, err)
+	b, err := r.Encode()
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"confidence":0.5`)
+
+	got, err := record.ParseReason(b)
+	require.NoError(t, err)
+	assert.Equal(t, r, got)
+}

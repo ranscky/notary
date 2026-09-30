@@ -414,7 +414,7 @@ type reconstrEnvelope struct {
 	Basis       []RecordID `json:"basis"`
 	Rule        string     `json:"rule"`
 	RuleVersion string     `json:"rule_version"`
-	Confidence  float64    `json:"confidence"`
+	Confidence  float64    `json:"confidence,omitempty"`
 }
 
 // internalEnvelope is the wire form of an InternalNote.
