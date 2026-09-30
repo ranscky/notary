@@ -37,11 +37,6 @@ var ErrMissingCorrelationID = errors.New("library: missing correlation ID")
 // the same concatenated fields.
 const correlationDomain = "notary/corr/v1"
 
-// contentDomain domain-separates the subject content hash from every other use
-// of SHA-256, so a content digest can never collide with a digest computed for
-// another purpose over the same bytes.
-const contentDomain = "notary/content/v1"
-
 // defaultMessageRole is the role Notary stamps on each message string it sends
 // to Mem0's Add endpoint. Add's signature carries only content strings, so all
 // of them are sent as user turns; a caller needing assistant or system turns
@@ -210,7 +205,7 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 		return
 	}
 
-	contentHash := contentHashOf(messages...)
+	contentHash := mem0.ContentHash(messages...)
 	rec := record.Record{
 		ID:         record.RecordID(correlationID),
 		At:         at,
@@ -270,7 +265,7 @@ func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.Sear
 		return
 	}
 
-	contentHash := contentHashOf(q.Query)
+	contentHash := mem0.ContentHash(q.Query)
 	rec := record.Record{
 		ID:         record.RecordID(correlationID),
 		At:         at,
@@ -301,7 +296,7 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 		return
 	}
 
-	contentHash := contentHashOf(res.Memory.Memory)
+	contentHash := mem0.ContentHash(res.Memory.Memory)
 	derivedID := derivedRecordID(correlationID, rank)
 	rec := record.Record{
 		ID:         derivedID,
@@ -427,29 +422,11 @@ func messagesToWire(messages []string) []mem0.Message {
 	return out
 }
 
-// contentHashOf returns the SHA-256 of the domain tag followed by each part
-// length-prefixed with a big-endian uint32 byte count. Length-prefixing each
-// part individually is what stops distinct part boundaries from colliding --
-// ["ab","c"] and ["a","bc"] hash differently -- so a later content-match cannot
-// be fooled by how the parts happen to be joined for display.
-//
-// Note that this is NOT the hash of Content.Text: that text is a plain "\n"
-// join, which is ambiguous across boundaries. The two are intentionally
-// different inputs to the same digest, so ambiguity in the displayed text
-// cannot affect the content hash.
-func contentHashOf(parts ...string) record.Hash {
-	h := sha256.New()
-	h.Write([]byte(contentDomain))
-	var n [4]byte
-	for _, p := range parts {
-		binary.BigEndian.PutUint32(n[:], uint32(len(p)))
-		h.Write(n[:])
-		h.Write([]byte(p))
-	}
-	var out record.Hash
-	copy(out[:], h.Sum(nil))
-	return out
-}
+// contentHashOf and its domain tag now live in internal/mem0 as
+// mem0.ContentHash: the leaf package both this interceptor and the Phase 5
+// reconciler already depend on, so the content-hash scheme has a single
+// definition rather than two copies that could drift. See mem0.ContentHash and
+// internal/mem0/content_test.go.
 
 // DeriveCorrelationID derives a stable correlation ID for a caller with no
 // natural one:

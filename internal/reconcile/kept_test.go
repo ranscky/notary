@@ -2,7 +2,6 @@ package reconcile
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -70,26 +69,17 @@ func errorEnumerationClient(t *testing.T) *mem0.Client {
 	return mem0.NewClient(srv.URL, "test-key", nil)
 }
 
-// hashFromHex decodes a 32-byte digest rendered as lowercase hex, the form the
-// interceptor's content hash is compared in.
-func hashFromHex(t *testing.T, s string) record.Hash {
-	t.Helper()
-	b, err := hex.DecodeString(s)
-	require.NoError(t, err)
-	require.Len(t, b, 32)
-	var h record.Hash
-	copy(h[:], b)
-	return h
-}
-
-// The interceptor's content digest of the fixture texts, computed INDEPENDENTLY
-// of this package: sha256("notary/content/v1" | uint32be(len) | text). Pinning
-// them as literals is what proves reconcile compares content hashes with the
-// interceptor's exact scheme -- a second, divergent scheme would fail to match
-// here rather than silently stop kept_by_content_match ever firing.
-const (
-	helloWorldHashHex      = "b6ea11b697ca779ee4e5794c51aab1cfa48faa94fb99fa8940eb5eea5b04d099"
-	differentMemoryHashHex = "758de308b8d72b1f46df159bb5aea173d17582fec90e1739fed81bab966b5869"
+// The fixture digests come from the SHARED scheme, mem0.ContentHash, which both
+// the interceptor and this reconciler now call. They are deliberately NOT
+// re-pinned as literals here: internal/mem0/content_test.go is the single place
+// that pins the scheme's exact bytes, so one test covers both sides and a drift
+// cannot leave this file green while the shared scheme has moved. (helloWorldHash
+// is the digest of the text both the add and the listed memory carry;
+// differentMemoryHash is an unrelated digest, used to prove the id match takes
+// precedence over the content match.)
+var (
+	helloWorldHash      = mem0.ContentHash("hello world")
+	differentMemoryHash = mem0.ContentHash("a different memory")
 )
 
 // firstKept calls resolveKept and requires it to yield exactly one record that
@@ -110,14 +100,6 @@ var keptScope = record.Scope{UserID: "u1"}
 // fixture memory; it is the basis a reconstructed claim rests on.
 const keptAddRecordID = record.RecordID("add_resolved:stored_by_mem0:evt-1")
 
-// keptLedger is a Reader holding the establishing record at the add event's
-// time, so the producer can resolve the memory_kept record's At.
-func keptLedger() *fakeReader {
-	return &fakeReader{records: []record.Record{
-		{ID: keptAddRecordID, At: fixedTime},
-	}}
-}
-
 // ---------------------------------------------------------------------------
 // Spec §5 rows 4-5: memory_kept from a complete enumeration of the scope.
 // ---------------------------------------------------------------------------
@@ -130,11 +112,12 @@ func TestKeptObservedWhenMemoryIDMatches(t *testing.T) {
 	known := knownMemory{
 		MemoryID:    "mem-1",
 		Scope:       keptScope,
-		ContentHash: hashFromHex(t, differentMemoryHashHex),
+		ContentHash: differentMemoryHash,
 		Basis:       keptAddRecordID,
+		At:          fixedTime,
 	}
 	client := enumerationClient(t, completePage(listed))
-	rc := New(keptLedger(), client)
+	rc := New(&fakeReader{}, client)
 
 	rec := firstKept(t, rc, keptScope, []knownMemory{known})
 
@@ -144,8 +127,8 @@ func TestKeptObservedWhenMemoryIDMatches(t *testing.T) {
 		"the id matched a listed memory: Mem0 reported that presence directly, so the claim is Observed")
 	assert.Equal(t, keptScope, rec.Subject.Scope)
 	assert.Equal(t, "mem-1", rec.Subject.MemoryID)
-	assert.Equal(t, hashFromHex(t, helloWorldHashHex), rec.Subject.ContentHash,
-		"the subject content hash is the LISTED memory's digest, computed with the interceptor's scheme")
+	assert.Equal(t, helloWorldHash, rec.Subject.ContentHash,
+		"the subject content hash is the LISTED memory's digest, via the shared mem0.ContentHash scheme")
 	assert.Equal(t, record.RecordID("memory_kept:stored_by_mem0:mem-1"), rec.ID,
 		"the record id is qualified by the reason kind, as records.id is UNIQUE while duplicate suppression matches only the idempotency key")
 	assert.Equal(t, fixedTime, rec.At, "At is the add event's time")
@@ -173,11 +156,12 @@ func TestKeptReconstructedWhenOnlyContentHashMatches(t *testing.T) {
 	known := knownMemory{
 		MemoryID:    "mem-produced",
 		Scope:       keptScope,
-		ContentHash: hashFromHex(t, helloWorldHashHex),
+		ContentHash: helloWorldHash,
 		Basis:       keptAddRecordID,
+		At:          fixedTime,
 	}
 	client := enumerationClient(t, completePage(listed))
-	rc := New(keptLedger(), client)
+	rc := New(&fakeReader{}, client)
 
 	rec := firstKept(t, rc, keptScope, []knownMemory{known})
 
@@ -189,7 +173,7 @@ func TestKeptReconstructedWhenOnlyContentHashMatches(t *testing.T) {
 		"the record id is qualified by the reason kind")
 	assert.Equal(t, "mem-other", rec.Subject.MemoryID,
 		"the subject is the memory that actually exists in the listing, not the absent produced id")
-	assert.Equal(t, hashFromHex(t, helloWorldHashHex), rec.Subject.ContentHash)
+	assert.Equal(t, helloWorldHash, rec.Subject.ContentHash)
 	assert.Equal(t, fixedTime, rec.At, "At is the add event's time")
 	assert.True(t, rec.RecordedAt.IsZero(), "RecordedAt is left zero for ledger.Append to stamp")
 
@@ -231,11 +215,12 @@ func TestKeptWritesNothingWhenMemoryIsNeitherMatchedNorPresent(t *testing.T) {
 	known := knownMemory{
 		MemoryID:    "mem-produced",
 		Scope:       keptScope,
-		ContentHash: hashFromHex(t, helloWorldHashHex),
+		ContentHash: helloWorldHash,
 		Basis:       keptAddRecordID,
+		At:          fixedTime,
 	}
 	client := enumerationClient(t, completePage(listed))
-	rc := New(keptLedger(), client)
+	rc := New(&fakeReader{}, client)
 
 	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
 	require.NoError(t, err, "a memory that is neither present nor content-matched is a clean non-event, not an error")
@@ -251,15 +236,16 @@ func TestKeptOnlyClaimsFromACompleteEnumeration(t *testing.T) {
 	known := knownMemory{
 		MemoryID:    "mem-produced",
 		Scope:       keptScope,
-		ContentHash: hashFromHex(t, helloWorldHashHex),
+		ContentHash: helloWorldHash,
 		Basis:       keptAddRecordID,
+		At:          fixedTime,
 	}
 	// The first page reports count 1 (the memory exists) but serves no results
 	// and no next page: the walk collects 0 of a reported 1.
 	client := enumerationClient(t, func(int, *http.Request) enumPage {
 		return enumPage{Count: 1, Results: nil}
 	})
-	rc := New(keptLedger(), client)
+	rc := New(&fakeReader{}, client)
 
 	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
 
@@ -274,10 +260,11 @@ func TestKeptPropagatesEnumerationError(t *testing.T) {
 	known := knownMemory{
 		MemoryID:    "mem-produced",
 		Scope:       keptScope,
-		ContentHash: hashFromHex(t, helloWorldHashHex),
+		ContentHash: helloWorldHash,
 		Basis:       keptAddRecordID,
+		At:          fixedTime,
 	}
-	rc := New(keptLedger(), errorEnumerationClient(t))
+	rc := New(&fakeReader{}, errorEnumerationClient(t))
 
 	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
 
@@ -294,10 +281,11 @@ func TestKeptFailsLoudlyWithoutAClient(t *testing.T) {
 	known := knownMemory{
 		MemoryID:    "mem-produced",
 		Scope:       keptScope,
-		ContentHash: hashFromHex(t, helloWorldHashHex),
+		ContentHash: helloWorldHash,
 		Basis:       keptAddRecordID,
+		At:          fixedTime,
 	}
-	rc := New(keptLedger(), nil)
+	rc := New(&fakeReader{}, nil)
 
 	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{known})
 
@@ -312,7 +300,7 @@ func TestKeptFailsLoudlyWithoutAClient(t *testing.T) {
 // otherwise fail the pass loudly).
 func TestKeptDoesNotEnumerateWhenNoMemoryIsKnown(t *testing.T) {
 	other := knownMemory{MemoryID: "mem-other", Scope: record.Scope{UserID: "u2"}, ContentHash: testHash(0x33), Basis: "r-other"}
-	rc := New(keptLedger(), nil)
+	rc := New(&fakeReader{}, nil)
 
 	got, err := rc.resolveKept(context.Background(), keptScope, []knownMemory{other})
 	require.NoError(t, err, "a scope with no known memory has nothing to resolve and must not touch Mem0")

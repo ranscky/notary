@@ -3,6 +3,7 @@ package reconcile
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"notary/internal/mem0"
 	"notary/internal/record"
@@ -36,11 +37,20 @@ type worklist struct {
 // id, the scope it lives in, its content hash, and the id of the record that
 // established it. That establishing record id is the basis a later absence
 // claim rests on.
+//
+// At is the establishing record's At -- the Mem0 event time. It is carried here
+// because a claim derived from this memory (memory_kept, memory_dropped) is
+// about that same event and must adopt its time without re-reading the ledger:
+// a producer that has only the id, scope and hash cannot recover the time, and
+// looking it up again would mean a second, window-ignoring ledger scan. The
+// value is the add event's time as buildAddResolved carried it forward, so it
+// is exactly what a claim about this memory should record on Record.At.
 type knownMemory struct {
 	MemoryID    string
 	Scope       record.Scope
 	ContentHash record.Hash
 	Basis       record.RecordID
+	At          time.Time
 }
 
 // buildWorklist derives the worklist, in dependency order, from records.
@@ -173,6 +183,12 @@ func knownMemories(records []record.Record) []knownMemory {
 			Scope:       r.Subject.Scope,
 			ContentHash: r.Subject.ContentHash,
 			Basis:       r.ID,
+			// The establishing record's At IS the memory's event time:
+			// buildAddResolved copies add.At onto the add_resolved record, and a
+			// memory_kept record written by a later pass carries the same At
+			// forward. Nothing else in the fold needs a clock, so the worklist
+			// stays a pure function of the records.
+			At: r.At,
 		})
 	}
 	return out

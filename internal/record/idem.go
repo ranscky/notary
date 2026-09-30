@@ -120,6 +120,13 @@ const claimIdemDomain = "notary/idem/claim/v1"
 // the version of the rule that justified the inference -- not decoration: a
 // rule whose meaning changes records a new version, and that version belongs in
 // the key so the new claim appends rather than silently deduplicating the old.
+// It is legitimately the EMPTY STRING for an observation-based claim, such as
+// memory_kept carrying stored_by_mem0: no rule justifies an observation, so
+// there is no version to record, and the empty string is the honest encoding
+// of "no rule" rather than a missing value to be filled in. The claim stays
+// subject-specific because reasonKind and kind separate it from every other
+// claim -- including the reconstructed kept_by_content_match, which does carry
+// ruleVersion "1".
 // reasonKind is the claim's reason kind and kind its event type; both are in
 // the key for the same reason DeriveIdemKey includes them: the same event at a
 // different tier, or on a different basis, is a different claim.

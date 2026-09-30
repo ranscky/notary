@@ -2,8 +2,6 @@ package reconcile
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,46 +11,13 @@ import (
 	"notary/internal/record"
 )
 
-// contentDomain domain-separates the subject content hash from every other use
-// of SHA-256 in Notary. It is the SAME tag internal/interceptor/library uses
-// (there: "notary/content/v1", mem0.go's contentDomain): the add record's
-// Subject.ContentHash was computed by the interceptor with that tag, so a
-// content-match comparison is only meaningful against a digest over the
-// identical domain.
-const contentDomain = "notary/content/v1"
-
-// contentHashOf returns the interceptor's content digest of one or more text
-// parts: sha256(contentDomain ‖ (uint32be(len(part)) ‖ part)…).
-//
-// It is a deliberate, byte-for-byte mirror of
-// internal/interceptor/library/mem0.go's contentHashOf. The reconciler may NOT
-// depend on internal/interceptor (the design spec §4 makes the two peers that
-// both depend on ledger), that function is unexported, and this task may not
-// modify that package -- so the algorithm is reproduced here rather than
-// imported. Reproducing it is not "a second hashing scheme": it must be the
-// SAME scheme, or the comparison can never fire and kept_by_content_match would
-// silently stop matching, a failure that looks exactly like "nothing happened".
-// A change here that is not mirrored there (or vice versa) breaks the rule, so
-// kept_test.go pins the digest against independent golden bytes.
-//
-// Each part is length-prefixed individually, so ["ab","c"] and ["a","bc"] hash
-// differently: the boundary between submitted messages cannot collide with a
-// differently-split submission. The interceptor hashes an add as
-// contentHashOf(messages...) and a listed memory as contentHashOf(memory text),
-// which is why a single-message add and the memory it produced agree.
-func contentHashOf(parts ...string) record.Hash {
-	h := sha256.New()
-	h.Write([]byte(contentDomain))
-	var n [4]byte
-	for _, p := range parts {
-		binary.BigEndian.PutUint32(n[:], uint32(len(p)))
-		h.Write(n[:])
-		h.Write([]byte(p))
-	}
-	var out record.Hash
-	copy(out[:], h.Sum(nil))
-	return out
-}
+// The content digest is mem0.ContentHash, which lives in internal/mem0 -- the
+// leaf package both this reconciler and internal/interceptor/library already
+// depend on -- so the scheme has ONE definition. It must be the same scheme the
+// interceptor used to compute the add record's Subject.ContentHash, or the
+// comparison below can never fire and kept_by_content_match would silently stop
+// matching, a failure that looks exactly like "nothing happened". That is why
+// the scheme was not duplicated here: see mem0.ContentHash and its golden test.
 
 // scopeFilters projects a record.Scope onto the mem0.Filters an enumeration
 // takes. Entity ids must travel nested in "filters" (mem0.Filters), never at
@@ -114,16 +79,11 @@ func (rc *Reconciler) resolveKept(ctx context.Context, scope record.Scope, known
 		return nil, fmt.Errorf("resolve kept for scope %s: complete enumeration is invalid", scopeKey(scope))
 	}
 
-	at, err := rc.establishingTimes(scoped)
-	if err != nil {
-		return nil, err
-	}
-
 	memories := enum.Items()
 	var out []record.Record
 	emitted := make(map[record.RecordID]struct{})
 	for _, km := range scoped {
-		rec, ok, err := keptRecord(km, scope, memories, at[km.Basis])
+		rec, ok, err := keptRecord(km, scope, memories, km.At)
 		if err != nil {
 			return nil, err
 		}
@@ -157,47 +117,13 @@ func knownInScope(known []knownMemory, scope record.Scope) []knownMemory {
 	return out
 }
 
-// establishingTimes resolves, for each known memory's establishing record id,
-// that record's At -- the add event's time.
-//
 // The At question (Task 6 settled the reasoning, this applies it). A memory_kept
 // record describes the same Mem0 event as the add whose product it is, so its At
-// is that event's time, and RecordedAt is left zero for ledger.Append to stamp
+// is that event's time -- knownMemory.At, which the fold took from the
+// establishing record -- and RecordedAt is left zero for ledger.Append to stamp
 // the true write time (a late reconciliation still keeps the event's time on
 // At). Mem0's own CreatedAt/UpdatedAt -- on the event status and on the listed
 // memory -- are deliberately NOT used: neither is when the event happened.
-//
-// The add event's time is not carried by knownMemory, and this task may not
-// change the worklist's shape, so it is recovered from the establishing record
-// itself (knownMemory.Basis) through the Reader the reconciler already holds.
-// That record's At IS the add event's time: buildAddResolved copies add.At onto
-// the add_resolved record, and a memory_kept record established by a later pass
-// carries the same At forward. A basis id that is not found leaves the zero time
-// rather than guessing; it can only happen if the ledger contradicts itself.
-func (rc *Reconciler) establishingTimes(known []knownMemory) (map[record.RecordID]time.Time, error) {
-	at := make(map[record.RecordID]time.Time, len(known))
-	if rc.reader == nil {
-		// No reader to consult (the reconciler was built without one). Never
-		// panic; the caller gets the zero time.
-		return at, nil
-	}
-
-	wanted := make(map[record.RecordID]struct{}, len(known))
-	for _, km := range known {
-		wanted[km.Basis] = struct{}{}
-	}
-
-	records, err := rc.reader.ListRecords(ledgerEarliest(), ledgerLatest())
-	if err != nil {
-		return nil, fmt.Errorf("resolve kept: read ledger for establishing records: %w", err)
-	}
-	for _, r := range records {
-		if _, ok := wanted[r.ID]; ok {
-			at[r.ID] = r.At
-		}
-	}
-	return at, nil
-}
 
 // keptRecord builds the memory_kept claim a single known memory warrants against
 // an already-complete set of listed memories, or ok=false when it warrants none.
@@ -217,10 +143,11 @@ func keptRecord(km knownMemory, scope record.Scope, memories []mem0.Memory, at t
 
 	for _, m := range memories {
 		// The submitted text digest is km.ContentHash (the add record's
-		// Subject.ContentHash). Comparing it against contentHashOf(m.Memory)
-		// requires the interceptor's exact scheme (see contentHashOf). A zero
-		// km.ContentHash cannot match: SHA-256 never produces the zero digest.
-		if km.ContentHash != (record.Hash{}) && contentHashOf(m.Memory) == km.ContentHash {
+		// Subject.ContentHash). Comparing it against mem0.ContentHash(m.Memory)
+		// requires the interceptor's exact scheme, now shared (see
+		// mem0.ContentHash). A zero km.ContentHash cannot match: SHA-256 never
+		// produces the zero digest.
+		if km.ContentHash != (record.Hash{}) && mem0.ContentHash(m.Memory) == km.ContentHash {
 			rec, err := buildKeptReconstructed(km, scope, m, at)
 			return rec, err == nil, err
 		}
@@ -247,7 +174,7 @@ func buildKeptObserved(scope record.Scope, m mem0.Memory, at time.Time) (record.
 		return record.Record{}, fmt.Errorf("resolve kept: build observed reason for %s: %w", m.ID, err)
 	}
 
-	contentHash := contentHashOf(m.Memory)
+	contentHash := mem0.ContentHash(m.Memory)
 	// No rule justifies an observation, so the rule version is empty; the key is
 	// still a pure function of (kind, reasonKind, memoryID, contentHash) and
 	// stable across passes.
@@ -291,7 +218,7 @@ func buildKeptReconstructed(km knownMemory, scope record.Scope, m mem0.Memory, a
 		return record.Record{}, fmt.Errorf("resolve kept: build reconstructed reason for %s: %w", m.ID, err)
 	}
 
-	contentHash := contentHashOf(m.Memory)
+	contentHash := mem0.ContentHash(m.Memory)
 	// The claim identity is per memory, per rule: the listed memory id, the
 	// content hash and the rule version. Nothing about the run enters it, so a
 	// second pass over an unchanged store derives the identical key and
