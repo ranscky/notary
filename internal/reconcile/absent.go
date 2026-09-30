@@ -33,15 +33,28 @@ import (
 //     therefore strictly `<`, never `<=`; a `<=` would fabricate a claim on
 //     every full-window search.
 //
-//  2. NON-RETURN. The search did NOT return the memory. Saturation alone is NOT
-//     sufficient: a saturated search returned everything above the threshold,
-//     so a memory it RETURNED was above the threshold and did not drop under
-//     any reading of the claim. Claiming absence for a returned memory would
-//     fabricate a signed record, and it would fire for every known memory any
-//     saturated same-scope search happens to return -- the ordinary
-//     list-then-search workflow, not an edge case. The returned set is read
-//     from the search's memory_surfaced records (see searchReturned), which is
-//     why resolveAbsent takes them.
+//  2. NON-RETURN, PROVEN. The search did NOT return the memory. Saturation
+//     alone is NOT sufficient: a saturated search returned everything above the
+//     threshold, so a memory it RETURNED was above the threshold and did not
+//     drop under any reading of the claim. Claiming absence for a returned
+//     memory would fabricate a signed record, and it would fire for every known
+//     memory any saturated same-scope search happens to return -- the ordinary
+//     list-then-search workflow, not an edge case.
+//
+//     Crucially, non-return is NOT inferred from the ABSENCE of a
+//     memory_surfaced record: the interceptor writes those best-effort
+//     (writeSurfaced returns early on any failure, which is exactly why the gap
+//     log exists), so a missing record is indistinguishable from a search that
+//     returned nothing. Instead non-return is PROVEN by ACCOUNTING: the search
+//     reported Count results, and the interceptor writes exactly one
+//     memory_surfaced record per returned memory, so the surfaced records tied
+//     to this search must number exactly Count, and non-return holds iff none of
+//     them is this memory (Count == 0 needs no records: an empty result set
+//     proves non-return on its own). When the surfaced evidence does not account
+//     for Count -- fewer, more, or absent -- the ledger is inconsistent for this
+//     search and non-return is UNPROVEN, so the producer WITHHOLDS the claim
+//     rather than fabricate one from missing data (see firstCoveringSearch for
+//     why withholding, not a loud failure, is the right response).
 //
 // A top_k of ZERO is treated as "not a covering search", NOT as "everything is
 // absent". A zero top_k means the caller named no window -- there is no window
@@ -74,11 +87,12 @@ import (
 //     an absence claim. That is the difference between "we knew this existed and
 //     it did not come back" and "we never knew it existed at all".
 //   - Non-return. A search is a candidate for a memory only when it is in the
-//     SAME scope, was recorded AT OR AFTER the memory became known, AND did not
-//     return the memory. A search from another scope, or one that predates the
-//     memory, describes a different world and cannot testify about this memory;
-//     and a search that returned the memory is positive evidence that it did not
-//     drop, so it too is not a basis for an absence claim.
+//     SAME scope, was recorded AT OR AFTER the memory became known, AND its
+//     surfaced evidence PROVES the memory was not among the search's results. A
+//     search from another scope, or one that predates the memory, describes a
+//     different world and cannot testify about this memory; and a search that
+//     returned the memory is positive evidence that it did not drop, so it too
+//     is not a basis for an absence claim.
 //
 // # One claim per memory
 //
@@ -135,13 +149,28 @@ func (rc *Reconciler) resolveAbsent(known []knownMemory, searches []record.Recor
 //   - its At is at or after km's At (it happened after the memory became known);
 //   - it is SATURATED: its result count is strictly less than its top_k
 //     (Count < TopK); and
-//   - it did NOT return km: no memory_surfaced record ties km's id to it.
+//   - it did NOT return km, PROVEN by accounting: the surfaced records tied to
+//     it number exactly Count result memories, and none of them is km.
 //
-// The last two are the two conditions of the rule, and both are visible in the
-// condition below. Saturation alone is NOT enough -- a saturated search returned
-// everything above the threshold, so a memory it returned was above the
-// threshold and did not drop. Claiming absence for a returned memory would be a
-// fabricated signed record.
+// The last two are the two conditions of the rule. Saturation alone is NOT
+// enough -- a saturated search returned everything above the threshold, so a
+// memory it returned was above the threshold and did not drop. And non-return
+// must be PROVEN, not assumed from a missing memory_surfaced record: the
+// interceptor writes those best-effort, so a missing record cannot be told from
+// a search that returned nothing. Requiring the surfaced evidence to account for
+// Count is the same completeness discipline the enumeration enforces elsewhere
+// in this phase -- Notary claims absence only when it can prove it.
+//
+// When the surfaced evidence does NOT account for Count (fewer, more, or absent
+// records), the ledger is inconsistent for this search: non-return is UNPROVEN,
+// so the claim is WITHHELD -- this search is skipped and a later covering search
+// may still justify a claim. Withholding is deliberate: the surfaced writes are
+// best-effort by design, so a shortfall is an expected, recoverable condition,
+// not a corrupt ledger; failing the whole pass on it would let one lost surfaced
+// write block reconciliation of every other scope and memory, while withholding
+// can only ever lose a claim, never fabricate one (spec §9.2's loud posture is
+// for errors that stop the pass being computed at all, not for a per-search
+// evidentiary shortfall whose correct answer is simply "do not claim").
 //
 // Searches are visited in the order the fold produced them (ledger order), so
 // the FIRST covering search is the one the claim's basis and At name.
@@ -165,34 +194,63 @@ func firstCoveringSearch(km knownMemory, searches []record.Record, surfaced []re
 		if err != nil {
 			return record.Record{}, false, err
 		}
-		// BOTH conditions of the rule: saturated AND the memory was not
-		// returned. Either one alone is not enough to claim the memory dropped.
-		if params.Count < params.TopK && !searchReturned(s, km.MemoryID, surfaced) {
+		// BOTH conditions of the rule, with non-return PROVEN by accounting:
+		//
+		//   1. SATURATION: Count < TopK. (top_k == 0 falls out here -- Count is
+		//      never negative, so Count < 0 is false and a zero window is never
+		//      a covering search.)
+		//   2. NON-RETURN, PROVEN: the surfaced records tied to this search
+		//      account for exactly Count result memories, and none of them is
+		//      km. A shortfall, a surplus, or no records at all means the ledger
+		//      is inconsistent for this search: non-return is unproven, so the
+		//      claim is withheld and we move on to the next candidate search.
+		hits := searchSurfaced(s, surfaced)
+		if params.Count < params.TopK && len(hits) == params.Count && !returnedMemory(hits, km.MemoryID) {
 			return s, true, nil
 		}
 	}
 	return record.Record{}, false, nil
 }
 
-// searchReturned reports whether the search s returned the memory with id
-// memoryID, by finding a memory_surfaced record tied to s.
+// searchSurfaced returns the memory_surfaced records tied to the search s:
+// those whose id carries the prefix s.ID + "#".
 //
 // The linkage is the record-id convention the interceptor writes, not a
 // heuristic: a search_performed record's id IS the caller's correlation id, and
 // each of its results is written as a memory_surfaced record whose id is
 // "<correlation id>#<rank>" with the returned memory's id on Subject.MemoryID
-// (internal/interceptor/library/mem0.go). So "s returned memoryID" is exactly
-// "some memory_surfaced record r has r.Subject.MemoryID == memoryID and r.ID
-// carries the prefix s.ID + \"#\"".
+// (internal/interceptor/library/mem0.go). So the records tied to s are exactly
+// those whose id is s.ID + "#" + rank, and they are the observed evidence of
+// which memories s returned.
 //
-// The prefix test is unambiguous because the separator is "#" and a correlation
-// id is base64, which never contains "#": no other search's surfaced id can
-// carry s.ID + "#" as a prefix. A scope-and-timestamp match, by contrast, could
-// collide two searches of one scope in the same clock tick, so it is not sound.
-func searchReturned(s record.Record, memoryID string, surfaced []record.Record) bool {
+// The prefix test assumes the "#" separator cannot occur inside a correlation
+// id. That holds for a DERIVED correlation id: DeriveCorrelationID returns
+// standard base64, which never contains "#". It is NOT guaranteed for a
+// CALLER-SUPPLIED correlation id, which the interceptor validates only as
+// non-empty, so a caller-supplied id containing "#" could in principle tie a
+// record to the wrong search. The error direction is claim-SUPPRESSING, never
+// claim-fabricating -- a false tie can only make a search appear to have
+// returned a memory (suppressing a claim) or fail the count-accounting check
+// (withholding one) -- so the producer stays safe, and this is recorded as an
+// observation for the interceptor rather than fixed here. A scope-and-timestamp
+// match, by contrast, could collide two searches of one scope in the same clock
+// tick in EITHER direction, so it is not sound at all.
+func searchSurfaced(s record.Record, surfaced []record.Record) []record.Record {
 	prefix := string(s.ID) + "#"
+	var hits []record.Record
 	for _, r := range surfaced {
-		if r.Subject.MemoryID == memoryID && strings.HasPrefix(string(r.ID), prefix) {
+		if strings.HasPrefix(string(r.ID), prefix) {
+			hits = append(hits, r)
+		}
+	}
+	return hits
+}
+
+// returnedMemory reports whether any of the surfaced records names memoryID as
+// the returned memory.
+func returnedMemory(hits []record.Record, memoryID string) bool {
+	for _, r := range hits {
+		if r.Subject.MemoryID == memoryID {
 			return true
 		}
 	}

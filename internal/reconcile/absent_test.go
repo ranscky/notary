@@ -173,6 +173,71 @@ func TestAbsentNotClaimedWhenCoveringSearchReturnedTheMemory(t *testing.T) {
 		"the covering search RETURNED mem-1, so it did not drop: no absence claim may be written")
 }
 
+// TestAbsentNotClaimedWhenSurfacedEvidenceIsMissing is the load-bearing check
+// for the residual false-claim class: a search reports Count > 0 results, but NO
+// memory_surfaced records are present. The interceptor's surfaced writes are
+// BEST-EFFORT by design (writeSurfaced returns early on any failure, which is
+// exactly why the gap log exists), so a missing surfaced record is
+// indistinguishable from a search that returned nothing. Absence must NOT be
+// inferred from that missing evidence: the claim is withheld.
+func TestAbsentNotClaimedWhenSurfacedEvidenceIsMissing(t *testing.T) {
+	known := absentKnown("mem-1", absentScope)
+	search := searchRecord(t, "search-1", absentScope, mem0.SearchPerformedPayload{
+		Query: "q", TopK: 5, Count: 2,
+	}, fixedTime.Add(time.Minute))
+	rc := New(&fakeReader{}, nil)
+
+	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{search}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, got,
+		"Count 2 with no surfaced records does not account for the result count: non-return is unproven, so no claim")
+}
+
+// TestAbsentNotClaimedWhenSurfacedEvidenceIsShort: surfaced records exist but
+// account for FEWER results than Count. The ledger is inconsistent for this
+// search, so non-return is unproven and the claim is withheld -- absent
+// evidence must not be read as "returned nothing".
+func TestAbsentNotClaimedWhenSurfacedEvidenceIsShort(t *testing.T) {
+	known := absentKnown("mem-1", absentScope)
+	at := fixedTime.Add(time.Minute)
+	search := searchRecord(t, "search-1", absentScope, mem0.SearchPerformedPayload{
+		Query: "q", TopK: 5, Count: 3,
+	}, at)
+	// Only two of the three reported results have a surfaced record, and
+	// neither is mem-1.
+	surfaced := []record.Record{
+		surfacedRecord(t, "search-1", 1, "mem-other", absentScope, at),
+		surfacedRecord(t, "search-1", 2, "mem-other-2", absentScope, at),
+	}
+	rc := New(&fakeReader{}, nil)
+
+	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{search}, surfaced)
+	require.NoError(t, err)
+	assert.Empty(t, got,
+		"2 surfaced records for Count 3 do not account for the result count: non-return is unproven, so no claim")
+}
+
+// TestAbsentNotClaimedWhenSurfacedEvidenceIsSurplus: surfaced records account
+// for MORE results than Count. That is equally inconsistent, so the claim is
+// withheld rather than fabricated from unmatched evidence.
+func TestAbsentNotClaimedWhenSurfacedEvidenceIsSurplus(t *testing.T) {
+	known := absentKnown("mem-1", absentScope)
+	at := fixedTime.Add(time.Minute)
+	search := searchRecord(t, "search-1", absentScope, mem0.SearchPerformedPayload{
+		Query: "q", TopK: 5, Count: 1,
+	}, at)
+	surfaced := []record.Record{
+		surfacedRecord(t, "search-1", 1, "mem-other", absentScope, at),
+		surfacedRecord(t, "search-1", 2, "mem-other-2", absentScope, at),
+	}
+	rc := New(&fakeReader{}, nil)
+
+	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{search}, surfaced)
+	require.NoError(t, err)
+	assert.Empty(t, got,
+		"2 surfaced records for Count 1 do not account for the result count: non-return is unproven, so no claim")
+}
+
 // TestAbsentNotClaimedWhenTopKIsZero pins the zero-top_k edge. top_k == 0 is
 // treated as "not a covering search", NOT as "everything is absent": a caller
 // who omitted top_k asked for no particular window, so a search cannot be read
@@ -240,9 +305,16 @@ func TestAbsentRequiresALaterSearchInTheSameScope(t *testing.T) {
 	earlier := searchRecord(t, "search-earlier", absentScope, mem0.SearchPerformedPayload{
 		Query: "q", TopK: 5, Count: 1,
 	}, fixedTime.Add(-time.Minute))
+	// Give each search surfaced evidence that accounts for its Count, so the ONLY
+	// reason no claim is written is the scope/time filter under test -- not the
+	// accounting requirement.
+	surfaced := []record.Record{
+		surfacedRecord(t, "search-other", 1, "mem-x", record.Scope{UserID: "u2"}, otherScope.At),
+		surfacedRecord(t, "search-earlier", 1, "mem-y", absentScope, earlier.At),
+	}
 
 	rc := New(&fakeReader{}, nil)
-	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{otherScope, earlier}, nil)
+	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{otherScope, earlier}, surfaced)
 	require.NoError(t, err)
 	assert.Empty(t, got,
 		"a search in another scope, or one that predates the memory, is not a coverage candidate")
@@ -254,12 +326,19 @@ func TestAbsentRequiresALaterSearchInTheSameScope(t *testing.T) {
 // idempotency key that is stable across two identical calls.
 func TestAbsentClaimRecordsRuleAndParameters(t *testing.T) {
 	known := absentKnown("mem-1", absentScope)
+	at := fixedTime.Add(time.Minute)
 	search := searchRecord(t, "search-1", absentScope, mem0.SearchPerformedPayload{
 		Query: "q", TopK: 5, Count: 2,
-	}, fixedTime.Add(time.Minute))
+	}, at)
+	// The surfaced evidence accounts for the two reported results (neither is
+	// mem-1), so the claim below rests on the rule, not on a missing record.
+	surfaced := []record.Record{
+		surfacedRecord(t, "search-1", 1, "mem-other", absentScope, at),
+		surfacedRecord(t, "search-1", 2, "mem-other-2", absentScope, at),
+	}
 	rc := New(&fakeReader{}, nil)
 
-	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{search}, nil)
+	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{search}, surfaced)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	rec := got[0]
@@ -294,7 +373,7 @@ func TestAbsentClaimRecordsRuleAndParameters(t *testing.T) {
 		"confidence is left at ZERO, which the encoding omits rather than rendering as \"0% confident\"")
 
 	require.NotEmpty(t, rec.IdempotencyKey)
-	again, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{search}, nil)
+	again, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{search}, surfaced)
 	require.NoError(t, err)
 	require.Len(t, again, 1)
 	assert.Equal(t, rec.IdempotencyKey, again[0].IdempotencyKey,
@@ -315,9 +394,17 @@ func TestAbsentTwoCoveringSearchesYieldOneClaim(t *testing.T) {
 	second := searchRecord(t, "search-second", absentScope, mem0.SearchPerformedPayload{
 		Query: "q2", TopK: 5, Count: 3,
 	}, fixedTime.Add(2*time.Minute))
+	// Each search's surfaced evidence accounts for its own Count (1 and 3), so
+	// both are genuine covering searches for mem-1, which neither returned.
+	surfaced := []record.Record{
+		surfacedRecord(t, "search-first", 1, "mem-f1", absentScope, first.At),
+		surfacedRecord(t, "search-second", 1, "mem-s1", absentScope, second.At),
+		surfacedRecord(t, "search-second", 2, "mem-s2", absentScope, second.At),
+		surfacedRecord(t, "search-second", 3, "mem-s3", absentScope, second.At),
+	}
 	rc := New(&fakeReader{}, nil)
 
-	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{first, second}, nil)
+	got, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{first, second}, surfaced)
 	require.NoError(t, err)
 	require.Len(t, got, 1, "the claim is keyed per memory, so two covering searches yield ONE claim")
 	assert.Equal(t, record.RecordID("memory_dropped:absent_from_search:mem-1"), got[0].ID)
@@ -337,7 +424,7 @@ func TestAbsentTwoCoveringSearchesYieldOneClaim(t *testing.T) {
 
 	// The key must not depend on WHICH covering search was picked: the search
 	// record id is deliberately absent from the claim identity.
-	single, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{first}, nil)
+	single, err := rc.resolveAbsent([]knownMemory{known}, []record.Record{first}, surfaced)
 	require.NoError(t, err)
 	require.Len(t, single, 1)
 	assert.Equal(t, single[0].IdempotencyKey, got[0].IdempotencyKey,
@@ -365,9 +452,13 @@ func TestAbsentSameMemoryInTwoScopesYieldsOneClaim(t *testing.T) {
 	second := searchRecord(t, "search-u2", otherScope, mem0.SearchPerformedPayload{
 		Query: "q2", TopK: 5, Count: 1,
 	}, fixedTime.Add(time.Minute))
+	surfaced := []record.Record{
+		surfacedRecord(t, "search-u1", 1, "mem-a", absentScope, first.At),
+		surfacedRecord(t, "search-u2", 1, "mem-b", otherScope, second.At),
+	}
 	rc := New(&fakeReader{}, nil)
 
-	got, err := rc.resolveAbsent(known, []record.Record{first, second}, nil)
+	got, err := rc.resolveAbsent(known, []record.Record{first, second}, surfaced)
 	require.NoError(t, err)
 	require.Len(t, got, 1,
 		"the same memory id in two scopes derives one id and one key, so only one claim is emitted")
