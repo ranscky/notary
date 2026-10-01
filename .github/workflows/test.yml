@@ -1,0 +1,58 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No secrets are required: the whole suite is offline. The Mem0 client is tested
+# against recorded fixtures over httptest, and a live test is opt-in behind a
+# build tag and is never a gate. If that ever changes, this workflow must not be
+# given a real key.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # -p 1 runs ONE package at a time, and that is deliberate rather than
+      # conservative. internal/ledger's TestConcurrentAppendsSerialize drives
+      # concurrent appenders against SQLite with a 5s busy timeout; when the
+      # whole module runs its packages in parallel the machine is oversubscribed,
+      # the timeout is exceeded, and the test fails with SQLITE_BUSY. Running
+      # packages sequentially is this project's documented practice, and it is
+      # the difference between a meaningful gate and a flaky one.
+      - name: test
+        run: go test -p 1 ./... -count=1
+
+      # The store serialises writers in SQLite and the ledger is the single
+      # write path, so races belong to these two packages specifically. Running
+      # the race detector over the whole module would cost minutes for little
+      # extra signal. -p 1 for the same load-sensitivity reason as above.
+      - name: race detector (concurrency-sensitive packages)
+        run: go test -p 1 -race ./internal/store/ ./internal/ledger/ -count=1

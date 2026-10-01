@@ -353,19 +353,24 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 
 ## 13. Phasing
 
-| Phase | Deliverable |
-|---|---|
-| 0 | Scaffolding (complete) |
-| 1 | `record` schema, tier constructors, `chain`, `store`; negative-compile tests |
-| 2 | `sign`, keyring, `verify`, checkpoints |
-| 3 | `interceptor`, `library/mem0`, `internal/mem0`, fail-open-loud, `internal/gap` |
-| 4 | Idempotency; correlation ID required on every observation |
-| 5 | **Reconciler** (new): event polling, `get_all` diffing, `kept`/`dropped`, rule registry, `reconcile-mode` |
-| 6 | `export`, redaction, tier phrasing, `internal/phrase` |
-| 7 | `replay` |
-| 8 | **`explain`** (new) |
-| 9 | Proxy mode |
-| 10 | Polish, README, demo fixtures |
+| Phase | Deliverable | Status |
+|---|---|---|
+| 0 | Scaffolding | ✅ complete |
+| 1 | `record` schema, tier constructors, `chain`, `store`; negative-compile tests | ✅ complete |
+| 2 | `sign`, keyring, `verify`, checkpoints | ✅ complete |
+| 3 | `interceptor`, `library/mem0`, `internal/mem0`, fail-open-loud, `internal/gap` | ✅ complete |
+| 4 | Idempotency; correlation ID required on every observation | ✅ complete |
+| 5 | **Reconciler** (new): event polling, `get_all` diffing, `kept`/`dropped`, rule registry, `reconcile-mode` | ✅ complete |
+| 6 | `export`, redaction, tier phrasing, `internal/phrase` | ⬜ not started |
+| 7 | `replay` | ⬜ not started |
+| 8 | **`explain`** (new) | ⬜ not started |
+| 9 | Proxy mode | ⬜ not started |
+| 10 | Polish, README, demo fixtures | ⬜ not started |
+
+Phases 0–5 are implemented and merged to `master`. Each phase that needs design work of its own gets a
+dated design spec and implementation plan under `docs/superpowers/`; the reconciler's are
+`specs/2026-09-30-notary-v1-reconciler-design.md` and `plans/2026-09-30-notary-v1-reconciler.md`. This
+table is updated as each phase lands, so a ⬜ here means genuinely not built — not merely undocumented.
 
 The reconciler precedes `export` because otherwise the export phase has nothing but `Observed` records to display.
 

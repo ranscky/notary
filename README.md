@@ -6,7 +6,8 @@
 ![SQLite](https://img.shields.io/badge/SQLite-modernc.org%2Fsqlite-003B57?logo=sqlite&logoColor=white)
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
 ![Dependencies](https://img.shields.io/badge/direct_dependencies-3-blue)
-![Scope](https://img.shields.io/badge/scope-core_ledger_(phases_1--4)-orange)
+![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
+![Scope](https://img.shields.io/badge/scope-core_ledger_and_reconciler_(phases_1--5)-orange)
 
 **A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
 
