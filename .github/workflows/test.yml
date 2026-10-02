@@ -37,6 +37,14 @@ jobs:
       - name: vet
         run: go vet ./...
 
+      # The live test is excluded from every other step by its build tag, which
+      # is what keeps it out of the gate -- and also means nothing else compiles
+      # it, so a renamed API could break it silently until someone next ran it by
+      # hand. This type-checks the tagged file WITHOUT running it: no key, no
+      # network, no test execution, so it preserves both promises.
+      - name: vet (live test, type-check only)
+        run: go vet -tags mem0live ./internal/reconcile/
+
       - name: build
         run: go build ./...
 
