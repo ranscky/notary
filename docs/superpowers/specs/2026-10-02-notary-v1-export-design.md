@@ -87,9 +87,8 @@ A test asserts this with a package-graph check, so D7 cannot rot.
 
 ```
 notary export --from <RFC3339> [--to <RFC3339>] [--include-sensitive]
-              [--checkpoint-out <path>] [--phrase] [--sensitivity-rules <path>]
-              [--max-span <duration>] [--user-id <id>] [--agent-id <id>]
-              [--app-id <id>] [--run-id <id>]
+              [--checkpoint-out <path>] [--phrase] [--max-span <duration>]
+              [--user-id <id>] [--agent-id <id>] [--app-id <id>] [--run-id <id>]
 ```
 
 - `--to` defaults to now. `--from` is required: an unbounded export of a large ledger is a footgun,
@@ -100,8 +99,10 @@ notary export --from <RFC3339> [--to <RFC3339>] [--include-sensitive]
 
 ### 4.3 The sensitivity rules file
 
-Declarative YAML, referenced by path (env `NOTARY_SENSITIVITY_RULES` or `--sensitivity-rules`). Rules
-are configuration, never code, per parent §10.
+Declarative YAML, referenced by path through `NOTARY_SENSITIVITY_RULES` only — **no CLI flag**. Rules
+mark content at write time, and no `notary` command writes records, so a flag would have nothing to
+attach to: the rules belong to whatever application constructs the interceptor. Rules are configuration,
+never code, per parent §10.
 
 ```yaml
 # Any rule that matches marks the record's content Sensitive at write time.
