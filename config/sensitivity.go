@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"go.yaml.in/yaml/v3"
@@ -27,11 +30,20 @@ import (
 //	      metadata:
 //	        category: health         # optional; matches Mem0 metadata key=value
 //
+// The document is decoded strictly: a misspelled field (say runid: for run_id:,
+// or rule: for rules:) is an error naming the offending field rather than being
+// silently dropped, because a dropped scope key quietly broadens a rule and a
+// dropped top-level key silently loads zero rules -- both the same accidental
+// class the clause guard below exists to prevent.
+//
 // A rule matches when every clause it specifies matches (see
 // interceptor.RuleSet.Match). A rule specifying neither a scope clause nor a
 // metadata clause is rejected here, with an error naming the rule: it would
 // vacuously match every record and mark an entire ledger sensitive by accident,
-// and that must be loud at startup rather than discovered in an export.
+// and that must be loud at startup rather than discovered in an export. A
+// document that names no rules at all is rejected for the same reason in the
+// other direction: an operator who wrote a rules file expects rules to be in
+// force, and a silently empty rule set would under-redact with no signal.
 func LoadSensitivityRules(path string) ([]interceptor.Rule, error) {
 	if path == "" {
 		return nil, fmt.Errorf(
@@ -43,9 +55,20 @@ func LoadSensitivityRules(path string) ([]interceptor.Rule, error) {
 		return nil, fmt.Errorf("config: read sensitivity rules %s: %w", path, err)
 	}
 
+	// KnownFields(true) makes an unknown field an error at every level. An empty
+	// document decodes as io.EOF, which is not treated as a parse failure -- the
+	// no-rules check below reports it with a clearer message.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var doc sensitivityDocument
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("config: parse sensitivity rules %s: %w", path, err)
+	}
+
+	if len(doc.Rules) == 0 {
+		return nil, fmt.Errorf(
+			"config: sensitivity rules %s: names no rules; a rules file must list at least one rule under 'rules:'",
+			path)
 	}
 
 	rules := make([]interceptor.Rule, 0, len(doc.Rules))

@@ -149,6 +149,76 @@ func TestMalformedYAMLNamesTheFile(t *testing.T) {
 		"a malformed document must name the file that holds it")
 }
 
+// TestUnknownFieldIsRejected verifies the document is decoded strictly: a
+// misspelled field is an error that names the offending field, not silently
+// dropped. A dropped scope key (say runid: for run_id:) would quietly broaden a
+// rule, and a dropped top-level key (rule: for rules:) would load zero rules --
+// both the silent over-broad class the load-time guard exists to prevent.
+func TestUnknownFieldIsRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		yaml    string
+		missing string
+	}{
+		{
+			name: "misspelled scope key",
+			yaml: `rules:
+  - name: typo
+    match:
+      scope:
+        runid: r1
+`,
+			missing: "runid",
+		},
+		{
+			name: "misspelled rule key",
+			yaml: `rules:
+  - name: typo
+    scpoe:
+      user_id: u1
+`,
+			missing: "scpoe",
+		},
+		{
+			name: "misspelled top-level key",
+			yaml: `rule:
+  - name: orphan
+`,
+			missing: "field rule not found",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeRulesFile(t, tc.yaml)
+			_, err := config.LoadSensitivityRules(path)
+			require.Error(t, err, "an unknown field must fail to load, not be silently dropped")
+			assert.Contains(t, err.Error(), tc.missing,
+				"the error must name the offending field")
+		})
+	}
+}
+
+// TestEmptyRuleDocumentIsRejected verifies a document that names no rules fails
+// to load rather than yielding an empty, error-free rule set. An operator who
+// wrote a rules file expects rules to be in force; a file that silently loads
+// nothing would under-redact with no signal, which is the same fail-loud
+// argument that rejects a clause-less rule.
+func TestEmptyRuleDocumentIsRejected(t *testing.T) {
+	t.Run("no rules key at all", func(t *testing.T) {
+		path := writeRulesFile(t, "# a rules file with nothing in it\n")
+		_, err := config.LoadSensitivityRules(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), filepath.Base(path))
+	})
+
+	t.Run("rules is present but empty", func(t *testing.T) {
+		path := writeRulesFile(t, "rules: []\n")
+		_, err := config.LoadSensitivityRules(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no rules")
+	})
+}
+
 // TestLoadSensitivityRulesMissingFile verifies a path that does not exist is an
 // error that names the path, rather than a silently empty rule set.
 func TestLoadSensitivityRulesMissingFile(t *testing.T) {
