@@ -33,6 +33,13 @@ const (
 	// EnvTrustedKeysPath is the environment variable holding the path to a file
 	// of trusted public keys.
 	EnvTrustedKeysPath = "NOTARY_TRUSTED_KEYS_PATH"
+	// EnvSensitivityRules names the environment variable that holds the path to
+	// the declarative sensitivity-rules YAML file. It is the ONLY way to point
+	// an application at a rules file: there is deliberately no CLI flag, because
+	// rules mark content sensitive at WRITE time and no notary command writes
+	// records, so a flag would have no command to live on. The value is a path,
+	// read by LoadSensitivityRules.
+	EnvSensitivityRules = "NOTARY_SENSITIVITY_RULES"
 )
 
 // Config is the fully resolved runtime configuration. A *Config is passed

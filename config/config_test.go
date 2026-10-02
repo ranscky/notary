@@ -141,6 +141,15 @@ func TestLoadFromFailMode(t *testing.T) {
 	})
 }
 
+// TestEnvSensitivityRulesIsDocumentedName pins the environment variable that
+// names the declarative sensitivity-rules file. It is the ONLY way an operator
+// points an application at the rules (there is deliberately no CLI flag, because
+// rules mark content at write time and no notary command writes records), so the
+// name is a documented interface and not an implementation detail.
+func TestEnvSensitivityRulesIsDocumentedName(t *testing.T) {
+	assert.Equal(t, "NOTARY_SENSITIVITY_RULES", config.EnvSensitivityRules)
+}
+
 // TestConfigDefaultsToReconcileCommand verifies Config.ReconcileMode defaults to
 // the only mode implemented in v1 -- reconcile.ReconcileCommand -- and that the
 // default is one this build can actually run. There is deliberately no
