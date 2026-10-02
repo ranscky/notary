@@ -206,13 +206,16 @@ That one live test exists because of what fixtures provably cannot catch: that a
 behind the `mem0live` build tag, so `go test ./...` never compiles it and CI never runs it:
 
 ```bash
-NOTARY_MEM0_API_KEY=... go test -tags mem0live -run TestLive -v ./internal/reconcile/
+NOTARY_MEM0_API_KEY=... go test -tags mem0live -count=1 -run TestLive -v ./internal/reconcile/
 ```
 
 It needs the network, a real key, and real Mem0 seconds, so run it deliberately rather than routinely.
-It writes only to a scope it generates itself, refuses to run unless that scope carries the
-`notary-live-test-` prefix — so it cannot reach a real user's memories — and wipes the scope
-afterwards whether it passed or failed.
+`-count=1` is not decoration either: without it a re-run **replays the cached result** and prints
+`ok (cached)`, a pass that never touched Mem0 — the same fiction as a skipped test reporting success.
+It writes only to a scope it mints itself from a random suffix, and that generated scope is the only
+one it ever hands to Mem0; each deletion is re-checked against it locally rather than trusting the
+service to honour a filter. It wipes the scope afterwards when it passed or failed — barring a kill,
+or a listing it could not read.
 
 ### The README banner
 

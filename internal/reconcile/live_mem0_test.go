@@ -5,9 +5,13 @@
 // touch the network -- stays true: `go test ./...` does not compile this file,
 // and neither `go build` nor `go vet` sees it.
 //
-// Run it deliberately, with a real key in the environment:
+// Run it deliberately, with a real key in the environment, and WITH -count=1:
 //
-//	go test -tags mem0live -run TestLiveAddReconcilesToAFixpoint -v ./internal/reconcile/
+//	go test -tags mem0live -count=1 -run TestLiveAddReconcilesToAFixpoint -v ./internal/reconcile/
+//
+// -count=1 is not decoration. Without it a re-run REPLAYS the cached result and
+// prints "ok (cached)": a PASS that never touched Mem0, which is precisely the
+// fiction this file exists to avoid.
 //
 // It exists because the fixtures could not catch the class of bug it guards: the
 // two-pass convergence defect shipped green through a full fixtured suite and a
@@ -15,10 +19,12 @@
 // fixture begins with its chain pre-satisfied, so none of them could ask the
 // question this test asks.
 //
-// Safety: it writes only to a scope it generates itself, refuses to run unless
-// that scope carries liveTestScopePrefix -- so a misconfiguration cannot point it
-// at an operator's real memories -- and wipes that scope on the way out, whether
-// the test passed, failed or panicked part-way.
+// Safety: it writes only to a scope it mints itself, from a random suffix, and
+// that generated scope is the only one this file ever hands to Mem0. Every
+// deletion is re-checked locally against that scope before it is issued, so the
+// test's safety does not depend on the remote service honouring a filter. It
+// wipes the scope on the way out, whether the test passed, failed or stopped
+// part-way.
 package reconcile_test
 
 import (
@@ -28,7 +34,6 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -48,36 +53,63 @@ import (
 )
 
 const (
-	// liveTestScopePrefix is the shape every scope this test will write to must
-	// have. The guard is deliberate: it makes it impossible for a misconfigured
-	// run to add memories to, and then delete them from, a real user's scope.
-	liveTestScopePrefix = "notary-live-test-"
 	// liveTestKeyEnv names the variable a per-run signing seed is placed in. The
 	// seed is generated in-process and the ledger is a throwaway in t.TempDir(),
 	// so no key material is written to disk anywhere.
 	liveTestKeyEnv = "NOTARY_LIVE_TEST_SIGNING_KEY"
 	// liveTestEventWait bounds the wait for Mem0 to finish an add. An add is
-	// asynchronous; a pass that ran while it was still PENDING would write
+	// asynchronous; a pass that ran while it was still in flight would write
 	// nothing, which is correct behaviour and a useless test.
 	liveTestEventWait = 120 * time.Second
+	// liveTestPageSize and liveTestMaxPages bound the cleanup listing.
+	liveTestPageSize = 100
+	liveTestMaxPages = 10
 )
 
-// liveTestScope generates a scope belonging to nobody, and refuses to return one
-// that does not carry the required prefix.
+// liveTestScope mints a scope belonging to nobody. liveTestScopePrefix and
+// requireTestScope live in livetest_scope_test.go, which is deliberately NOT
+// behind this build tag: the guard the README's safety claim rests on is
+// therefore compiled and exercised by the default suite, rather than existing
+// only in a file that no gate ever compiles.
 func liveTestScope(t *testing.T) record.Scope {
 	t.Helper()
 	buf := make([]byte, 8)
 	_, err := rand.Read(buf)
 	require.NoError(t, err)
-
-	name := liveTestScopePrefix + hex.EncodeToString(buf)
-	require.True(t, strings.HasPrefix(name, liveTestScopePrefix),
-		"refusing to run against scope %q: the live test may only write to a generated test scope", name)
-	return record.Scope{UserID: name}
+	return requireTestScope(t, record.Scope{UserID: liveTestScopePrefix + hex.EncodeToString(buf)})
 }
 
-// waitForEvent polls EventStatus until the add leaves PENDING, so the pass under
-// test has something to resolve.
+// listScope lists a scope's memories with plain paged GetAll, which reports what
+// the API returned without additionally demanding a completeness proof.
+//
+// That is deliberate for deletion: GetAllComplete errs toward failure on any
+// doubt, and a cleanup that declined to run because a listing looked odd would
+// leave the whole scope behind. Proving completeness matters for an ABSENCE
+// claim, which is why the verification step below still uses it.
+func listScope(ctx context.Context, t *testing.T, c *mem0.Client, scope record.Scope) []mem0.Memory {
+	t.Helper()
+	var out []mem0.Memory
+	for page := 1; page <= liveTestMaxPages; page++ {
+		resp, err := c.GetAll(ctx, mem0.GetAllRequest{
+			Filters:  mem0.Filters{UserID: scope.UserID},
+			Page:     page,
+			PageSize: liveTestPageSize,
+		})
+		if err != nil {
+			t.Errorf("cleanup: listing scope %s page %d: %v", scope.UserID, page, err)
+			return out
+		}
+		out = append(out, resp.Results...)
+		if resp.Next == nil || len(resp.Results) == 0 {
+			return out
+		}
+	}
+	t.Errorf("cleanup: listing scope %s exceeded %d pages", scope.UserID, liveTestMaxPages)
+	return out
+}
+
+// waitForEvent polls EventStatus until the add reaches a terminal status, so the
+// pass under test has something to resolve.
 func waitForEvent(t *testing.T, ctx context.Context, c *mem0.Client, eventID string) {
 	t.Helper()
 	deadline := time.Now().Add(liveTestEventWait)
@@ -87,16 +119,28 @@ func waitForEvent(t *testing.T, ctx context.Context, c *mem0.Client, eventID str
 		require.NoError(t, err, "polling the event status of %s", eventID)
 		last = resp.Status
 
+		if resp.Status == "SUCCEEDED" {
+			require.NotEmpty(t, resp.Results,
+				"Mem0 reported the add SUCCEEDED (event %s) but returned no memory, so there is nothing to certify", eventID)
+			t.Logf("event %s settled as SUCCEEDED with %d result(s)", eventID, len(resp.Results))
+			return
+		}
+
+		// FAILED is terminal, but it is NOT this test's subject: with a failed
+		// add the pass legitimately certifies nothing, and the assertions below
+		// would then fail naming the convergence defect. Say what actually
+		// happened. This is the same lesson as the RUNNING status below: an
+		// inconclusive state must not be funnelled into a message about a
+		// different cause.
+		if resp.Status == "FAILED" {
+			t.Fatalf("Mem0 FAILED the add (event %s): a service failure, not a reconciler defect, so there is nothing to reconcile", eventID)
+		}
+
 		// Mem0 works through PENDING and then RUNNING before reaching a terminal
 		// status. The recorded fixtures only ever carried PENDING and SUCCEEDED,
 		// so waiting merely for "not PENDING" is not enough: a RUNNING add with
 		// no results is still work in progress, and a pass that ran then would
-		// correctly write nothing -- which is a failing test for the wrong
-		// reason, not a defect.
-		if resp.Status == "SUCCEEDED" || resp.Status == "FAILED" {
-			t.Logf("event %s settled as %s with %d result(s)", eventID, resp.Status, len(resp.Results))
-			return
-		}
+		// correctly write nothing -- a failing test for the wrong reason.
 		t.Logf("event %s is %s (%d result(s)); still working", eventID, resp.Status, len(resp.Results))
 
 		if time.Now().After(deadline) {
@@ -111,9 +155,18 @@ func waitForEvent(t *testing.T, ctx context.Context, c *mem0.Client, eventID str
 // resolved AND certified kept by a SINGLE reconcile pass, and re-running must
 // append nothing.
 func TestLiveAddReconcilesToAFixpoint(t *testing.T) {
-	apiKey := os.Getenv("NOTARY_MEM0_API_KEY")
+	// -short asks for a fast suite, and this test is neither fast nor offline, so
+	// it stands down. A skip is right here -- the operator asked for speed, not
+	// because anything is misconfigured -- unlike the missing key below, which is
+	// a FAILURE precisely so that it cannot pass as "did not run".
+	if testing.Short() {
+		t.Skip("the live test needs the network and real Mem0 seconds; skipped under -short")
+	}
+
+	apiKey := os.Getenv(config.EnvMem0APIKey)
 	require.NotEmpty(t, apiKey,
-		"NOTARY_MEM0_API_KEY must be set in the environment; Notary reads secrets from the environment and nowhere else")
+		"%s must be set in the environment; Notary reads secrets from the environment and nowhere else",
+		config.EnvMem0APIKey)
 
 	seed := make([]byte, 32)
 	_, err := rand.Read(seed)
@@ -136,7 +189,7 @@ func TestLiveAddReconcilesToAFixpoint(t *testing.T) {
 	l := ledger.New(st, sg, nil)
 	aw := interceptor.NewAuditWriter(l, g, nil)
 
-	baseURL := os.Getenv("NOTARY_MEM0_BASE_URL")
+	baseURL := os.Getenv(config.EnvMem0BaseURL)
 	if baseURL == "" {
 		baseURL = config.DefaultMem0BaseURL
 	}
@@ -149,22 +202,29 @@ func TestLiveAddReconcilesToAFixpoint(t *testing.T) {
 	// so an assertion failing part-way through still leaves the account clean.
 	t.Cleanup(func() {
 		cleanupCtx := context.Background()
-		enum, err := mc.GetAllComplete(cleanupCtx, mem0.GetAllRequest{Filters: mem0.Filters{UserID: scope.UserID}})
-		if err != nil {
-			t.Errorf("cleanup: enumerating scope %s: %v", scope.UserID, err)
-			return
-		}
-		for _, m := range enum.Items() {
+
+		for _, m := range listScope(cleanupCtx, t, mc, scope) {
+			// Re-check locally before deleting. The test must not depend on the
+			// remote service honouring the filter it was sent: if a listing ever
+			// returned something out of scope, refusing it is the difference
+			// between cleanup and collateral damage.
+			if m.UserID != scope.UserID {
+				t.Errorf("cleanup: REFUSING to delete memory %s: it reports user_id %q, not the test scope %q",
+					m.ID, m.UserID, scope.UserID)
+				continue
+			}
 			if derr := mc.Delete(cleanupCtx, m.ID); derr != nil {
 				t.Errorf("cleanup: deleting memory %s from %s: %v", m.ID, scope.UserID, derr)
 			}
 		}
 
-		// Prove the cleanup worked rather than assuming it: a test that leaves
-		// memories behind has littered a real account.
+		// Then prove the wipe worked, with the STRICT enumeration: this is an
+		// absence claim, so completeness is exactly what must be proven. A
+		// failure here is reported rather than assumed away, and the deletions
+		// above have already run regardless.
 		after, err := mc.GetAllComplete(cleanupCtx, mem0.GetAllRequest{Filters: mem0.Filters{UserID: scope.UserID}})
 		if err != nil {
-			t.Errorf("cleanup: re-enumerating scope %s: %v", scope.UserID, err)
+			t.Errorf("cleanup: re-enumerating scope %s to verify the wipe: %v", scope.UserID, err)
 			return
 		}
 		if n := after.Len(); n != 0 {
@@ -239,7 +299,8 @@ func TestLiveAddReconcilesToAFixpoint(t *testing.T) {
 		"re-running against an unchanged store must append nothing")
 }
 
-// ledgerRows reports the ledger's head sequence and row count.
+// ledgerRows reports the ledger's head record, whether it has one, and its row
+// count.
 func ledgerRows(t *testing.T, st store.Store) (record.Record, bool, int) {
 	t.Helper()
 	head, ok, err := st.Head()
