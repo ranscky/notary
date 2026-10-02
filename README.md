@@ -201,6 +201,19 @@ Tests never touch the network. The Mem0 client is tested against **recorded resp
 `internal/mem0/testdata/`, whose provenance is documented in `FIXTURES.md`. A live test is opt-in
 behind a build tag and is never a gate.
 
+That one live test exists because of what fixtures provably cannot catch: that a real add is resolved
+**and** certified kept by a **single** reconcile pass, and that re-running appends nothing. It sits
+behind the `mem0live` build tag, so `go test ./...` never compiles it and CI never runs it:
+
+```bash
+NOTARY_MEM0_API_KEY=... go test -tags mem0live -run TestLive -v ./internal/reconcile/
+```
+
+It needs the network, a real key, and real Mem0 seconds, so run it deliberately rather than routinely.
+It writes only to a scope it generates itself, refuses to run unless that scope carries the
+`notary-live-test-` prefix — so it cannot reach a real user's memories — and wipes the scope
+afterwards whether it passed or failed.
+
 ### The README banner
 
 `docs/assets/banner.svg` is the source; `docs/assets/banner.png` is the rendered 2x raster that the
