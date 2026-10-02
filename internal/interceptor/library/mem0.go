@@ -83,6 +83,48 @@ func New(mc *mem0.Client, aw *interceptor.AuditWriter, scope record.Scope, now f
 	return &Mem0Interceptor{mc: mc, aw: aw, scope: scope, now: now}
 }
 
+// callConfig is the resolved per-call configuration Add and Search derive from
+// their variadic CallOption arguments. Its zero value is the documented
+// default: a call that supplies no option records content that is unclassified,
+// and its records carry Sensitive false.
+type callConfig struct {
+	// sensitive marks the content this one call records as sensitive.
+	sensitive bool
+}
+
+// CallOption customises a single Add or Search call. An option is a value, not
+// state on the interceptor: it applies only to the call it is passed to and is
+// never retained, so one call's classification cannot leak into another and
+// the interceptor stays safe for concurrent use.
+type CallOption func(*callConfig)
+
+// Sensitive returns a CallOption that marks the content the call records as
+// sensitive. It sets Content.Sensitive on every Observed record the call writes
+// -- the add_requested record, or each memory_surfaced record -- before that
+// record is hashed, so the classification is tamper-evident (see
+// TestSensitiveChangesTheHash). A search_performed record carries no content, so
+// there is nothing for the option to mark on it.
+//
+// Omitting the option leaves the content unclassified rather than verified
+// non-sensitive; read Add's doc comment for what that distinction requires of a
+// consumer.
+func Sensitive() CallOption {
+	return func(c *callConfig) { c.sensitive = true }
+}
+
+// resolveCallOptions folds a call's options onto its default configuration. It
+// tolerates a nil option so a caller cannot crash the interceptor by passing
+// one.
+func resolveCallOptions(opts []CallOption) callConfig {
+	var cfg callConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
 // FailMode reports the mode this interceptor runs under: always FailOpenLoud.
 // The only mode v1 implements is fail-open-loud, so the audit failure is
 // reported loudly (the AuditWriter's channels) and durably (the gap log) while
@@ -113,29 +155,27 @@ func (m *Mem0Interceptor) Close() error {
 // text as Content. The Subject.ContentHash length-prefixes each message
 // individually, so the ambiguous "\n"-join in Content.Text cannot affect it.
 //
-// Two v1 limitations are deliberate and documented rather than plumbed through
+// One v1 limitation is deliberate and documented rather than plumbed through
 // the signature:
 //
 //   - Add's signature carries no infer flag, so mem0.AddRequest.Infer is left
 //     nil and Mem0's platform default applies. A caller needing an explicit
 //     infer value must call mem0.Client directly.
 //
-//   - Add's signature carries no sensitivity input, so the record's
-//     Content.Sensitive is always false. There is no way to express "this
-//     memory is sensitive" through Add(messages []string); a caller that needs
-//     it must classify and write through the ledger itself. This is a v1 gap.
-//
-//     Read that false carefully: it means UNCLASSIFIED, not verified
-//     non-sensitive. Every record this method writes carries it, so a consumer
-//     that trusts the flag and renders or exports without redaction will emit
-//     this content in the clear. Treat records from this path as unclassified
-//     until the caller supplies a sensitivity input.
+// Sensitivity, by contrast, is expressible per call: passing Sensitive() marks
+// the content this Add records as sensitive (Content.Sensitive true). The flag
+// is set before the record is hashed, so the classification is tamper-evident.
+// With no option the content is UNCLASSIFIED, not verified non-sensitive: a
+// consumer that trusts the flag and renders or exports without redaction will
+// emit content it was never told to protect. Treat an unclassified record as
+// content to redact until something -- this option, or a matching rule -- says
+// otherwise.
 //
 // On a Mem0 error, Add returns that error and writes no record -- a Mem0
 // failure is a real error, not an audit gap. When Mem0 succeeds, Add returns
 // the response with a nil error unconditionally, even when the record cannot be
 // written (see write).
-func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, messages []string) (mem0.AddResponse, error) {
+func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, messages []string, opts ...CallOption) (mem0.AddResponse, error) {
 	if correlationID == "" {
 		return mem0.AddResponse{}, ErrMissingCorrelationID
 	}
@@ -155,7 +195,7 @@ func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, message
 		return mem0.AddResponse{}, err
 	}
 
-	m.observeAdd(correlationID, messages, resp)
+	m.observeAdd(correlationID, messages, resp, resolveCallOptions(opts).sensitive)
 	return resp, nil
 }
 
@@ -169,10 +209,14 @@ func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, message
 // Subject, the memory text as Content, and the memory's score and 1-based rank
 // as its evidence.
 //
+// Passing Sensitive() marks each memory_surfaced record's content sensitive,
+// exactly as it does for Add; the search_performed record carries no content, so
+// the option does not touch it.
+//
 // On a Mem0 error, Search returns that error and writes no record. When Mem0
 // succeeds, Search returns the response with a nil error unconditionally, even
 // when the records cannot be written (see write).
-func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q mem0.SearchRequest) (mem0.SearchResponse, error) {
+func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q mem0.SearchRequest, opts ...CallOption) (mem0.SearchResponse, error) {
 	if correlationID == "" {
 		return mem0.SearchResponse{}, ErrMissingCorrelationID
 	}
@@ -185,7 +229,7 @@ func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q me
 		return mem0.SearchResponse{}, err
 	}
 
-	m.observeSearch(correlationID, q, resp)
+	m.observeSearch(correlationID, q, resp, resolveCallOptions(opts).sensitive)
 	return resp, nil
 }
 
@@ -193,7 +237,7 @@ func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q me
 // best-effort by construction: every step is total for the inputs Add can
 // produce, and a step that cannot build a record simply skips the write rather
 // than failing the caller's already-successful Add.
-func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, resp mem0.AddResponse) {
+func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, resp mem0.AddResponse, sensitive bool) {
 	at := m.now().UTC()
 
 	payload, err := json.Marshal(mem0.AddPayload{EventID: resp.EventID, Status: resp.Status})
@@ -216,7 +260,7 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 			Scope:       m.scope,
 			ContentHash: contentHash,
 		},
-		Content: &record.Content{Text: strings.Join(messages, "\n")},
+		Content: &record.Content{Text: strings.Join(messages, "\n"), Sensitive: sensitive},
 	}
 	// The identifier is the caller's correlation ID (the record's own
 	// identity), NOT resp.EventID. resp.EventID is Mem0's answer, and keying
@@ -233,12 +277,12 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 // observeSearch builds and writes the search_performed record and then one
 // memory_surfaced record per result, in rank order. Like observeAdd it is
 // best-effort.
-func (m *Mem0Interceptor) observeSearch(correlationID string, q mem0.SearchRequest, resp mem0.SearchResponse) {
+func (m *Mem0Interceptor) observeSearch(correlationID string, q mem0.SearchRequest, resp mem0.SearchResponse, sensitive bool) {
 	at := m.now().UTC()
 
 	m.writeSearchPerformed(correlationID, q, len(resp.Results), at)
 	for i, res := range resp.Results {
-		m.writeSurfaced(correlationID, i+1, res, at)
+		m.writeSurfaced(correlationID, i+1, res, at, sensitive)
 	}
 }
 
@@ -286,7 +330,7 @@ func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.Sear
 // writeSurfaced builds and writes one memory_surfaced record for a single
 // search result. rank is 1-based and supplies both the record ID's "#rank"
 // suffix and the rank carried in the evidence payload.
-func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0.SearchResult, at time.Time) {
+func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0.SearchResult, at time.Time, sensitive bool) {
 	payload, err := json.Marshal(mem0.MemorySurfacedPayload{Score: res.Score, Rank: rank})
 	if err != nil {
 		return
@@ -309,7 +353,7 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 			Scope:       m.scope,
 			ContentHash: contentHash,
 		},
-		Content: &record.Content{Text: res.Memory.Memory},
+		Content: &record.Content{Text: res.Memory.Memory, Sensitive: sensitive},
 	}
 	// The key must identify THIS record, not merely the search it belongs to.
 	// Every result of one search shares the correlation ID, and two results may
