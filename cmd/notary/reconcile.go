@@ -177,7 +177,7 @@ func runReconcile(cmd *cobra.Command, cfg *config.Config) error {
 
 	appended, present := 0, 0
 	for _, rec := range claims {
-		before, herr := headSeq(l)
+		before, hasBefore, herr := l.Head()
 		if herr != nil {
 			return fmt.Errorf("reading the ledger head before claim %s: %w", rec.ID, herr)
 		}
@@ -191,18 +191,12 @@ func runReconcile(cmd *cobra.Command, cfg *config.Config) error {
 			return fmt.Errorf("appending claim %s (after %d appended): %w", rec.ID, appended, aerr)
 		}
 
-		after, herr := headSeq(l)
+		after, hasAfter, herr := l.Head()
 		if herr != nil {
 			return fmt.Errorf("reading the ledger head after claim %s: %w", rec.ID, herr)
 		}
 
-		// Append returns the stored record EITHER WAY: it deduplicates on the
-		// idempotency key and hands back the record already present. The chain
-		// position is therefore the only thing that distinguishes a claim this
-		// pass wrote from one that was already there. Reporting the DERIVED
-		// count instead -- the previous shape -- claimed work the pass had not
-		// done, so a re-run read as though it had written records.
-		if after > before {
+		if appendedBy(id, before, hasBefore, after, hasAfter) {
 			appended++
 			fmt.Fprintf(out, "appended  %s %s\n", rec.Event, id)
 			continue
@@ -220,20 +214,33 @@ func runReconcile(cmd *cobra.Command, cfg *config.Config) error {
 	return nil
 }
 
-// headSeq returns the ledger's chain position -- the head record's Seq -- or -1
-// when the ledger holds nothing. It is how the report tells a claim this pass
-// APPENDED from one Append deduplicated, that being the one thing Append's
-// return value cannot express. A negative sentinel rather than a zero value
-// keeps the first record (Seq 0) distinguishable from an empty ledger.
-func headSeq(l *ledger.Ledger) (int64, error) {
-	head, ok, err := l.Head()
-	if err != nil {
-		return -1, err
+// appendedBy reports whether this pass is the one that put id into the ledger,
+// given the chain heads observed either side of Append.
+//
+// Two conditions, and BOTH are needed:
+//
+//   - The head must BE the record just written. Position alone is not sufficient
+//     once a second writer exists, and one does: the store documents that a
+//     ledger file is written one writer at a time and serializes by SQLite --
+//     which is what _busy_timeout is for -- and the interceptor library appends
+//     to the same ledger from the customer's process while a scheduled
+//     `notary reconcile` runs. A record landed by another writer between the two
+//     head reads would otherwise make a deduplicated claim print "appended",
+//     i.e. claim the ledger changed when it had not, which is the very defect
+//     this report exists to fix.
+//   - The chain must have GROWN. Identity alone is not sufficient either: Append
+//     deduplicates on the idempotency key, so re-deriving a claim that is
+//     already the latest record leaves the head identical.
+//
+// The residual case is a claim appended just before another writer lands its own
+// record: that is reported as already present. It is a conservative UNDER-report,
+// and under-reporting is the only safe direction here. The report may understate
+// what this pass wrote; it must never claim a record it did not write.
+func appendedBy(id record.RecordID, before record.Record, hasBefore bool, after record.Record, hasAfter bool) bool {
+	if !hasAfter || after.ID != id {
+		return false
 	}
-	if !ok {
-		return -1, nil
-	}
-	return int64(head.Seq), nil
+	return !hasBefore || after.Seq > before.Seq
 }
 
 // reconcileWindow resolves the run's Window from cmd's flags. --since is parsed

@@ -39,8 +39,20 @@ func TestReconcileReportsAppendedSeparatelyFromDerived(t *testing.T) {
 	}
 
 	// First run: both derived claims are new, so both are appended.
-	first, _ := newTestReconcileCmd(t)
+	first, firstBuf := newTestReconcileCmd(t)
 	require.NoError(t, runReconcile(first, cfg), "the first pass must succeed")
+
+	// Pin the APPENDED half. Without these, a mutation that reported every claim
+	// as already present would pass this test and TestReconcileWritesClaims
+	// alike -- the latter's only output assertion is that the report names
+	// "evt-1", which the claim's own ID satisfies either way.
+	firstOut := firstBuf.String()
+	assert.Contains(t, firstOut, "appended  add_resolved",
+		"the first run must report the resolved add as appended")
+	assert.Contains(t, firstOut, "2 appended",
+		"the first run appended both claims")
+	assert.Contains(t, firstOut, "0 already present",
+		"nothing was already present on the first run")
 	_, _, rowsAfterFirst := ledgerSnapshot(t, dbPath)
 	require.Equal(t, 3, rowsAfterFirst,
 		"the fixture row plus both derived claims; a different count would make the assertions below mean something else")
