@@ -153,8 +153,14 @@ Redaction removes `Content.Text`. It does not remove the hash, the `Sensitive` f
 content existed.
 
 A redacted line carries the subject's `content_hash` and a `redacted` string naming **why** — the flag,
-or the rule that matched, as `rule:<name>`. It carries no text, and the field is absent entirely when
-content was shown.
+as `sensitive`. It carries no text, and the field is absent entirely when content was shown.
+
+**Corrected after Task 3.** This first promised to name the *rule* that matched, as `rule:<name>`. That
+is not achievable without a hash change: `record.Content` is `{Text, Sensitive}`, both mixed into the
+record hash, so persisting which rule fired would change the digest of every record ever written. The
+flag is the evidentiary fact; which rule produced it is declarative configuration, reproducible from
+the rules file, so it is not recorded. Relatedly, a **metadata** clause in a rule can only match on the
+search-surfaced path, because `Add` carries no Mem0 metadata — a scope clause is what marks an add.
 
 **Every redacted entry states that it was redacted.** A JSONL consumer must never have to guess whether
 an absent `content` field means "there was no content" or "you are not cleared for it".
@@ -260,7 +266,7 @@ read failure, and on a checkpoint write failure. A phrasing failure does **not**
 {"seq":2,"id":"memory_kept:stored_by_mem0:eccd10b3-...","at":"...","recorded_at":"...",
  "event":"memory_kept","tier":"Reconstructed","reason_kind":"stored_by_mem0",
  "memory_id":"eccd10b3-...","scope":{"user_id":"u1"},
- "content_hash":"...","redacted":"rule:health-data","phrasing":"the memory was kept; ...",
+ "content_hash":"...","redacted":"sensitive","phrasing":"the memory was kept; ...",
  "prev_hash":"...","hash":"...","signature":"...","signer_key_id":"..."}
 ```
 

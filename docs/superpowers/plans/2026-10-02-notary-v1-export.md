@@ -156,11 +156,13 @@ Deliberately in `internal/export` for now (spec D6). `explain` in Phase 8 needs 
 
 **Interfaces:**
 - Consumes: `export.Line`, `export.Render`, `export.Export` (Tasks 4–5).
-- Produces: `redacted` populated as `"sensitive"` when the stored flag hid the text, or `"rule:<name>"` when a rule did; `Result.Redacted` counting both.
+- Produces: `redacted` populated as `"sensitive"` when the stored flag hid the text; `Result.Redacted` counting them.
+
+**Corrected after Task 3, before this task ran.** This first said `"rule:<name>"` when a rule matched. That is not achievable: `record.Content` is `{Text, Sensitive}` and both are mixed into the record hash, so persisting which rule fired would change the digest of every record ever written. Task 3 threaded the matched name through its own internal marking struct and nothing persists it — **do not try to persist it**. The flag is the evidentiary fact; which rule produced it is declarative configuration, reproducible from the rules file.
 
 - [ ] **Step 1: Write the failing test** `TestRedactionRoundTripIsHashInvariant` — spec §10's required test. Build a ledger with one sensitive and one not. Export the range twice, with and without `IncludeSensitive`. Assert: every `hash`, `prev_hash` and `signature` is byte-identical across both outputs and equal to the stored record's; the sensitive record's text appears in exactly one of them; the redacted line's `redacted` field is present and non-empty.
 - [ ] **Step 2: Run and watch it fail** (text still present under the default).
-- [ ] **Step 3: Implement.** Rendering takes the stored `Sensitive` flag and clears the text; it never touches the hash. The flag's own rule name comes from the interceptor's rule set where one matched — for this phase, `"sensitive"` when only the flag is known, `"rule:<name>"` when a name travelled with the record.
+- [ ] **Step 3: Implement.** Rendering takes the stored `Sensitive` flag and clears the text; it never touches the hash. The `redacted` string is `"sensitive"` — not `"rule:<name>"`, which Task 3 established is unachievable without a hash change (see this task's Interfaces note).
 - [ ] **Step 4: Run and watch it pass.**
 - [ ] **Step 5: Add `TestRedactedLineNeverClaimsToHideAbsentContent`** (Review Focus 1 from the redaction side): a record with no content and a true flag renders no `redacted` claim.
 - [ ] **Step 6: Commit** — `feat(export): redact content at render without touching hashes`.
