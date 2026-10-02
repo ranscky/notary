@@ -216,6 +216,10 @@ func TestLiveAddReconcilesToAFixpoint(t *testing.T) {
 	//    must therefore add no rows: the documented promise, from the real API.
 	second, err := rc.Reconcile(ctx, reconcile.Window{})
 	require.NoError(t, err)
+	// The second pass re-derives the memory_kept claim -- idempotently, which is
+	// the design -- so this is both true and load-bearing: an empty second pass
+	// would make the fixpoint check below pass vacuously.
+	require.NotEmpty(t, second, "the second pass must still derive the already-present claim")
 
 	derived := make(map[record.RecordID]bool, len(first))
 	for _, r := range first {
