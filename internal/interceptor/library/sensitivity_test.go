@@ -2,6 +2,7 @@ package library_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -132,4 +133,152 @@ func TestSensitiveChangesTheHash(t *testing.T) {
 	assert.NotEqual(t, plainHash, markedHash,
 		"flipping Content.Sensitive must change the record hash")
 	assert.NotEqual(t, record.Hash{}, plainHash, "sanity: a real digest, not the zero value")
+}
+
+// ---------------------------------------------------------------------------
+// the rule-supplied path, applied at construction and consulted at write time
+// (spec §5, rule-supplied path; spec §3 D3)
+// ---------------------------------------------------------------------------
+
+// TestRuleMarksContentSensitive verifies that a rule matching the interceptor's
+// scope marks an ordinary Add -- one passing no per-call option -- sensitive:
+// the rule set is consulted where the add_requested record's Content is built,
+// before it is hashed.
+func TestRuleMarksContentSensitive(t *testing.T) {
+	l, _, g, gapPath := newHarness(t)
+	srv := serve(t, &capture{}, http.StatusOK, fixture(t, "add_response.json"))
+
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	scope := record.Scope{UserID: "u1", AgentID: "a1"}
+	rules := interceptor.NewRuleSet([]interceptor.Rule{
+		{Name: "health-data", Scope: record.Scope{UserID: "u1"}},
+	})
+	ic := library.New(mem0.NewClient(srv.URL, "k", nil), interceptor.NewAuditWriter(l, g, nil), scope, fixedNow(at),
+		library.WithSensitivityRules(rules))
+
+	_, err := ic.Add(context.Background(), "corr-rule", []string{"hello", "world"})
+	require.NoError(t, err)
+
+	rec, err := l.GetRecord("corr-rule")
+	require.NoError(t, err)
+	require.NotNil(t, rec.Content)
+	assert.True(t, rec.Content.Sensitive, "a rule matching the interceptor's scope must mark an ordinary Add sensitive")
+	assert.Equal(t, "hello\nworld", rec.Content.Text, "the rule changes classification, not content")
+
+	entries, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "a healthy write logs no gap")
+}
+
+// TestCallOptionAlsoMarksWhenNoRuleMatches verifies the other half of the OR: a
+// per-call option marks the content even when the configured rule set matches
+// nothing.
+func TestCallOptionAlsoMarksWhenNoRuleMatches(t *testing.T) {
+	l, _, g, gapPath := newHarness(t)
+	srv := serve(t, &capture{}, http.StatusOK, fixture(t, "add_response.json"))
+
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	rules := interceptor.NewRuleSet([]interceptor.Rule{
+		{Name: "someone-else", Scope: record.Scope{UserID: "a-different-user"}},
+	})
+	ic := library.New(mem0.NewClient(srv.URL, "k", nil), interceptor.NewAuditWriter(l, g, nil), record.Scope{UserID: "u1"}, fixedNow(at),
+		library.WithSensitivityRules(rules))
+
+	_, err := ic.Add(context.Background(), "corr-opt-no-rule", []string{"hello"}, library.Sensitive())
+	require.NoError(t, err)
+
+	rec, err := l.GetRecord("corr-opt-no-rule")
+	require.NoError(t, err)
+	require.NotNil(t, rec.Content)
+	assert.True(t, rec.Content.Sensitive, "Sensitive() must mark content even when no rule matches")
+
+	entries, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+// TestRuleAndOptionBothMark verifies the OR is a true disjunction: when a rule
+// matches AND the caller passes Sensitive(), the content is still marked, and
+// there is no interaction that cancels one out.
+func TestRuleAndOptionBothMark(t *testing.T) {
+	l, _, g, _ := newHarness(t)
+	srv := serve(t, &capture{}, http.StatusOK, fixture(t, "add_response.json"))
+
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	rules := interceptor.NewRuleSet([]interceptor.Rule{
+		{Name: "health-data", Scope: record.Scope{UserID: "u1"}},
+	})
+	ic := library.New(mem0.NewClient(srv.URL, "k", nil), interceptor.NewAuditWriter(l, g, nil), record.Scope{UserID: "u1"}, fixedNow(at),
+		library.WithSensitivityRules(rules))
+
+	_, err := ic.Add(context.Background(), "corr-both", []string{"hello"}, library.Sensitive())
+	require.NoError(t, err)
+
+	rec, err := l.GetRecord("corr-both")
+	require.NoError(t, err)
+	require.NotNil(t, rec.Content)
+	assert.True(t, rec.Content.Sensitive, "a matching rule and the option together still mark the content")
+}
+
+// TestNoRulesMeansNothingIsMarked verifies the safe default: an interceptor
+// with no rule set and a call with no option marks nothing, so the feature
+// changes no existing behaviour when it is not used.
+func TestNoRulesMeansNothingIsMarked(t *testing.T) {
+	l, _, g, _ := newHarness(t)
+	srv := serve(t, &capture{}, http.StatusOK, fixture(t, "add_response.json"))
+
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	ic := library.New(mem0.NewClient(srv.URL, "k", nil), interceptor.NewAuditWriter(l, g, nil), record.Scope{UserID: "u1"}, fixedNow(at))
+
+	_, err := ic.Add(context.Background(), "corr-nothing", []string{"hello"})
+	require.NoError(t, err)
+
+	rec, err := l.GetRecord("corr-nothing")
+	require.NoError(t, err)
+	require.NotNil(t, rec.Content)
+	assert.False(t, rec.Content.Sensitive, "with no rule set and no option the content stays unclassified")
+}
+
+// TestRuleMarksSurfacedContent verifies the rule set is consulted at the OTHER
+// Content construction site too: on a Search, the per-result metadata Mem0
+// returned is what a metadata rule matches against, and each memory_surfaced
+// record carries the classification.
+func TestRuleMarksSurfacedContent(t *testing.T) {
+	l, _, g, gapPath := newHarness(t)
+
+	// Give the recorded search result the Mem0 metadata a metadata rule keys on,
+	// so the test proves the rule reads what Mem0 returned per result rather
+	// than anything the caller supplied. The recorded fixture itself carries an
+	// empty metadata object (testdata/FIXTURES.md).
+	var resp mem0.SearchResponse
+	require.NoError(t, json.Unmarshal(fixture(t, "search_response.json"), &resp))
+	require.Len(t, resp.Results, 1)
+	resp.Results[0].Metadata = map[string]any{"category": "health"}
+	body, err := json.Marshal(resp)
+	require.NoError(t, err)
+	srv := serve(t, &capture{}, http.StatusOK, body)
+
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	rules := interceptor.NewRuleSet([]interceptor.Rule{
+		{Name: "health-data", MetadataKey: "category", MetadataValue: "health"},
+	})
+	ic := library.New(mem0.NewClient(srv.URL, "k", nil), interceptor.NewAuditWriter(l, g, nil),
+		record.Scope{UserID: "notary-fixture-user-a1b2c3"}, fixedNow(at), library.WithSensitivityRules(rules))
+
+	_, err = ic.Search(context.Background(), "corr-rule-search", mem0.SearchRequest{Query: "q"})
+	require.NoError(t, err)
+
+	surfaced, err := l.GetRecord("corr-rule-search#1")
+	require.NoError(t, err)
+	require.NotNil(t, surfaced.Content)
+	assert.True(t, surfaced.Content.Sensitive, "a metadata rule must read the per-result metadata Mem0 returned")
+
+	// The search_performed record carries no Content, so no rule marks it.
+	performed, err := l.GetRecord("corr-rule-search")
+	require.NoError(t, err)
+	assert.Nil(t, performed.Content, "the search_performed record stays content-free")
+
+	entries, err := gap.Read(gapPath)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }

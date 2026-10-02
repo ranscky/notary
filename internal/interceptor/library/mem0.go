@@ -63,24 +63,43 @@ type Mem0Interceptor struct {
 	// now supplies the clock used to stamp a record's At and RecordedAt. It is
 	// never time.Now in the write path unless the caller supplied nil.
 	now func() time.Time
+	// rules is the sensitivity rule set consulted for every record this
+	// interceptor writes, or nil for none. It is set once, by New, and never
+	// mutated afterwards, so the interceptor stays safe for concurrent use
+	// (see the type comment). A nil rule set matches nothing.
+	rules *interceptor.RuleSet
 }
 
 // New returns a Mem0Interceptor that calls mc, writes through aw, stamps its
-// records with scope, and reads its clock from now.
+// records with scope, reads its clock from now, and applies the construction
+// options in opts.
 //
 // A nil now falls back to time.Now, mirroring ledger.New: an unset clock must
 // not panic, and it must not leave a record stamped with the zero time (which
 // would make it invisible to a time-window read). A nil aw is tolerated -- the
 // record is then simply not written, since there is no ledger to write it to.
+// A nil option is tolerated too, so a caller cannot crash construction by
+// passing one.
+//
+// opts configure the interceptor for its whole lifetime, as distinct from the
+// per-call CallOptions Add and Search accept. WithSensitivityRules is the
+// option this package defines; with no option the interceptor consults no rules
+// and every call's classification comes solely from its own CallOptions.
 //
 // aw is borrowed. Close closes it, because the AuditWriter owns the gap log's
 // lifetime; the ledger's lifetime belongs to the caller that built the
 // AuditWriter.
-func New(mc *mem0.Client, aw *interceptor.AuditWriter, scope record.Scope, now func() time.Time) *Mem0Interceptor {
+func New(mc *mem0.Client, aw *interceptor.AuditWriter, scope record.Scope, now func() time.Time, opts ...Option) *Mem0Interceptor {
 	if now == nil {
 		now = time.Now
 	}
-	return &Mem0Interceptor{mc: mc, aw: aw, scope: scope, now: now}
+	m := &Mem0Interceptor{mc: mc, aw: aw, scope: scope, now: now}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+	return m
 }
 
 // callConfig is the resolved per-call configuration Add and Search derive from
@@ -125,6 +144,38 @@ func resolveCallOptions(opts []CallOption) callConfig {
 	return cfg
 }
 
+// marking is one record's resolved content sensitivity, computed where the
+// record's Content is built and before the record is hashed. sensitive is the
+// OR of the caller's per-call option and the interceptor's rule set; rule is
+// the name of the sensitivity rule that matched, or "" when none did.
+//
+// rule travels with the marking rather than being reduced to a bare flag, so a
+// redaction can be attributed to the rule that caused it (the "rule:<name>"
+// reason of spec §6). The record's Content persists only the boolean -- there
+// is no field for the name, and adding one is out of this task's scope because
+// Content is covered by the record hash (record.CanonicalBytes), so changing
+// its encoding would change every existing record's digest.
+type marking struct {
+	sensitive bool
+	rule      string
+}
+
+// classify resolves the sensitivity of one record's content. The caller's
+// per-call option and the interceptor's rule set are an OR: either marks the
+// content sensitive, and there is deliberately no way for a call option to
+// un-mark content a rule matched, because the safe direction is the only one
+// worth having.
+//
+// metadata is the Mem0 metadata available where the record is built: the add
+// request's metadata for the add path, and the per-result metadata Mem0
+// returned for the search-surfaced path. A nil rule set matches nothing, so an
+// interceptor built without WithSensitivityRules yields rule == "" and matched
+// == false (RuleSet.Match is nil-safe).
+func (m *Mem0Interceptor) classify(callSensitive bool, metadata map[string]any) marking {
+	rule, matched := m.rules.Match(m.scope, metadata)
+	return marking{sensitive: callSensitive || matched, rule: rule}
+}
+
 // FailMode reports the mode this interceptor runs under: always FailOpenLoud.
 // The only mode v1 implements is fail-open-loud, so the audit failure is
 // reported loudly (the AuditWriter's channels) and durably (the gap log) while
@@ -165,11 +216,13 @@ func (m *Mem0Interceptor) Close() error {
 // Sensitivity, by contrast, is expressible per call: passing Sensitive() marks
 // the content this Add records as sensitive (Content.Sensitive true). The flag
 // is set before the record is hashed, so the classification is tamper-evident.
-// With no option the content is UNCLASSIFIED, not verified non-sensitive: a
-// consumer that trusts the flag and renders or exports without redaction will
-// emit content it was never told to protect. Treat an unclassified record as
-// content to redact until something -- this option, or a matching rule -- says
-// otherwise.
+// A rule configured at construction with WithSensitivityRules marks it too,
+// where the rule matches the interceptor's scope and the add's metadata; the
+// two are an OR, so either marks it. With neither, the content is UNCLASSIFIED,
+// not verified non-sensitive: a consumer that trusts the flag and renders or
+// exports without redaction will emit content it was never told to protect.
+// Treat an unclassified record as content to redact until something -- this
+// option, or a matching rule -- says otherwise.
 //
 // On a Mem0 error, Add returns that error and writes no record -- a Mem0
 // failure is a real error, not an audit gap. When Mem0 succeeds, Add returns
@@ -195,7 +248,7 @@ func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, message
 		return mem0.AddResponse{}, err
 	}
 
-	m.observeAdd(correlationID, messages, resp, resolveCallOptions(opts).sensitive)
+	m.observeAdd(correlationID, messages, req.Metadata, resp, resolveCallOptions(opts).sensitive)
 	return resp, nil
 }
 
@@ -210,8 +263,10 @@ func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, message
 // as its evidence.
 //
 // Passing Sensitive() marks each memory_surfaced record's content sensitive,
-// exactly as it does for Add; the search_performed record carries no content, so
-// the option does not touch it.
+// exactly as it does for Add; so does a matching rule configured with
+// WithSensitivityRules, matched against the interceptor's scope and the
+// per-result metadata Mem0 returned. The search_performed record carries no
+// content, so neither path touches it.
 //
 // On a Mem0 error, Search returns that error and writes no record. When Mem0
 // succeeds, Search returns the response with a nil error unconditionally, even
@@ -237,7 +292,13 @@ func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q me
 // best-effort by construction: every step is total for the inputs Add can
 // produce, and a step that cannot build a record simply skips the write rather
 // than failing the caller's already-successful Add.
-func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, resp mem0.AddResponse, sensitive bool) {
+//
+// metadata is the Mem0 metadata the add carried, which is what a sensitivity
+// rule's metadata clause matches against. Add's signature has no metadata
+// parameter, so today it is always nil and only a scope clause can match an
+// add; the metadata is threaded anyway so a future metadata-bearing add needs
+// no change here.
+func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, metadata map[string]any, resp mem0.AddResponse, callSensitive bool) {
 	at := m.now().UTC()
 
 	payload, err := json.Marshal(mem0.AddPayload{EventID: resp.EventID, Status: resp.Status})
@@ -250,6 +311,7 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 	}
 
 	contentHash := record.ContentHash(messages...)
+	mark := m.classify(callSensitive, metadata)
 	rec := record.Record{
 		ID:         record.RecordID(correlationID),
 		At:         at,
@@ -260,7 +322,7 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 			Scope:       m.scope,
 			ContentHash: contentHash,
 		},
-		Content: &record.Content{Text: strings.Join(messages, "\n"), Sensitive: sensitive},
+		Content: &record.Content{Text: strings.Join(messages, "\n"), Sensitive: mark.sensitive},
 	}
 	// The identifier is the caller's correlation ID (the record's own
 	// identity), NOT resp.EventID. resp.EventID is Mem0's answer, and keying
@@ -276,13 +338,15 @@ func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, re
 
 // observeSearch builds and writes the search_performed record and then one
 // memory_surfaced record per result, in rank order. Like observeAdd it is
-// best-effort.
-func (m *Mem0Interceptor) observeSearch(correlationID string, q mem0.SearchRequest, resp mem0.SearchResponse, sensitive bool) {
+// best-effort. callSensitive is the caller's per-call option; each surfaced
+// record's classification is that ORed with any matching rule, resolved inside
+// writeSurfaced where its Content is built.
+func (m *Mem0Interceptor) observeSearch(correlationID string, q mem0.SearchRequest, resp mem0.SearchResponse, callSensitive bool) {
 	at := m.now().UTC()
 
 	m.writeSearchPerformed(correlationID, q, len(resp.Results), at)
 	for i, res := range resp.Results {
-		m.writeSurfaced(correlationID, i+1, res, at, sensitive)
+		m.writeSurfaced(correlationID, i+1, res, at, callSensitive)
 	}
 }
 
@@ -329,8 +393,12 @@ func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.Sear
 
 // writeSurfaced builds and writes one memory_surfaced record for a single
 // search result. rank is 1-based and supplies both the record ID's "#rank"
-// suffix and the rank carried in the evidence payload.
-func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0.SearchResult, at time.Time, sensitive bool) {
+// suffix and the rank carried in the evidence payload. callSensitive is the
+// caller's per-call option; the record's content is marked sensitive when that
+// option was passed OR a rule matches the record's scope and the per-result
+// metadata Mem0 returned (res.Memory.Metadata), resolved here before the record
+// is hashed.
+func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0.SearchResult, at time.Time, callSensitive bool) {
 	payload, err := json.Marshal(mem0.MemorySurfacedPayload{Score: res.Score, Rank: rank})
 	if err != nil {
 		return
@@ -342,6 +410,7 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 
 	contentHash := record.ContentHash(res.Memory.Memory)
 	derivedID := derivedRecordID(correlationID, rank)
+	mark := m.classify(callSensitive, res.Memory.Metadata)
 	rec := record.Record{
 		ID:         derivedID,
 		At:         at,
@@ -353,7 +422,7 @@ func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0
 			Scope:       m.scope,
 			ContentHash: contentHash,
 		},
-		Content: &record.Content{Text: res.Memory.Memory, Sensitive: sensitive},
+		Content: &record.Content{Text: res.Memory.Memory, Sensitive: mark.sensitive},
 	}
 	// The key must identify THIS record, not merely the search it belongs to.
 	// Every result of one search shares the correlation ID, and two results may
