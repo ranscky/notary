@@ -363,6 +363,18 @@ safe.
 
 Stages run in this order because later stages consume earlier results.
 
+> **Corrected after execution (live verification against real Mem0).** That sentence was necessary
+> but not sufficient, and the implementation got it wrong in a way no fixture caught. Folding the
+> worklist ONCE before stage 1 ran meant stage 1's own discovery — the id of the memory a resolved
+> add produced — was invisible to the stages that need it, so a fresh add took **two** passes: pass 1
+> wrote `add_resolved`, pass 2 wrote `memory_kept`. Every fixture hid this, because each already
+> carried a `memory_kept` record and so began with the chain pre-satisfied.
+>
+> `Reconcile` now re-folds after stage 1, over the window-filtered records **plus** that stage's own
+> output — deliberately without re-applying the window filter, since those records carry `At` = the
+> EVENT time, which may precede `--since`. Stage 1 is not re-run, so the pass cannot loop, and
+> re-folding only when stage 1 produced something leaves a pass with no adds exactly as it was.
+
 ### 9.2 Failure behaviour
 
 The reconciler is **not** fail-open, and this is a deliberate departure from the interceptor.
@@ -379,6 +391,15 @@ is itself audited.
 **Partial progress is harmless and needs no rollback.** Each claim is appended in its own
 transaction, so a mid-pass failure leaves a consistent chain, and the next pass resumes idempotently
 by construction (§3, decision 4).
+
+> **Corrected after execution (live verification).** The CLI reported `wrote N claim(s)` using the
+> number of DERIVED claims rather than the number appended. Because `Append` deduplicates on the
+> idempotency key and returns the stored record either way, a re-run printed `wrote 1 claim(s)` while
+> appending nothing — on a tool whose scheduling story rests on idempotency, an operator could not
+> tell whether the ledger had changed. The report now reads the chain position either side of each
+> `Append` and distinguishes `appended` from `present`, with a summary separating derived from
+> appended. That same count corrects the mid-pass failure message, which over-reported by the same
+> reasoning.
 
 ### 9.3 What this phase does not do about gaps
 

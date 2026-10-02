@@ -413,6 +413,16 @@ func TestWindowScopeFilter(t *testing.T)
 
 `Reconcile` reads via `Reader.ListRecords`, folds the ledger into a worklist in dependency order (unresolved adds → scopes to enumerate → coverage candidates → removal candidates), calls the per-stage producers, and returns the accumulated records. Every returned record has a **zero `Seq` and zero `Hash`**.
 
+> **Corrected after execution (live verification against real Mem0).** "Folds the ledger into a
+> worklist ... calls the per-stage producers" understated the ordering. The fold ran ONCE, *before*
+> the add-resolution stage, so that stage's own discovery — the id of the memory a resolved add
+> produced — was invisible to the stages that consume it, and a fresh add needed **two** passes:
+> pass 1 wrote `add_resolved`, pass 2 wrote `memory_kept`. Every fixture hid this, because each
+> already carried a `memory_kept` record and so began with the chain pre-satisfied. `Reconcile` now
+> re-folds after stage 1, over the window-filtered records plus that stage's own output. The spec's
+> §9.1 carries the detail, including why the window filter is deliberately **not** re-applied to
+> that output.
+
 - [ ] **Step 6: Run the package and commit**
 
 Run: `go test ./internal/record/ ./internal/reconcile/ -v`
