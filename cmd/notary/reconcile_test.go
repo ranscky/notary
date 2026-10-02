@@ -39,10 +39,26 @@ func newTestReconcileCmd(t *testing.T) (*cobra.Command, *bytes.Buffer) {
 // request with resp, so a command test can drive the reconciler without a
 // network or a real API key. It follows the conventions in internal/reconcile:
 // no test touches the real Mem0 API.
+//
+// It answers the scope LISTING too, because a pass that resolves an add
+// enumerates that scope in the SAME pass -- resolving the add is what reveals
+// the memory it produced. The listing holds exactly the memory the event status
+// reports producing, which is the self-consistent shape: the memory the add
+// created is present, so no removal and no history lookup is in play.
 func eventStatusServer(t *testing.T, resp mem0.EventStatusResponse) string {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/v3/memories/" {
+			mems := make([]mem0.Memory, 0, len(resp.Results))
+			for _, res := range resp.Results {
+				mems = append(mems, mem0.Memory{ID: res.ID})
+			}
+			// Count == len(results) and a nil Next: the client certifies this
+			// listing exhaustive rather than rejecting it as incomplete.
+			_ = json.NewEncoder(w).Encode(mem0.GetAllResponse{Count: len(mems), Results: mems})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	t.Cleanup(srv.Close)
@@ -192,8 +208,9 @@ func TestReconcileDryRunAppendsNothing(t *testing.T) {
 
 // TestReconcileWritesClaims is the positive control for
 // TestReconcileDryRunAppendsNothing: the same setup, without --dry-run, must
-// append exactly the derived claim. Without this, the dry-run test could pass
-// simply because the reconciler derived nothing.
+// append exactly the derived claims -- the resolved add AND the memory it
+// produced, both from one pass. Without this, the dry-run test could pass simply
+// because the reconciler derived nothing.
 func TestReconcileWritesClaims(t *testing.T) {
 	sg, _ := newVerifySigner(t)
 	dbPath := filepath.Join(t.TempDir(), "ledger.db")
@@ -211,7 +228,10 @@ func TestReconcileWritesClaims(t *testing.T) {
 	require.NoError(t, runReconcile(cmd, cfg), "a real pass must succeed")
 
 	_, _, rowsAfter := ledgerSnapshot(t, dbPath)
-	assert.Equal(t, rowsBefore+1, rowsAfter, "a real pass must append the derived claim")
+	// TWO claims from ONE pass: resolving the add is what reveals the memory it
+	// produced, so the same pass certifies that memory kept. Before the re-fold
+	// fix the second claim needed a separate, later invocation.
+	assert.Equal(t, rowsBefore+2, rowsAfter, "one pass must append both derived claims")
 	assert.Contains(t, buf.String(), "evt-1", "the report must name the claim it wrote")
 }
 
@@ -259,7 +279,10 @@ func TestReconcileSinceFiltersOnAtNotRecordedAt(t *testing.T) {
 		"a record whose At precedes --since must be excluded even when it was written after --since")
 
 	_, _, rowsAfter := ledgerSnapshot(t, dbPath)
-	assert.Equal(t, rowsBefore+1, rowsAfter, "only the in-window add's claim must be appended")
+	// The in-window add yields both its own claim and the memory_kept for the
+	// memory it produced. The out-of-window add is filtered out of the fold
+	// entirely and so contributes nothing, which the assertions above pin.
+	assert.Equal(t, rowsBefore+2, rowsAfter, "only the in-window add's claims must be appended")
 }
 
 // TestReconcileScopeFlagsRestrictThePass pins that the scope flags restrict the

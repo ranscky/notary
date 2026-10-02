@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +95,34 @@ func (f *fakeReader) ListRecords(from, to time.Time) ([]record.Record, error) {
 
 // fixedTime is a reference wall time used by the fixtures.
 var fixedTime = time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+
+// passClient serves both endpoints a Reconcile PASS reads when the ledger holds
+// one unresolved add: the event status that resolves it, and the scope listing
+// that shows the memory it produced. It never touches the network.
+//
+// Both endpoints must come from ONE server, because Reconcile reads them in the
+// SAME pass and the per-endpoint helpers elsewhere in this package each start
+// their own server. Use this for pass-level tests; eventStatusClient, which
+// answers EventStatus alone, is for tests that call resolveAdd directly.
+func passClient(t *testing.T, mems ...mem0.Memory) *mem0.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/event/"):
+			writeRemovedJSON(w, mem0.EventStatusResponse{
+				ID:      "evt-1",
+				Status:  "SUCCEEDED",
+				Results: []mem0.EventResult{{ID: "mem-1"}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/memories/":
+			writeRemovedJSON(w, enumPage{Count: len(mems), Results: mems})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return mem0.NewClient(srv.URL, "test-key", nil)
+}
 
 // ---------------------------------------------------------------------------
 // Requirement 5: unresolved adds are matched on EVENT ID, not a heuristic.
@@ -187,15 +218,12 @@ func TestWindowScopeFilter(t *testing.T) {
 func TestReconcileReadsWholeLedgerWithNonZeroBounds(t *testing.T) {
 	req := mustAddRequested(t, "r-add-1", "evt-1", fixedTime)
 	r := &fakeReader{records: []record.Record{req}}
-	// The ledger holds an unresolved add, so the pass now polls Mem0 for it; a
-	// nil client is a misconfigured reconciler that fails loudly, so the test
-	// supplies a working httptest-backed client. The ledger stays non-empty --
-	// the point of the test is that Reconcile reads the WHOLE ledger under
-	// explicit non-zero bounds.
-	client, _ := eventStatusClient(t, staticEventStatus(mem0.EventStatusResponse{
-		ID: "evt-1", Status: "SUCCEEDED", Results: []mem0.EventResult{{ID: "mem-1"}},
-	}))
-	rc := New(r, client)
+	// The ledger holds an unresolved add, so the pass now polls Mem0 for it AND
+	// -- since resolving an add is what reveals the memory it produced --
+	// enumerates that scope in the same pass. Both endpoints therefore come from
+	// one stub. The ledger stays non-empty, because the point of the test is that
+	// Reconcile reads the WHOLE ledger under explicit non-zero bounds.
+	rc := New(r, passClient(t, provenMemories()...))
 
 	// Window.Since is zero (the default). The reconciler must still pass
 	// explicit, non-zero bounds, because the store filters `at >= from AND
@@ -218,11 +246,9 @@ func TestReconcileReturnedRecordsCarryNoChainPosition(t *testing.T) {
 	req := mustAddRequested(t, "r-add-1", "evt-1", fixedTime)
 	// The producer polls Mem0 now, so this reconciler needs a client that
 	// resolves the add; a still-stubbed producer would return nothing and make
-	// the loop below vacuous.
-	client, _ := eventStatusClient(t, staticEventStatus(mem0.EventStatusResponse{
-		ID: "evt-1", Status: "SUCCEEDED", Results: []mem0.EventResult{{ID: "mem-1"}},
-	}))
-	rc := New(&fakeReader{records: []record.Record{req}}, client)
+	// the loop below vacuous. Resolving the add also enumerates its scope in the
+	// same pass, so the stub serves both endpoints.
+	rc := New(&fakeReader{records: []record.Record{req}}, passClient(t, provenMemories()...))
 
 	got, err := rc.Reconcile(context.Background(), Window{})
 	require.NoError(t, err)

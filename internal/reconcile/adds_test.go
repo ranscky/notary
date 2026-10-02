@@ -39,6 +39,10 @@ func (p *pathRecorder) last() string {
 // request from handler, keyed on the event id parsed out of the path. It never
 // touches the network and returns a client plus a recorder so a test can prove
 // which event id was polled.
+//
+// It answers EventStatus ALONE, so it suits tests that call resolveAdd directly.
+// A test that drives a whole Reconcile PASS needs passClient instead: a pass
+// that resolves an add also enumerates that scope, in the same pass.
 func eventStatusClient(t *testing.T, handler func(eventID string) mem0.EventStatusResponse) (*mem0.Client, *pathRecorder) {
 	t.Helper()
 	rec := &pathRecorder{}

@@ -175,25 +175,65 @@ func runReconcile(cmd *cobra.Command, cfg *config.Config) error {
 		return nil
 	}
 
-	for i, rec := range claims {
+	appended, present := 0, 0
+	for _, rec := range claims {
+		before, herr := headSeq(l)
+		if herr != nil {
+			return fmt.Errorf("reading the ledger head before claim %s: %w", rec.ID, herr)
+		}
+
 		id, aerr := l.Append(rec)
 		if aerr != nil {
 			// Each append is its own transaction, so a mid-pass failure leaves
-			// a consistent chain; no rollback and no audit_gap is written. i is
-			// how many claims this pass already appended before the failure, so
-			// the error reports how far the pass got rather than naming only the
-			// claim that failed.
-			return fmt.Errorf("appending claim %s (after %d appended): %w", rec.ID, i, aerr)
+			// a consistent chain; no rollback and no audit_gap is written. The
+			// count says how many claims this pass actually APPENDED before the
+			// failure, rather than naming only the claim that failed.
+			return fmt.Errorf("appending claim %s (after %d appended): %w", rec.ID, appended, aerr)
 		}
-		fmt.Fprintf(out, "claimed %s %s\n", rec.Event, id)
+
+		after, herr := headSeq(l)
+		if herr != nil {
+			return fmt.Errorf("reading the ledger head after claim %s: %w", rec.ID, herr)
+		}
+
+		// Append returns the stored record EITHER WAY: it deduplicates on the
+		// idempotency key and hands back the record already present. The chain
+		// position is therefore the only thing that distinguishes a claim this
+		// pass wrote from one that was already there. Reporting the DERIVED
+		// count instead -- the previous shape -- claimed work the pass had not
+		// done, so a re-run read as though it had written records.
+		if after > before {
+			appended++
+			fmt.Fprintf(out, "appended  %s %s\n", rec.Event, id)
+			continue
+		}
+		present++
+		fmt.Fprintf(out, "present   %s %s\n", rec.Event, id)
 	}
 
 	if len(claims) == 0 {
 		fmt.Fprintln(out, "reconcile: no claims to write; nothing pending")
 		return nil
 	}
-	fmt.Fprintf(out, "reconcile: wrote %d claim(s)\n", len(claims))
+	fmt.Fprintf(out, "reconcile: %d claim(s) derived, %d appended, %d already present\n",
+		len(claims), appended, present)
 	return nil
+}
+
+// headSeq returns the ledger's chain position -- the head record's Seq -- or -1
+// when the ledger holds nothing. It is how the report tells a claim this pass
+// APPENDED from one Append deduplicated, that being the one thing Append's
+// return value cannot express. A negative sentinel rather than a zero value
+// keeps the first record (Seq 0) distinguishable from an empty ledger.
+func headSeq(l *ledger.Ledger) (int64, error) {
+	head, ok, err := l.Head()
+	if err != nil {
+		return -1, err
+	}
+	if !ok {
+		return -1, nil
+	}
+	return int64(head.Seq), nil
 }
 
 // reconcileWindow resolves the run's Window from cmd's flags. --since is parsed

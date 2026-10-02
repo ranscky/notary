@@ -87,6 +87,30 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 		}
 	}
 
+	// Stage 1 is what DISCOVERS the id of the memory a pending add produced, so
+	// the worklist Stages 2-4 read must be folded AFTER it runs. Folding once up
+	// front -- the original shape -- meant a memory resolved during a pass could
+	// not be in wl.known when the kept stage needed it, so a fresh add took TWO
+	// passes: pass 1 wrote add_resolved, pass 2 wrote memory_kept. The fixtures
+	// hid that, because every one of them already carried a memory_kept record
+	// and so began with the chain pre-satisfied.
+	//
+	// The re-fold folds the window-filtered ledger records PLUS this pass's own
+	// output, and deliberately does NOT re-apply w.filter to that output: Stage
+	// 1's records carry At = the EVENT time, which may precede --since, so
+	// filtering them would discard the very record that establishes the memory.
+	//
+	// Stage 1 is NOT re-run -- nothing downstream creates an unresolved add --
+	// so this cannot loop. Re-folding only when Stage 1 produced something keeps
+	// a pass with no adds exactly as it was.
+	if len(out) > 0 {
+		rebuilt, err := buildWorklist(append(w.filter(records), out...))
+		if err != nil {
+			return nil, fmt.Errorf("reconcile: re-derive worklist: %w", err)
+		}
+		wl = rebuilt
+	}
+
 	// Stage 2 -- scopes to enumerate (§9.1.2), which also yields memory_kept
 	// (§9.1 row 4-5).
 	//
