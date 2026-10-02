@@ -96,9 +96,14 @@ func (rc *Reconciler) Reconcile(ctx context.Context, w Window) ([]record.Record,
 	// and so began with the chain pre-satisfied.
 	//
 	// The re-fold folds the window-filtered ledger records PLUS this pass's own
-	// output, and deliberately does NOT re-apply w.filter to that output: Stage
-	// 1's records carry At = the EVENT time, which may precede --since, so
-	// filtering them would discard the very record that establishes the memory.
+	// output, and takes that output UNFILTERED.
+	//
+	// Not re-applying w.filter to it is currently equivalent to filtering it:
+	// buildAddResolved copies At verbatim from the add record, and the add only
+	// ever came from the filtered set, so filtering the output again would be a
+	// no-op. Taking it unfiltered keeps the re-fold from depending on that
+	// coincidence -- and the re-fold's purpose is to add what this pass just
+	// learned, not to re-litigate the fold's admission decision.
 	//
 	// Stage 1 is NOT re-run -- nothing downstream creates an unresolved add --
 	// so this cannot loop. Re-folding only when Stage 1 produced something keeps

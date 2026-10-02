@@ -420,8 +420,8 @@ func TestWindowScopeFilter(t *testing.T)
 > pass 1 wrote `add_resolved`, pass 2 wrote `memory_kept`. Every fixture hid this, because each
 > already carried a `memory_kept` record and so began with the chain pre-satisfied. `Reconcile` now
 > re-folds after stage 1, over the window-filtered records plus that stage's own output. The spec's
-> §9.1 carries the detail, including why the window filter is deliberately **not** re-applied to
-> that output.
+> §9.1 carries the detail — and a correction, added after code review, of this note's original and
+> WRONG claim about why the window filter is not re-applied to that output.
 
 - [ ] **Step 6: Run the package and commit**
 

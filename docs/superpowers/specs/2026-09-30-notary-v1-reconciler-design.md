@@ -371,9 +371,16 @@ Stages run in this order because later stages consume earlier results.
 > carried a `memory_kept` record and so began with the chain pre-satisfied.
 >
 > `Reconcile` now re-folds after stage 1, over the window-filtered records **plus** that stage's own
-> output — deliberately without re-applying the window filter, since those records carry `At` = the
-> EVENT time, which may precede `--since`. Stage 1 is not re-run, so the pass cannot loop, and
-> re-folding only when stage 1 produced something leaves a pass with no adds exactly as it was.
+> output, taken unfiltered. Stage 1 is not re-run, so the pass cannot loop, and re-folding only when
+> stage 1 produced something leaves a pass with no adds exactly as it was.
+>
+> **A correction to this note, from code review.** It first justified taking that output unfiltered
+> by claiming that re-filtering "would discard the very record that establishes the memory, because
+> those records carry `At` = the EVENT time, which may precede `--since`". That is **false**:
+> `buildAddResolved` copies `At` verbatim from the add record (`adds.go:140`), and the add only ever
+> came from the filtered set, so `w.filter` over stage 1's output is a no-op. The behaviour is right
+> either way — taking the output unfiltered avoids depending on that coincidence — but the reason
+> given was wrong, so it is corrected here rather than quietly dropped.
 
 ### 9.2 Failure behaviour
 
