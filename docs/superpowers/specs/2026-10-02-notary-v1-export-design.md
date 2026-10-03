@@ -253,8 +253,11 @@ distinguishable.
 
 **Bounding.** The span `--from` to `--to` is capped at a documented default of 366 days, overridable
 with `--max-span <duration>`, because the cost of an export scales with the range and the failure mode
-of a compliance export should be an error rather than an out-of-memory kill. Long ranges stream: each
-record is rendered and written as it is read, so memory does not scale with the export.
+of a compliance export should be an error rather than an out-of-memory kill. Long ranges stream in the
+sense that each record is rendered and written as it is read rather than collected into an output
+slice — but the read itself is a single `ListRecords` call returning a slice, so **peak memory does
+scale with the range's record count**, and `--max-span` is what bounds it. (Corrected after Task 4,
+which found that the original "memory does not scale with the export" overstated the property.)
 
 **Exit codes.** Zero on success, including a zero-record range. Non-zero on validation failure, on a
 read failure, and on a checkpoint write failure. A phrasing failure does **not** change the exit code
@@ -264,7 +267,7 @@ read failure, and on a checkpoint write failure. A phrasing failure does **not**
 
 ```json
 {"seq":2,"id":"memory_kept:stored_by_mem0:eccd10b3-...","at":"...","recorded_at":"...",
- "event":"memory_kept","tier":"Reconstructed","reason_kind":"stored_by_mem0",
+ "event":"memory_kept","tier":"reconstructed","reason_kind":"stored_by_mem0",
  "memory_id":"eccd10b3-...","scope":{"user_id":"u1"},
  "content_hash":"...","redacted":"sensitive","phrasing":"the memory was kept; ...",
  "prev_hash":"...","hash":"...","signature":"...","signer_key_id":"..."}
