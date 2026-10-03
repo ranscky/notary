@@ -268,7 +268,7 @@ func (e *Exporter) Export(ctx context.Context, req Request, out io.Writer) (Resu
 	// already holds whole, so this adds no scaling beyond the read.
 	var matched []record.Record
 	for _, rec := range records {
-		if scopeMatches(req.Scope, rec.Subject.Scope) {
+		if ScopeMatches(req.Scope, rec.Subject.Scope) {
 			matched = append(matched, rec)
 		}
 	}
@@ -378,10 +378,15 @@ func (r Request) validate() error {
 	return nil
 }
 
-// scopeMatches reports whether a record's scope satisfies want. A zero field in
+// ScopeMatches reports whether a record's scope satisfies want. A zero field in
 // want is a wildcard; every non-zero field must match. It is the same rule
 // reconcile's Window uses.
-func scopeMatches(want record.Scope, got record.Scope) bool {
+//
+// It is exported so the Phase 7 replay command narrows by scope through this
+// one definition rather than carrying a second, silently-diverging copy: two
+// matchers that must agree is exactly the drift this project keeps eliminating.
+// Export calls it, and so does internal/replay.
+func ScopeMatches(want record.Scope, got record.Scope) bool {
 	if want.UserID != "" && want.UserID != got.UserID {
 		return false
 	}
