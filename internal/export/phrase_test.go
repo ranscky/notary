@@ -65,8 +65,10 @@ func recordFor(t *testing.T, event record.EventType, kind record.ReasonKind, mem
 // vocabularies -- not a hand-written list, which was the hole the review found:
 // a pair could be declared and go unworded while the list stayed silent. The
 // vocabulary is the single source of truth (record.EventTypes,
-// record.ReasonKinds), and a gate in internal/record proves it complete against
-// the declarations. So no pair is unworded by construction.
+// record.ReasonKinds), and a gate in internal/record keeps it complete for the
+// typed declaration forms it can read. So no pair IN the vocabulary is unworded;
+// the one form the gate cannot read (an untyped `const X = "..."`) is outside
+// this enumeration too, and surfaces at render instead.
 func TestPhraseIsTotalOverTheVocabulary(t *testing.T) {
 	var unphrased, placeholders []string
 	for _, event := range record.EventTypes() {
@@ -136,6 +138,26 @@ func TestPhraseStoredAddWithoutAMemoryID(t *testing.T) {
 	sentence, ok := export.Phrase(recordFor(t, record.EventAddResolved, record.ReasonStoredByMem0, ""))
 	require.True(t, ok, "a memoryless stored add is still a constructible pair with wording")
 	assert.Equal(t, "the add resolved: Mem0 stored a memory", sentence)
+}
+
+// TestPhraseRejectsOutOfVocabularyInputs pins the false branch of Phrase's
+// signature -- the branch Render relies on to fail loudly rather than emit an
+// unphrased line.
+func TestPhraseRejectsOutOfVocabularyInputs(t *testing.T) {
+	// An event outside the vocabulary, with an otherwise-valid reason: this is
+	// what Render reaches when a record's event is not one the vocabulary names.
+	rec := recordFor(t, record.EventMemoryKept, record.ReasonStoredByMem0, "mem-1")
+	rec.Event = record.EventType("not_an_event")
+	sentence, ok := export.Phrase(rec)
+	assert.False(t, ok, "an event outside the vocabulary must have no wording")
+	assert.Empty(t, sentence)
+
+	// A reason kind outside the vocabulary: the zero Reason carries kind "".
+	rec = recordFor(t, record.EventMemoryKept, record.ReasonStoredByMem0, "mem-1")
+	rec.Reason = record.Reason{}
+	sentence, ok = export.Phrase(rec)
+	assert.False(t, ok, "a reason kind outside the vocabulary must have no wording")
+	assert.Empty(t, sentence)
 }
 
 // TestRenderedLineCarriesTheStructuredFieldsBesideThePhrasing is the design's

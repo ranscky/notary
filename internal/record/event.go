@@ -32,9 +32,10 @@ const (
 // and Valid's membership set is derived from it, so the two cannot disagree.
 //
 // A new EventType constant must be added here too. If it is not,
-// TestVocabularyMatchesItsDeclarations -- which source-scans this package --
-// fails naming the constant, so the vocabulary cannot silently grow a member
-// that nothing else knows about.
+// TestVocabularyMatchesItsDeclarations -- which source-scans this package's
+// typed constant and var declarations -- fails naming the constant. An untyped
+// `const X = "..."` carries no type for the scan to key on and is outside its
+// reach; see that test's doc comment for the limit.
 var eventTypes = []EventType{
 	EventAddRequested,
 	EventAddResolved,

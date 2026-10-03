@@ -110,7 +110,7 @@ const redactedSensitive = "sensitive"
 // Render returns an error only for a record it cannot render honestly: one
 // whose reason carries no valid tier, or one whose claim has no phrasing. The
 // latter is unreachable for a record the production paths build -- phrasing is
-// total over those (see Phrase and TestPhraseIsTotalOverConstructibleRecords)
+// total over those (see Phrase and TestPhraseIsTotalOverTheVocabulary)
 // -- so it fails loudly rather than emitting a line whose prose reads as a
 // missing record.
 func Render(rec record.Record, includeSensitive bool) (Line, error) {

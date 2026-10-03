@@ -14,17 +14,34 @@ import (
 )
 
 // TestVocabularyMatchesItsDeclarations is the gate that makes the exported
-// vocabulary complete by construction.
+// vocabulary complete for the declaration forms it can read.
 //
-// It source-scans this package's non-test declarations for every constant
-// typed EventType or ReasonKind and asserts each appears in EventTypes() /
-// ReasonKinds(), and that neither accessor lists a value no declaration
-// produces. It reads the declarations directly because Go cannot enumerate
-// constants: this test is what links a constant's existence to the list a
-// caller reads, so the list cannot drift and a new claim kind cannot be
-// declared without the test naming it.
+// It source-scans this package's non-test .go files and resolves every
+// declaration typed EventType or ReasonKind in these forms:
+//
+//	ReasonFoo ReasonKind = "foo"             // explicit type + string literal
+//	ReasonFoo ReasonKind = ReasonKind("foo") // explicit type + conversion
+//	ReasonFoo = ReasonKind("foo")            // conversion carries the type
+//	var ReasonFoo ReasonKind = "foo"         // the var form
+//
+// Each resolved value must appear in EventTypes() / ReasonKinds(), and neither
+// accessor may list a value no declaration produces. A declaration typed as the
+// vocabulary whose value the scanner cannot read statically (a computed value,
+// or a spec that repeats the previous one) fails too, so it cannot slip past
+// silently.
+//
+// WHAT IT DOES NOT SEE. An untyped `const ReasonFoo = "foo"` is a plain string
+// constant: assignable to ReasonKind, but not one, so it carries no type to key
+// on and is deliberately not resolved. Keying on a name prefix instead would
+// flag unrelated string constants, and an honest limit is the better trade.
+// Such a value reaching a producer is caught at render -- Render fails loudly
+// rather than emitting an unphrased line -- not here.
 func TestVocabularyMatchesItsDeclarations(t *testing.T) {
-	declared := scanTypedStringConstants(t, "EventType", "ReasonKind")
+	declared, unreadable := scanTypedStringConstants(t, "EventType", "ReasonKind")
+
+	assert.Emptyf(t, unreadable,
+		"the gate cannot statically read %d EventType/ReasonKind declaration(s): %v",
+		len(unreadable), unreadable)
 
 	assertVocabulary(t, "EventType", declared["EventType"], eventTypeStrings(EventTypes()))
 	assertVocabulary(t, "ReasonKind", declared["ReasonKind"], reasonKindStrings(ReasonKinds()))
@@ -55,18 +72,19 @@ func assertVocabulary(t *testing.T, typeName string, declared map[string]string,
 	}
 }
 
-// scanTypedStringConstants parses every non-test .go file in this package
-// directory and returns, per type name, the map from constant name to the
-// string value it is declared with. Parsing the whole directory rather than a
-// single file means a constant declared in a new file is still found.
-func scanTypedStringConstants(t *testing.T, typeNames ...string) map[string]map[string]string {
+// scanTypedStringConstants parses every non-test .go file in the CURRENT
+// package directory -- the test runs with that directory as its working
+// directory -- and returns, per type name, the map from declaration name to the
+// string value it is declared with, plus the names of declarations typed as
+// that vocabulary whose value it could not read statically.
+func scanTypedStringConstants(t *testing.T, typeNames ...string) (declared map[string]map[string]string, unreadable []string) {
 	t.Helper()
 
 	wanted := make(map[string]bool, len(typeNames))
-	out := make(map[string]map[string]string, len(typeNames))
+	declared = make(map[string]map[string]string, len(typeNames))
 	for _, name := range typeNames {
 		wanted[name] = true
-		out[name] = map[string]string{}
+		declared[name] = map[string]string{}
 	}
 
 	fset := token.NewFileSet()
@@ -74,53 +92,89 @@ func scanTypedStringConstants(t *testing.T, typeNames ...string) map[string]map[
 		name := fi.Name()
 		return !fi.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
 	}, 0)
-	require.NoError(t, err, "parse package %s", "record")
+	require.NoError(t, err, "the test must run with its package directory as the working directory")
+	require.NotEmpty(t, pkgs, "parsed no package from the record package directory")
 
-	found := false
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
-			found = true
 			ast.Inspect(file, func(n ast.Node) bool {
 				gd, ok := n.(*ast.GenDecl)
-				if !ok || gd.Tok != token.CONST {
+				if !ok || (gd.Tok != token.CONST && gd.Tok != token.VAR) {
 					return true
 				}
-				// A spec with no type repeats the previous spec's type, per Go's
-				// const-group rules, so carry it forward within the group.
+				// Within a const group a spec that omits both type and
+				// expression repeats the previous spec's type, so carry it
+				// forward to the next spec.
 				lastType := ""
 				for _, spec := range gd.Specs {
 					vs, ok := spec.(*ast.ValueSpec)
 					if !ok {
 						continue
 					}
-					typeName := lastType
-					if id, ok := vs.Type.(*ast.Ident); ok {
-						typeName, lastType = id.Name, id.Name
-					}
-					if !wanted[typeName] {
-						continue
-					}
+					specType, _, _ := classifySpec(vs, 0, lastType)
 					for i, ident := range vs.Names {
-						if i >= len(vs.Values) {
+						if ident.Name == "_" {
 							continue
 						}
-						lit, ok := vs.Values[i].(*ast.BasicLit)
-						if !ok || lit.Kind != token.STRING {
+						typeName, value, read := classifySpec(vs, i, lastType)
+						if !wanted[typeName] {
 							continue
 						}
-						value, err := strconv.Unquote(lit.Value)
-						if err != nil {
-							continue
+						if read {
+							declared[typeName][ident.Name] = value
+						} else {
+							unreadable = append(unreadable, typeName+" "+ident.Name)
 						}
-						out[typeName][ident.Name] = value
 					}
+					lastType = specType
 				}
 				return true
 			})
 		}
 	}
-	require.True(t, found, "no non-test .go files parsed in the record package")
-	return out
+	return declared, unreadable
+}
+
+// classifySpec resolves, for the i-th name in vs, the declared type name and --
+// when the value is a string literal or a conversion of one -- the string value
+// it is declared with. The third result is false when no value could be read
+// statically.
+//
+// The type comes from the explicit type annotation when present, otherwise from
+// a conversion expression's callee (ReasonFoo = ReasonKind("foo")), otherwise --
+// for a const spec with neither type nor expression -- from the previous spec.
+// An untyped string literal carries no such type and is left unresolved.
+func classifySpec(vs *ast.ValueSpec, i int, inherited string) (typeName, value string, read bool) {
+	typeName = inherited
+	if id, ok := vs.Type.(*ast.Ident); ok {
+		typeName = id.Name
+	}
+	if i >= len(vs.Values) {
+		return typeName, "", false
+	}
+
+	switch v := vs.Values[i].(type) {
+	case *ast.BasicLit:
+		if v.Kind == token.STRING {
+			if s, err := strconv.Unquote(v.Value); err == nil {
+				return typeName, s, true
+			}
+		}
+	case *ast.CallExpr:
+		// A conversion T("x") names the type, so even a spec with no explicit
+		// type annotation has one.
+		if fun, ok := v.Fun.(*ast.Ident); ok && typeName == "" {
+			typeName = fun.Name
+		}
+		if len(v.Args) == 1 {
+			if arg, ok := v.Args[0].(*ast.BasicLit); ok && arg.Kind == token.STRING {
+				if s, err := strconv.Unquote(arg.Value); err == nil {
+					return typeName, s, true
+				}
+			}
+		}
+	}
+	return typeName, "", false
 }
 
 func eventTypeStrings(ets []EventType) []string {

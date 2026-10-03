@@ -228,15 +228,20 @@ library/interceptor path shipped with no wording while the list stayed silent, b
 connected the declarations to the list. The vocabulary is now the source of truth and phrasing is total
 over all of it:
 
-- **The vocabulary is exported and provably complete.** `record.EventTypes()` and
-  `record.ReasonKinds()` are the single source of truth. Go cannot enumerate constants, so a gate in
-  `internal/record` source-scans the package's own (`go/parser`) declarations and fails, naming it, if a
-  declared `EventType`/`ReasonKind` is missing from the list — or if the list carries a value no
-  declaration produces. A kind cannot be declared without the gate naming it.
+- **The vocabulary is exported, and a gate keeps it complete for the declaration forms it can read.**
+  `record.EventTypes()` and `record.ReasonKinds()` are the single source of truth. Go cannot enumerate
+  constants, so a gate in `internal/record` (`go/parser`) resolves every declaration typed
+  `EventType`/`ReasonKind` — an explicit `T = "x"`, a conversion `T("x")` with or without an explicit
+  type, and the `var` form — and fails, naming it, if such a declaration is missing from the list, if
+  the list carries a value no declaration produces, or if a typed declaration's value cannot be read
+  statically. **What it does not see:** an untyped `const X = "..."`, which is assignable to the type
+  but carries none for the scan to key on. A name-prefix heuristic would flag unrelated constants, so
+  this limit is taken deliberately rather than papered over.
 - **Every pair is phrased by construction.** A test enumerates the full
   `record.EventTypes() × record.ReasonKinds()` cross-product — seventy pairs, not a hand-written list —
-  and fails on an unphrased or placeholder-shaped sentence. An unphrased claim, the thing that reads as
-  a **missing record** in a compliance export, is therefore structurally impossible.
+  and fails on an unphrased or placeholder-shaped sentence. So no pair *in the vocabulary* is unworded.
+  The only escape is the untyped-constant gap above: a value from that form reaching a producer is
+  caught at render, where `Render` fails loudly rather than emitting an unphrased line.
 - **The other fifty-nine pairs get a deliberate generic sentence**, built from the event and the reason
   kind: `"a search ran in this scope, recorded with reason: the add to Mem0 failed."` It names the
   event and the reason kind and asserts nothing between them that no claim makes. **What it does not

@@ -13,10 +13,14 @@ import "notary/internal/record"
 //
 // Totality is the property that matters most: an unphrased claim reads as a
 // MISSING RECORD in a compliance export, so Phrase is a total function over the
-// full cross-product of record's event and reason-kind vocabularies. That
-// vocabulary is the single source of truth (record.EventTypes, record.ReasonKinds)
-// and is provably complete -- a gate in internal/record source-scans the
-// declarations -- so no pair can be unworded by construction.
+// full cross-product of record's event and reason-kind vocabularies. Those
+// vocabularies are the single source of truth (record.EventTypes,
+// record.ReasonKinds), and a gate in internal/record source-scans the package's
+// typed constant and var declarations to keep them complete: a kind declared in
+// one of those forms cannot be left out of the list without the gate failing.
+// The gate does not see an untyped `const X = "..."` (no type to key on), so
+// that one form could still slip past it; a value from that form reaching a
+// producer is caught by Render rather than silently exported unphrased.
 //
 // Two tiers of wording. The eleven pairs a producer emits today get a specific,
 // fixed sentence (the design's §7 table); those are the words an auditor reads.
