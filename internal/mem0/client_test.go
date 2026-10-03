@@ -314,6 +314,117 @@ func TestOversizeResponseIsRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "POST /v3/memories/search/")
 }
 
+// TestOversizedErrorBodyKeepsStatus pins the ordering fix. The existing oversize
+// test serves an implicit 200, so it never exercised an over-size body WITH an
+// error status. When a provider errors with a body over the cap, the operator
+// must see the HTTP STATUS -- the part known without reading the body -- never a
+// size-limit complaint. The stored body is capped, but the status is never
+// discarded: on the write path a masked 401/403/429/5xx is exactly the failure
+// that matters.
+func TestOversizedErrorBodyKeepsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		chunk := bytes.Repeat([]byte("x"), 4096)
+		remaining := int64(8<<20) + 1 // one byte past maxResponseBytes
+		for remaining > 0 {
+			n := int64(len(chunk))
+			if n > remaining {
+				n = remaining
+			}
+			if _, err := w.Write(chunk[:n]); err != nil {
+				return
+			}
+			remaining -= n
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502", "the status must survive an over-size error body")
+	assert.NotContains(t, err.Error(), "exceeds", "a size complaint must not mask the status")
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.Equal(t, http.StatusBadGateway, httpErr.StatusCode)
+	assert.LessOrEqual(t, len(httpErr.Body), 8<<10, "the stored error body must still be capped")
+}
+
+// leakSecret is a credential an operator might place in NOTARY_MEM0_BASE_URL's
+// query -- arbitrary operator config. No error the client returns may carry it.
+const leakSecret = "MEM0-BASEURL-SECRET-7a2c"
+
+// TestTransportErrorNeverLeaksBaseURLCredential ports the phrase-shaped leak
+// guard. net/http's transport error echoes the request URL, and stripPassword
+// masks only the userinfo PASSWORD, so a credential in the base URL's query, its
+// userinfo USERNAME, a host-less opaque URL, or even its path reaches the
+// printed error unless the *url.Error is rebuilt over a safe URL.
+func TestTransportErrorNeverLeaksBaseURLCredential(t *testing.T) {
+	srv := serve(t, &captured{}, http.StatusOK, mustFixture(t, "search_response.json"))
+	base := srv.URL
+	srv.Close() // nothing is listening now: the call fails at dial
+
+	cases := []struct{ name, baseURL string }{
+		{"query", base + "/v1?key=" + leakSecret},
+		{"path", base + "/v1/" + leakSecret},
+		{"userinfo-password", "http://user:" + leakSecret + "@127.0.0.1:1"},
+		{"userinfo-username", "http://" + leakSecret + "@127.0.0.1:1"},
+		{"fragment", "http://127.0.0.1:1/v1#" + leakSecret},
+		{"opaque", "http:" + leakSecret},
+		{"malformed", "http://ex ample.invalid/v1?key=" + leakSecret},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := mem0.NewClient(tc.baseURL, "test-key", nil)
+			_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+			require.Error(t, err, "the dial must fail")
+			assert.NotContains(t, err.Error(), leakSecret,
+				"no error may carry a credential taken from the base URL")
+		})
+	}
+}
+
+// TestErrorBodyRedactsConfiguredCredentials pins the body-echo fix. A provider
+// or gateway that reflects the request -- the URI (with its query) or the
+// Authorization header -- into its error body would otherwise carry a
+// credential into both Error() and the exported HTTPError.Body field. The body
+// is scrubbed before it is stored, so neither leaks.
+func TestErrorBodyRedactsConfiguredCredentials(t *testing.T) {
+	const key = "mem0-echo-key-4d8e"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":"refused %s auth=%s"}`, r.RequestURI, r.Header.Get("Authorization"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL+"/v1?key="+leakSecret, key, nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), leakSecret, "the echoed URI carried the base-URL query credential")
+	assert.NotContains(t, err.Error(), key, "the echoed Authorization header carried the API key")
+	assert.Contains(t, err.Error(), "401", "the status is still reported")
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.NotContains(t, string(httpErr.Body), leakSecret, "the exported body field must be clean too")
+	assert.NotContains(t, string(httpErr.Body), key, "the exported body field must be clean too")
+}
+
+// TestHTTPErrorUnwrapsObjectFormMessage pins that the OpenAI-shaped error body
+// {"error":{"message":"..."}} surfaces the message, not the raw JSON.
+func TestHTTPErrorUnwrapsObjectFormMessage(t *testing.T) {
+	srv := serve(t, &captured{}, http.StatusBadRequest,
+		[]byte(`{"error":{"message":"model not found","type":"invalid_request_error"}}`))
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model not found")
+	assert.NotContains(t, err.Error(), "{", "the object form must be unwrapped, not dumped raw")
+}
+
 func TestNoImplicitPingRequest(t *testing.T) {
 	fixtures := map[string][]byte{
 		"/v3/memories/add/":       mustFixture(t, "add_response.json"),
