@@ -192,3 +192,24 @@ func TestUnsensitiveLegacyRecordsRender(t *testing.T) {
 	_, hasRedacted := got["redacted"]
 	assert.False(t, hasRedacted, "a false sensitivity flag is data, not an absence")
 }
+
+// TestNewLineEncoderDoesNotEscapeHTML pins the export line format's one
+// deliberately-chosen property: <, > and & are written as themselves, not as
+// the \u003c / \u003e / \u0026 escapes encoding/json emits by default, so a
+// line stays greppable. This is also the byte-identity contract the Phase 7
+// replay command depends on (Task 4): both paths must use this encoder.
+func TestNewLineEncoderDoesNotEscapeHTML(t *testing.T) {
+	rec := sampleRecord(t)
+	rec.Content = &record.Content{Text: "<a & b>"}
+	line, err := export.Render(rec, false)
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, export.NewLineEncoder(&buf).Encode(line))
+	out := buf.String()
+
+	assert.Contains(t, out, `<a & b>`, "the literal characters must survive the encoder")
+	assert.NotContains(t, out, `\u003c`, "< must not be escaped")
+	assert.NotContains(t, out, `\u003e`, "> must not be escaped")
+	assert.NotContains(t, out, `\u0026`, "& must not be escaped")
+}

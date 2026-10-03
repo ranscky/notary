@@ -162,6 +162,30 @@ type Result struct {
 	ParaphraseError string
 }
 
+// NewLineEncoder returns the encoder that writes one export line to w: the
+// SINGLE definition of the export line format.
+//
+// It exists so that a line produced by the Phase 7 replay command and a line
+// produced by Export are byte-identical by construction rather than by
+// coincidence. Both paths call this one function; a second copy of the two-line
+// setup below is exactly how the two formats quietly drift apart, and the
+// byte-identity the design requires (so a replayed prefix can be compared
+// against an export) would then depend on a later edit being careful. Sharing
+// the definition makes it structural. Do not inline it back into Export, and do
+// not "simplify" it to a bare json.NewEncoder.
+//
+// SetEscapeHTML(false) is deliberate and load-bearing. The content is text a
+// human reads -- prose, ids, hashes -- so <, > and & are written as themselves
+// rather than as the \u003c / \u003e / \u0026 escapes encoding/json emits by
+// default; keeping them literal is what keeps the output greppable. Turning
+// HTML escaping back on would rewrite the bytes of every line that happens to
+// contain one of those characters.
+func NewLineEncoder(w io.Writer) *json.Encoder {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc
+}
+
 // Exporter renders a range of the ledger as JSONL.
 type Exporter struct {
 	reader      Reader
@@ -260,10 +284,7 @@ func (e *Exporter) Export(ctx context.Context, req Request, out io.Writer) (Resu
 		}
 	}
 
-	enc := json.NewEncoder(out)
-	// Content is text a human reads: keep <, >, and & as themselves rather than
-	// \u003c escapes, so the export stays greppable.
-	enc.SetEscapeHTML(false)
+	enc := NewLineEncoder(out)
 
 	for _, rec := range matched {
 		// ctx stops a long range between records. The read itself is NOT
