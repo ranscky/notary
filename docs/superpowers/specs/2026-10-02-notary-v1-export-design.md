@@ -178,17 +178,30 @@ One sentence per record, derived mechanically from fields that are already there
 `Reason.Kind()` — plus the scope's memory id when the record has one.
 
 The vocabulary is the seven events crossed with the ten reason kinds, restricted to the combinations
-`record` can actually construct:
+`record` can actually construct — eleven of them, all now listed with the sentence each produces:
 
-| Event | Kinds it carries | Example phrasing |
+| Event | Reason kind | Phrasing |
 |---|---|---|
 | `add_requested` | `add_acknowledged` | "an add was requested and Mem0 acknowledged it" |
-| `add_resolved` | `stored_by_mem0`, `no_facts_extracted`, `add_failed` | "the add resolved: Mem0 stored memory \<id\>" |
-| `memory_kept` | `stored_by_mem0`, `kept_by_content_match` | "the memory was kept; it is still present in the scope" |
-| `memory_dropped` | `removed_by_mem0`, `absent_from_search` | "the memory was dropped: Mem0 no longer holds it" |
+| `add_resolved` | `stored_by_mem0` | "the add resolved: Mem0 stored memory \<id\>" |
+| `add_resolved` | `no_facts_extracted` | "the add resolved: no facts were extracted from the interaction" |
+| `add_resolved` | `add_failed` | "the add resolved: the add to Mem0 failed" |
+| `memory_kept` | `stored_by_mem0` | "the memory was kept; it is still present in the scope" |
+| `memory_kept` | `kept_by_content_match` | "the memory was kept; its content matched an earlier add" |
+| `memory_dropped` | `removed_by_mem0` | "the memory was dropped: Mem0 no longer holds it" |
+| `memory_dropped` | `absent_from_search` | "the memory was dropped: a covering search did not return it" |
 | `search_performed` | `search_performed` | "a search ran in this scope" |
-| `memory_surfaced` | `returned_by_search` | "the memory was returned by a search at rank N" |
+| `memory_surfaced` | `returned_by_search` | "the memory was returned by a search" |
 | `audit_gap` | `audit_unavailable` | "an operation happened that Notary failed to record" |
+
+**Corrected after Task 5.** This table first gave one example sentence per *event*, which left four
+constructible pairs with no fixed wording — the `no_facts_extracted`, `add_failed`,
+`kept_by_content_match` and `absent_from_search` rows. The implementer wrote them in this document's
+voice and flagged them rather than inventing phrasing silently; they are confirmed above. It also
+dropped "at rank N" from the `memory_surfaced` sentence, because rank is not among the inputs this
+section names as the derivation source — which is the consistent choice, so the example is corrected
+rather than the sentence. A table of *examples* was the defect: phrasing is not illustrative here, it
+is fixed wording, and an example per event cannot describe a function of the pair.
 
 Two properties matter more than the wording:
 
