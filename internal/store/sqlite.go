@@ -303,6 +303,53 @@ func (s *SQLiteStore) ListRecords(from, to time.Time) ([]record.Record, error) {
 	return out, nil
 }
 
+// ListRecordsAsOf returns the records recorded at or before t -- the ledger as
+// it stood at instant t -- ordered by Seq ascending. It is the knowledge-time
+// view: it selects on recorded_at rather than on At, so it answers what Notary
+// knew by t, not what the world looked like at t (compare ListRecords, which
+// bounds on the event time At and orders by it).
+//
+// recorded_at is compared as TEXT, and that is correct, not an accident.
+// instantLayout writes exactly nine fractional digits for every value, so all
+// stored instants have the same width and SQLite's BINARY collation orders the
+// text chronologically; a lexical "<=" therefore matches a chronological "<="
+// and the column stays index-able. time.RFC3339Nano must NOT be used for this
+// comparison: it trims trailing zeros, so a whole-second value
+// ("...T12:00:00Z") and a sub-second one ("...T12:00:00.5Z") differ in width,
+// and under BINARY collation 'Z' sorts after '.', which would silently drop
+// in-range rows and invert order within a second. Do not "fix" this into a
+// parse-and-compare; the fixed width is what makes the string comparison a
+// faithful instant comparison.
+//
+// The bound is passed through formatTime, which applies the .UTC()
+// normalisation the layout depends on. A row that cannot be decoded is an
+// error here, not a tolerated entry: replay cannot render what it cannot
+// decode, and silently skipping it would hide a record. This is deliberately
+// stricter than SeqEntries, whose tolerance exists so verification can still
+// name a tampered row.
+func (s *SQLiteStore) ListRecordsAsOf(t time.Time) ([]record.Record, error) {
+	rows, err := s.db.Query(
+		`SELECT `+selectColumns+` FROM records WHERE recorded_at <= ? ORDER BY seq ASC`,
+		formatTime(t))
+	if err != nil {
+		return nil, fmt.Errorf("store: list records as of: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []record.Record
+	for rows.Next() {
+		r, err := scanRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list records as of: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list records as of: %w", err)
+	}
+	return out, nil
+}
+
 // Head returns the record with the greatest Seq. It reports false with a zero
 // record and a nil error when the table is empty.
 func (s *SQLiteStore) Head() (record.Record, bool, error) {

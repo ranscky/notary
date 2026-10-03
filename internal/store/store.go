@@ -71,6 +71,11 @@ type Store interface {
 	// ListRecords returns the records whose At falls within [from, to],
 	// inclusive at both bounds, ordered by At ascending and then by Seq.
 	ListRecords(from, to time.Time) ([]record.Record, error)
+	// ListRecordsAsOf returns the records whose RecordedAt is at or before t,
+	// inclusive, ordered by Seq ascending. It is the knowledge-time view -- the
+	// ledger as it stood at instant t -- as opposed to ListRecords, which
+	// bounds on the event time At.
+	ListRecordsAsOf(t time.Time) ([]record.Record, error)
 	// SeqEntries returns every stored row in chain order (seq ascending). It
 	// differs from ListRecords in two ways that matter for verification: it
 	// selects on seq rather than on at, so no record can fall outside a time

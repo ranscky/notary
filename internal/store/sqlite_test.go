@@ -483,6 +483,72 @@ func TestListRecordsOrdersWholeSecondBeforeSubSecondSameSecond(t *testing.T) {
 		"a whole second must sort before a sub-second instant within the same second")
 }
 
+// recordRecordedAt builds a distinct record with the given ID, Seq, and
+// RecordedAt. At is left as the fixture default: the as-of read filters on
+// RecordedAt, not At, so only the recorded_at column is under test here.
+func recordRecordedAt(t *testing.T, id string, seq uint64, recordedAt time.Time) record.Record {
+	t.Helper()
+	r := fullRecord(t)
+	r.ID = record.RecordID(id)
+	r.Seq = seq
+	r.RecordedAt = recordedAt
+	r.IdempotencyKey = ""
+	return r
+}
+
+// TestListRecordsAsOfIncludesRecordAtExactInstant: the as-of instant is
+// inclusive (D9). A record whose RecordedAt equals t MUST be returned -- an
+// off-by-one here hides the most recent record, the one an auditor is most
+// likely asking about. t carries sub-second precision so the fixed-width
+// recorded_at text is selected against a sub-second bound (Review Focus 1).
+func TestListRecordsAsOfIncludesRecordAtExactInstant(t *testing.T) {
+	s := newOpenStore(t)
+	t0 := time.Date(2026, 10, 3, 12, 0, 0, 500000000, time.UTC)
+
+	require.NoError(t, s.PutRecord(recordRecordedAt(t, "at-t", 1, t0)))
+
+	got, err := s.ListRecordsAsOf(t0)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a record with RecordedAt == t must be included (inclusive, D9)")
+	assert.Equal(t, record.RecordID("at-t"), got[0].ID)
+}
+
+// TestListRecordsAsOfExcludesRecordOneNanosecondLater: one nanosecond past t is
+// outside the window, and the fixed-width layout must make that count. The
+// record at t is kept in range to prove the boundary, not just an empty result.
+func TestListRecordsAsOfExcludesRecordOneNanosecondLater(t *testing.T) {
+	s := newOpenStore(t)
+	t0 := time.Date(2026, 10, 3, 12, 0, 0, 500000000, time.UTC)
+
+	require.NoError(t, s.PutRecord(recordRecordedAt(t, "at-t", 1, t0)))
+	require.NoError(t, s.PutRecord(recordRecordedAt(t, "one-ns-later", 2, t0.Add(time.Nanosecond))))
+
+	got, err := s.ListRecordsAsOf(t0)
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a record whose RecordedAt is one nanosecond after t must be excluded")
+	assert.Equal(t, record.RecordID("at-t"), got[0].ID)
+}
+
+// TestListRecordsAsOfOrdersBySeqNotRecordedAt: the result is in Seq order, not
+// RecordedAt order. Here recorded_at order is deliberately the reverse of seq
+// order (seq 1 is the newest), so an implementation that ordered by the
+// timestamp would return the reverse of what is required.
+func TestListRecordsAsOfOrdersBySeqNotRecordedAt(t *testing.T) {
+	s := newOpenStore(t)
+	t0 := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, s.PutRecord(recordRecordedAt(t, "seq-1", 1, t0.Add(2*time.Minute))))
+	require.NoError(t, s.PutRecord(recordRecordedAt(t, "seq-2", 2, t0.Add(1*time.Minute))))
+	require.NoError(t, s.PutRecord(recordRecordedAt(t, "seq-3", 3, t0)))
+
+	got, err := s.ListRecordsAsOf(t0.Add(2 * time.Minute))
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	assert.Equal(t, []record.RecordID{"seq-1", "seq-2", "seq-3"},
+		[]record.RecordID{got[0].ID, got[1].ID, got[2].ID},
+		"the as-of read must order by seq ascending, not by recorded_at")
+}
+
 // TestForeignKeysEnabledOnEveryConnection proves the per-connection PRAGMA is
 // applied by the driver DSN, not just once via Exec. Holding several
 // connections open at once forces the pool to open distinct ones; each must
