@@ -549,6 +549,30 @@ func TestListRecordsAsOfOrdersBySeqNotRecordedAt(t *testing.T) {
 		"the as-of read must order by seq ascending, not by recorded_at")
 }
 
+// TestListRecordsAsOfErrorsOnAnUndecodableRow pins spec §3's decode policy: an
+// as-of read must FAIL on a row it cannot decode, not skip it. Its neighbour
+// SeqEntries deliberately does the opposite -- it returns the row with
+// DecodeErr set, so verification can name a tampered row -- and because the two
+// differ, a future change could "align" them and quietly make replay hide a
+// record. Unlike SeqEntries, the failure here does not wrap ErrDecode: it comes
+// straight from the row rebuild (buildRecord), which is what the read path
+// propagates.
+func TestListRecordsAsOfErrorsOnAnUndecodableRow(t *testing.T) {
+	s := newOpenStore(t)
+	rec := fullRecord(t)
+	require.NoError(t, s.PutRecord(rec))
+
+	// Corrupt the encoded reason so the row can no longer be rebuilt -- the
+	// same raw edit TestSeqEntriesOrdersBySeqAndNamesAnUndecodableRow makes.
+	_, err := s.db.Exec(`UPDATE records SET reason_payload = x'00' WHERE id = ?`, string(rec.ID))
+	require.NoError(t, err)
+
+	// The bound is past the row's RecordedAt, so the row is in range and the
+	// error can only come from the decode failure, not from an empty result.
+	_, err = s.ListRecordsAsOf(rec.RecordedAt.Add(time.Minute))
+	require.Error(t, err, "an undecodable row in range must fail the as-of read, not be skipped")
+}
+
 // TestForeignKeysEnabledOnEveryConnection proves the per-connection PRAGMA is
 // applied by the driver DSN, not just once via Exec. Holding several
 // connections open at once forces the pool to open distinct ones; each must

@@ -210,6 +210,50 @@ func (l *Ledger) ListRecords(from, to time.Time) ([]record.Record, error) {
 	return l.store.ListRecords(from, to)
 }
 
+// ReplayAsOf returns the ledger as it stood at instant t -- every record whose
+// RecordedAt is at or before t, inclusive, in Seq order -- and verifies that
+// exact prefix before returning it. It errors only when the read itself fails;
+// any integrity problem is reported as a break, not an error.
+//
+// The records returned are the records verified. This is one operation, not a
+// read followed by a separate verification, because two calls could interleave
+// with a live writer and verify a prefix that was never the one returned: the
+// prefix replay returns must be the prefix replay checked.
+//
+// Prefix assumption: the records must start at seq 0 -- the chain's first
+// position, which the ledger assigns -- and step by one. That is exactly what
+// an as-of view produces: RecordedAt <= t selects an initial run of the chain.
+// It is false of an arbitrary mid-chain slice, because the check measures
+// sequence continuity from the start of the chain. A caller passing a slice
+// that does not begin at seq 0 would get false "seq" breaks. When a record was
+// stamped with a RecordedAt earlier than its predecessor's (a backwards clock
+// step), the as-of set has a hole; the missing seq then surfaces as a "seq"
+// break rather than being silently returned as "what Notary knew at t".
+//
+// ListRecordsAsOf errors on a row it cannot decode rather than tolerating it,
+// unlike SeqEntries. So verifyChain's decode tolerance -- which exists so that
+// Verify can name a tampered row -- is unreachable from this path: an
+// undecodable row in range fails the read here, and ReplayAsOf returns that
+// error, never a break and never a shortened, silently-lossy prefix. Both
+// behaviours exist on purpose; this path is simply stricter than Verify's.
+func (l *Ledger) ReplayAsOf(t time.Time, v *sign.Verifier) ([]record.Record, []Break, error) {
+	records, err := l.store.ListRecordsAsOf(t)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ledger: replay as of: read records: %w", err)
+	}
+
+	// ListRecordsAsOf decodes every row or fails, so each record is a decoded
+	// chain row: wrap it as a SeqEntry with its own Seq and ID and Rec set,
+	// which is precisely the shape verifyChain verifies. This is what lets
+	// ReplayAsOf and Verify share one walk without Verify losing its tolerance
+	// of an undecodable row.
+	entries := make([]store.SeqEntry, len(records))
+	for i := range records {
+		entries[i] = store.SeqEntry{Seq: records[i].Seq, ID: records[i].ID, Rec: records[i]}
+	}
+	return records, verifyChain(entries, v), nil
+}
+
 // Head returns the record with the greatest Seq, delegating to the store. The
 // bool is false, with a zero record and a nil error, when the ledger is empty.
 func (l *Ledger) Head() (record.Record, bool, error) {

@@ -101,7 +101,7 @@ the one that catches the scenario above — **seq continuity from 1**.
 
 `Verify`'s walk (internal/ledger/verify.go, from its definition at line 73) reads
 `[]store.SeqEntry` — rows that may carry a `DecodeErr` — and checks hash, link, signature
-and, in `if e.Seq != expected { … }`, continuity from `expected = 1`.
+and, in `if e.Seq != expected { … }`, continuity from `expected = 0` (the first record is seq 0, not 1).
 
 The replay path holds `[]record.Record`, already decoded, because `ListRecordsAsOf` fails
 rather than tolerating an undecodable row (§3). Those are different inputs, so the refactor
@@ -113,10 +113,10 @@ is:
   helper must not swallow.
 - Add `func (l *Ledger) VerifyPrefix(records []record.Record, v *sign.Verifier) []Break`
   — or an equivalent signature the implementer settles during the plan — verifying exactly
-  the records given, **expecting seq to start at 1 and increment by one**.
+  the records given, **expecting seq to start at 0 and increment by one**.
 
-**The "starts at 1" assumption is the whole check and must be documented.** A prefix of a
-chain that starts at 1 starts at 1; a set with a hole fails because `expected` outruns the
+**The "starts at 0" assumption is the whole check and must be documented.** A prefix of a
+chain that starts at 0 starts at 0; a set with a hole fails because `expected` outruns the
 next record's `Seq`. A future caller passing an arbitrary mid-chain slice would get false
 breaks — so the doc comment must say the input is a prefix, not "some records".
 

@@ -5,6 +5,7 @@ import (
 
 	"notary/internal/record"
 	"notary/internal/sign"
+	"notary/internal/store"
 )
 
 // Field names reported in a Break. They name the exact part of the chain that
@@ -75,7 +76,31 @@ func (l *Ledger) Verify(v *sign.Verifier) ([]Break, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ledger: verify: read chain: %w", err)
 	}
+	return verifyChain(entries, v), nil
+}
 
+// verifyChain walks the chain rows in Seq order and reports every integrity
+// break it finds -- the hash, the chain link, the signature, and the sequence
+// continuity of each record -- rather than stopping at the first. On a clean
+// chain, and on an empty slice, it returns an empty break slice.
+//
+// Each row carries its identity and position on its own columns, so a row that
+// could not be decoded is still named. Such a row surfaces as a break with
+// Field "decode"; its own hash and signature cannot be checked, and because
+// its Hash is unknown the link check is skipped for its immediate successor.
+//
+// The walk expects a chain prefix: it measures sequence continuity from the
+// chain's first position, which the ledger numbers seq 0, and expects each
+// following row to step by one. A slice that starts there and steps by one
+// verifies; a slice with a hole -- a missing interior position -- reports a
+// "seq" break naming the gap. This is exactly what an as-of read produces and
+// what ReplayAsOf relies on; a caller passing an arbitrary mid-chain slice
+// would get false "seq" breaks.
+//
+// The verifier is used as given: verifyChain stays pure over it and reports a
+// signature break for any key the verifier does not trust. Deciding that no
+// trusted keys are configured is the caller's job, not this function's.
+func verifyChain(entries []store.SeqEntry, v *sign.Verifier) []Break {
 	var breaks []Break
 	var prev *record.Record
 	prevKnown := true
@@ -138,5 +163,5 @@ func (l *Ledger) Verify(v *sign.Verifier) ([]Break, error) {
 		}
 		expected = e.Seq + 1
 	}
-	return breaks, nil
+	return breaks
 }

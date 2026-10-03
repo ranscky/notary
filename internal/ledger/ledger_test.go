@@ -297,3 +297,88 @@ func TestAppendRoundTripsContentAndHash(t *testing.T) {
 			"the stored hash must recompute over the stored record")
 	})
 }
+
+// appendRecordedAt appends a fresh valid record stamped with the given
+// RecordedAt, so a test can drive the as-of read's filter directly. RecordedAt
+// is set on the record before Append; Append only stamps the field when it is
+// zero, so the value the test sets survives into the store.
+func appendRecordedAt(t *testing.T, l *ledger.Ledger, id string, recordedAt time.Time) {
+	t.Helper()
+	rec := validRecord(t, record.RecordID(id))
+	rec.RecordedAt = recordedAt
+	_, err := l.Append(rec)
+	require.NoError(t, err)
+}
+
+// TestReplayAsOfReturnsCleanPrefixWithNoBreaks covers the ordinary case: a
+// contiguous run of the chain whose RecordedAt is at or before T is returned in
+// Seq order and verifies with zero breaks.
+func TestReplayAsOfReturnsCleanPrefixWithNoBreaks(t *testing.T) {
+	l, sg, pub, _ := newLedger(t)
+	t0 := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	appendRecordedAt(t, l, "rec-0001", t0)
+	appendRecordedAt(t, l, "rec-0002", t0.Add(1*time.Minute))
+	appendRecordedAt(t, l, "rec-0003", t0.Add(2*time.Minute))
+	appendRecordedAt(t, l, "rec-0004", t0.Add(3*time.Minute))
+
+	v := sign.NewVerifier(map[string]ed25519.PublicKey{sg.KeyID(): pub})
+
+	// T equals rec-0002's RecordedAt and falls before rec-0003's, so the as-of
+	// view is the contiguous prefix {seq 0, seq 1} -- inclusive at the bound.
+	records, breaks, err := l.ReplayAsOf(t0.Add(1*time.Minute), v)
+	require.NoError(t, err)
+	assert.Empty(t, breaks, "a contiguous prefix must verify with no breaks")
+	require.Len(t, records, 2)
+	assert.Equal(t, []record.RecordID{"rec-0001", "rec-0002"},
+		[]record.RecordID{records[0].ID, records[1].ID})
+}
+
+// TestReplayAsOfReportsABreakForAHoleInThePrefix is the phase's falsifier (spec
+// §4). A record stamped with an earlier RecordedAt than its predecessor (what a
+// backwards NTP step does) puts that predecessor OUTSIDE T while its successor
+// is inside: the as-of set is not a prefix of the chain but a set with a hole.
+// Replay must report a break naming the missing seq, not print a
+// plausible-looking prefix.
+func TestReplayAsOfReportsABreakForAHoleInThePrefix(t *testing.T) {
+	l, sg, pub, _ := newLedger(t)
+	t0 := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	appendRecordedAt(t, l, "rec-0001", t0)                    // seq 0
+	appendRecordedAt(t, l, "rec-0002", t0.Add(1*time.Minute)) // seq 1
+	appendRecordedAt(t, l, "rec-0003", t0.Add(5*time.Minute)) // seq 2 -- recorded AFTER T
+	appendRecordedAt(t, l, "rec-0004", t0.Add(2*time.Minute)) // seq 3 -- recorded before its predecessor
+
+	v := sign.NewVerifier(map[string]ed25519.PublicKey{sg.KeyID(): pub})
+
+	// T is after seq 3's time but before seq 2's, so the as-of set is
+	// {seq 0, 1, 3} -- the hole is seq 2.
+	records, breaks, err := l.ReplayAsOf(t0.Add(3*time.Minute), v)
+	require.NoError(t, err)
+	require.Len(t, records, 3, "the as-of view must be exactly {seq 0,1,3}")
+	assert.Equal(t, []record.RecordID{"rec-0001", "rec-0002", "rec-0004"},
+		[]record.RecordID{records[0].ID, records[1].ID, records[2].ID})
+
+	// The hole must be named, not silently printed as "what Notary knew at T".
+	require.NotEmpty(t, breaks, "a hole in the prefix must produce a break")
+	var seqBreak bool
+	for _, b := range breaks {
+		if b.Field == "seq" {
+			seqBreak = true
+			assert.Equal(t, uint64(3), b.Seq, "the break names the record found out of place")
+			assert.Contains(t, b.Detail, "expected seq 2",
+				"the break must name the missing seq (2)")
+		}
+	}
+	assert.True(t, seqBreak, "the hole must be reported as a seq break, got %+v", breaks)
+}
+
+// TestReplayAsOfEmptyLedgerReturnsNothing covers Review Focus 2: an empty
+// ledger yields no records, no breaks, and no error.
+func TestReplayAsOfEmptyLedgerReturnsNothing(t *testing.T) {
+	l, sg, pub, _ := newLedger(t)
+	v := sign.NewVerifier(map[string]ed25519.PublicKey{sg.KeyID(): pub})
+
+	records, breaks, err := l.ReplayAsOf(fixedNow, v)
+	require.NoError(t, err)
+	assert.Empty(t, records, "an empty ledger must replay no records")
+	assert.Empty(t, breaks, "an empty ledger must replay no breaks")
+}
