@@ -85,12 +85,12 @@ git commit -m "feat(store): read the ledger as of an instant"
 
 - [ ] **Step 1: Refactor `Verify` with no behaviour change**
 
-Extract the existing walk — hash, `prev_hash` linkage, signature, and the `e.Seq != expected` continuity check from `expected = 1` — into a slice-based unexported helper. `Verify` keeps reading `store.SeqEntries()` and keeps tolerating a row with `DecodeErr`; the helper must not swallow that tolerance. **Existing `internal/ledger` tests must pass unchanged** — that they do is the evidence the refactor is behaviour-preserving.
+Extract the existing walk — hash, `prev_hash` linkage, signature, and the `e.Seq != expected` continuity check from `expected = 0` — into a slice-based unexported helper. `Verify` keeps reading `store.SeqEntries()` and keeps tolerating a row with `DecodeErr`; the helper must not swallow that tolerance. **Existing `internal/ledger` tests must pass unchanged** — that they do is the evidence the refactor is behaviour-preserving.
 
 - [ ] **Step 2: Write the failing tests for `ReplayAsOf`**
 
 - a clean ledger at T returns the expected prefix and **zero** breaks;
-- a record whose `RecordedAt` precedes its predecessor's, with T between them, returns a **hole** (`{1,2,4}`) and a **break** naming the missing seq (Review Focus 4);
+- a record whose `RecordedAt` precedes its predecessor's, with T between them, returns a **hole** (`{0,1,3}`) and a **break** naming the missing seq (Review Focus 4);
 - an empty ledger returns no records, no breaks, no error (Review Focus 2).
 
 - [ ] **Step 3: Run them to verify they fail**
@@ -100,7 +100,7 @@ Expected: FAIL — `l.ReplayAsOf undefined`.
 
 - [ ] **Step 4: Implement `ReplayAsOf`**
 
-Read through `l.store.ListRecordsAsOf(t)`, pass the records to the helper, and return all three values. Its doc comment must state the prefix assumption — the records must start at seq 1 and step by one, which is true of an as-of view and false of an arbitrary mid-chain slice — because that assumption is the whole check.
+Read through `l.store.ListRecordsAsOf(t)`, pass the records to the helper, and return all three values. Its doc comment must state the prefix assumption — the records must start at seq 0 and step by one, which is true of an as-of view and false of an arbitrary mid-chain slice — because that assumption is the whole check.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
