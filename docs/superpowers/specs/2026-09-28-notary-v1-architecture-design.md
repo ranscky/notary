@@ -348,7 +348,7 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 5. **Mem0:** `httptest` fixtures for `add`, `search`, `event`, `history`, and `get_all`. A live test is opt-in behind `//go:build mem0live` and `NOTARY_MEM0_API_KEY`, and is never a phase gate. (Corrected after implementation: this line originally named `MEM0_API_KEY`, a variable nothing reads. The test is `internal/reconcile/live_mem0_test.go`; run it with `-count=1`, because without it a re-run replays a cached PASS that never touched Mem0.)
 6. **Fail-open-loud:** inject a failing Store or Signer; assert the Mem0 call succeeds, the marker reaches both channels, and the gap log's own chain validates.
 7. **Reconciler:** scripted sequences assert the exact tier emitted, and that a re-run adds zero records.
-8. **Replay boundary**, **redaction round-trip**, and a **key-material canary** that must never appear in any output.
+8. **Replay boundary**, **redaction round-trip**, and a **key-material canary** that must never appear in any output. (Corrected after implementation: the replay boundary's as-of inclusivity is `TestListRecordsAsOfIncludesRecordAtExactInstant` and `TestListRecordsAsOfExcludesRecordOneNanosecondLater` in `internal/store/sqlite_test.go`, and the non-prefix hole is `TestReplayAsOfReportsABreakForAHoleInThePrefix` in `internal/ledger/ledger_test.go`.)
 
 ---
 
@@ -363,7 +363,7 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 4 | Idempotency; correlation ID required on every observation | ✅ complete |
 | 5 | **Reconciler** (new): event polling, `get_all` diffing, `kept`/`dropped`, rule registry, `reconcile-mode` | ✅ complete |
 | 6 | `export`, redaction, tier phrasing, `internal/phrase` | ✅ complete |
-| 7 | `replay` | ⬜ not started |
+| 7 | `replay` | ✅ complete |
 | 8 | **`explain`** (new) | ⬜ not started |
 | 9 | Proxy mode | ⬜ not started |
 | 10 | Polish, README, demo fixtures | ⬜ not started |

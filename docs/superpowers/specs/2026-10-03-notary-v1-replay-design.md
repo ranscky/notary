@@ -107,13 +107,20 @@ The replay path holds `[]record.Record`, already decoded, because `ListRecordsAs
 rather than tolerating an undecodable row (§3). Those are different inputs, so the refactor
 is:
 
-- Extract the walk into a slice-based helper in `internal/ledger`, taking the decoded
-  records, and keep `Verify` as the `SeqEntries`-based entry point that calls it. **`Verify`'s
+- Extract the walk into a slice-based helper in `internal/ledger` over `[]store.SeqEntry`,
+  and keep `Verify` as the `SeqEntries`-based entry point that calls it. **`Verify`'s
   behaviour must not change** — including its tolerance of undecodable rows, which the
-  helper must not swallow.
-- Add `func (l *Ledger) VerifyPrefix(records []record.Record, v *sign.Verifier) []Break`
-  — or an equivalent signature the implementer settles during the plan — verifying exactly
-  the records given, **expecting seq to start at 0 and increment by one**.
+  helper must not swallow. (As built, that helper is `verifyChain(entries []store.SeqEntry,
+  v *sign.Verifier) []Break`, internal/ledger/verify.go:103.)
+- Add the replay entry point, which verifies exactly the records it returns, **expecting
+  seq to start at 0 and increment by one**. (As built, settling §12 Q1 as the combined form,
+  this is `func (l *Ledger) ReplayAsOf(t time.Time, v *sign.Verifier) ([]record.Record,
+  []Break, error)`, internal/ledger/ledger.go:239, which re-wraps the decoded records as
+  `store.SeqEntry` values and calls `verifyChain`.)
+
+**Superseded (2026-10-03):** this section originally named
+`VerifyPrefix(records []record.Record, v *sign.Verifier) []Break`. That function was never
+written; the two shapes above are what shipped.
 
 **The "starts at 0" assumption is the whole check and must be documented.** A prefix of a
 chain that starts at 0 starts at 0; a set with a hole fails because `expected` outruns the
@@ -177,12 +184,18 @@ On success, replay writes JSONL to stdout and reports the line and redacted coun
 `export` does.
 
 On a verification break, replay **must not exit quietly**. `notary verify`'s convention is
-the model, and one half of it is confirmed: **it exits non-zero when there are breaks**
-(cmd/notary/verify.go, at the comment *"gap.Verify reports exactly those breaks, so they
-exit non-zero here"*). The implementer must **read `cmd/notary/verify.go` in full** and
-match the rest of it — in particular whether the output is still written before the
-non-zero exit — and say in the task report what that ordering actually is. This spec
-asserts only the half it checked, because a spec that guesses is the defect of §2.
+the model, and it is now recorded in full against the code. `runVerify` binds
+`out := cmd.OutOrStdout()` and writes each break there — **stdout, not stderr** — as
+`record <id> (seq N): <field> — <detail>` (or `seq N: <field> — <detail>` when the break
+carries no record id), then returns a non-nil error, `verification failed: N break(s)
+found` (cmd/notary/verify.go). `main` prints `notary: %v` to **stderr** and exits 1
+(cmd/notary/main.go). So the report is written *before* the non-zero exit, and the exit is
+a returned error, never an in-command `os.Exit`.
+
+Replay matches that ordering but makes one deliberate divergence: it routes the same break
+report to **stderr**, because replay's stdout is the JSONL data stream and must carry
+nothing else. `runReplay` (cmd/notary/replay.go) writes the breaks to `cmd.ErrOrStderr()`,
+then returns its error, which `main` turns into the stderr line and exit 1.
 
 ## 9. Boundaries (out of scope)
 
@@ -213,19 +226,21 @@ asserts only the half it checked, because a spec that guesses is the defect of �
 ## 11. Sequencing
 
 1. The store query and the `ledger` pass-through (§3), with its tests.
-2. The verifier refactor and `VerifyPrefix` (§5), with `Verify`'s existing tests passing
-   unchanged — that they do is the evidence the refactor is behaviour-preserving.
+2. The verifier refactor and the replay entry point `ReplayAsOf` (§5), with `Verify`'s
+   existing tests passing unchanged — that they do is the evidence the refactor is
+   behaviour-preserving.
 3. `internal/replay` (§6), plus the shared encoder extracted from `export`.
 4. The CLI (§7–§8).
 5. Docs: the phase table row, the read-path table if it needs it, and the tests section.
 
 ## 12. Open questions for the reviewer
 
-1. **`VerifyPrefix`'s shape.** `VerifyPrefix(records, v)` keeps reading and verifying
-   separate, at the cost of a caller-visible two-step. A combined
-   `ReplayAsOf(t, v) ([]record.Record, []Break, error)` reads once and cannot be called
-   half-way, which is a coherence argument — the prefix it verifies is the prefix it
-   returns. I lean combined and would like your call.
+1. **The prefix verifier's shape.** Keeping reading and verifying separate — the
+   `VerifyPrefix(records, v)` of §5's original wording — costs a caller-visible two-step. A
+   combined `ReplayAsOf(t, v) ([]record.Record, []Break, error)` reads once and cannot be
+   called half-way, which is a coherence argument — the prefix it verifies is the prefix it
+   returns. I lean combined and would like your call. **Resolved (2026-10-03):** the
+   combined `ReplayAsOf` was implemented; see §5.
 2. **Break output format.** Human-readable on stderr, or JSON? `verify` already has an
    answer; matching it is the presumption, but if `verify`'s is human-only and hard to
    consume, this is the moment to notice.

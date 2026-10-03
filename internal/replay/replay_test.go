@@ -310,6 +310,18 @@ func TestReplayIsByteIdenticalToExport(t *testing.T) {
 	require.NotEmpty(t, exportOut.String())
 	require.Contains(t, exportOut.String(), specialText,
 		"the fixture must exercise literal <, > and & on a rendered line, or the encoder is not under test")
+	// Pin the three characters as literals too. The assertion above compares the
+	// variable specialText, so editing that constant to drop <, > or & while
+	// keeping the append would still satisfy it -- a guard that cannot catch its
+	// own erosion. A bare json.NewEncoder would render these escaped (\u0026,
+	// \u003c, \u003e), so matching them literally is what the shared encoder's
+	// SetEscapeHTML(false) is actually guarding.
+	require.Contains(t, exportOut.String(), "&",
+		"the rendered line must carry a literal ampersand; a bare encoder would have escaped it")
+	require.Contains(t, exportOut.String(), "<",
+		"the rendered line must carry a literal less-than; a bare encoder would have escaped it")
+	require.Contains(t, exportOut.String(), ">",
+		"the rendered line must carry a literal greater-than; a bare encoder would have escaped it")
 	assert.Equal(t, exportOut.String(), replayOut.String(),
 		"a replayed line must be byte-identical to an exported one")
 }
