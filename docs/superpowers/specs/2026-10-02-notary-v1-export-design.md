@@ -193,8 +193,10 @@ without the flag, and asserting every hash in both outputs is identical to the s
 One sentence per record, derived mechanically from fields that are already there — `Event`, `Tier`,
 `Reason.Kind()` — plus the scope's memory id when the record has one.
 
-The vocabulary is the seven events crossed with the ten reason kinds, restricted to the combinations
-`record` can actually construct — eleven of them, all now listed with the sentence each produces:
+The vocabulary is the seven events crossed with the ten reason kinds — seventy pairs. Eleven of them are
+combinations `record` can construct today, and the sentence for each is fixed below. Phrasing is total
+over all seventy (see *Extended after review*, below); this table is the fixed wording for the eleven a
+producer emits, not the whole of phrasing's obligation:
 
 | Event | Reason kind | Phrasing |
 |---|---|---|
@@ -219,18 +221,35 @@ section names as the derivation source — which is the consistent choice, so th
 rather than the sentence. A table of *examples* was the defect: phrasing is not illustrative here, it
 is fixed wording, and an example per event cannot describe a function of the pair.
 
+**Extended after review — total over the whole vocabulary.** The table above names the eleven pairs a
+producer emits *today*; those sentences are fixed and must not change. The earlier version stopped
+there, with a hand-maintained list, and a review found the hole: a new `ReasonKind` arriving on the
+library/interceptor path shipped with no wording while the list stayed silent, because nothing
+connected the declarations to the list. The vocabulary is now the source of truth and phrasing is total
+over all of it:
+
+- **The vocabulary is exported and provably complete.** `record.EventTypes()` and
+  `record.ReasonKinds()` are the single source of truth. Go cannot enumerate constants, so a gate in
+  `internal/record` source-scans the package's own (`go/parser`) declarations and fails, naming it, if a
+  declared `EventType`/`ReasonKind` is missing from the list — or if the list carries a value no
+  declaration produces. A kind cannot be declared without the gate naming it.
+- **Every pair is phrased by construction.** A test enumerates the full
+  `record.EventTypes() × record.ReasonKinds()` cross-product — seventy pairs, not a hand-written list —
+  and fails on an unphrased or placeholder-shaped sentence. An unphrased claim, the thing that reads as
+  a **missing record** in a compliance export, is therefore structurally impossible.
+- **The other fifty-nine pairs get a deliberate generic sentence**, built from the event and the reason
+  kind: `"a search ran in this scope, recorded with reason: the add to Mem0 failed."` It names the
+  event and the reason kind and asserts nothing between them that no claim makes. **What it does not
+  give a reader is a specific sentence:** for a combination no producer emits, it restates what the
+  structured fields beside it already say, and invents nothing to fill the gap. It reads as a person's
+  sentence rather than a placeholder precisely because it claims no more than the fields support.
+
 Two properties matter more than the wording:
 
-- **Totality, with a stated gap.** Phrasing is a total function over the (event, reason-kind) pairs
-  listed above, and a test enumerates them and fails on an unphrased one. The enumeration is
-  hand-maintained, so the guarantee is bounded by what it lists, and it is not equally strong on both
-  paths. A new claim kind that arrives through the reconciler's `Rules()` registry **is** covered: a
-  separate test asserts every registry kind is in the enumeration, so the registry cannot grow a kind
-  past the guard. A new `ReasonKind`/`EventType` introduced on the library/interceptor path is **not**
-  forced to grow the enumeration — nothing connects that code to the table, so a new pair could ship
-  with no wording. When it does reach a render, the failure is at least loud rather than silent: the
-  totality test's message names the offending (event, kind) pairs, so an unphrased claim is a visible
-  gap rather than a blank in a compliance export.
+- **Totality.** Phrasing is a total function over the whole vocabulary cross-product (above), and the
+  cross-product test fails on any pair with no wording. There is no longer a stated gap: the only
+  unphrased input is an event or kind *outside* the vocabulary, which no producer constructs and which
+  `Render` rejects rather than rendering as a blank.
 - **Subordination.** The sentence is printed **beside** the structured fields, never instead of them,
   and a phrasing test asserts the structured fields are always present. A reader can ignore the prose;
   no consumer can depend on it.

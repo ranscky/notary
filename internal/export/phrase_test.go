@@ -1,7 +1,7 @@
 package export_test
 
 import (
-	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,36 +11,6 @@ import (
 	"notary/internal/reconcile"
 	"notary/internal/record"
 )
-
-// constructiblePair is one (event, reason kind) combination the record package
-// can actually build, drawn from the two production paths: the interceptor
-// library (add_requested, search_performed, memory_surfaced) and the
-// reconciler (add_resolved, memory_kept, memory_dropped), plus the audit-gap
-// path in the interceptor itself.
-type constructiblePair struct {
-	event   record.EventType
-	kind    record.ReasonKind
-	memID   string // the memory id the record carries, "" when the event has none
-	comment string
-}
-
-// constructiblePairs is the enumeration totality is checked against. It is the
-// source of the design's §7 table. A pair missing here is a pair a new claim
-// kind could ship without wording, so it is written out in full rather than
-// computed: the point is that a human reconciles it against the producers.
-var constructiblePairs = []constructiblePair{
-	{record.EventAddRequested, record.ReasonAddAcknowledged, "", "interceptor/library: an add was acknowledged"},
-	{record.EventAddResolved, record.ReasonStoredByMem0, "mem-stored", "reconcile/adds: the add produced a memory"},
-	{record.EventAddResolved, record.ReasonNoFactsExtracted, "", "reconcile/adds: the add produced no facts"},
-	{record.EventAddResolved, record.ReasonAddFailed, "", "reconcile/adds: the add failed"},
-	{record.EventMemoryKept, record.ReasonStoredByMem0, "mem-kept", "reconcile/kept: the memory is present"},
-	{record.EventMemoryKept, record.ReasonKeptByContentMatch, "mem-matched", "reconcile/kept: kept under a different id"},
-	{record.EventMemoryDropped, record.ReasonRemovedByMem0, "mem-removed", "reconcile/removed: Mem0 removed it"},
-	{record.EventMemoryDropped, record.ReasonAbsentFromSearch, "mem-absent", "reconcile/absent: a search did not return it"},
-	{record.EventSearchPerformed, record.ReasonSearchPerformed, "", "interceptor/library: a search ran"},
-	{record.EventMemorySurfaced, record.ReasonReturnedBySearch, "mem-surfaced", "interceptor/library: a result surfaced"},
-	{record.EventAuditGap, record.ReasonAuditUnavailable, "", "interceptor: an operation was not recorded"},
-}
 
 // reasonFor builds a valid Reason for kind, choosing the tier constructor the
 // kind's AllowedTier fixes, so the test does not re-encode the tier mapping.
@@ -74,73 +44,107 @@ func reasonFor(t *testing.T, kind record.ReasonKind) record.Reason {
 	}
 }
 
-// recordFor builds a valid record for a constructible pair.
-func recordFor(t *testing.T, p constructiblePair) record.Record {
+// recordFor builds a valid record for one (event, kind) pair carrying memID.
+func recordFor(t *testing.T, event record.EventType, kind record.ReasonKind, memID string) record.Record {
 	t.Helper()
 	var contentHash record.Hash
 	for i := range contentHash {
 		contentHash[i] = 0x11
 	}
 	return record.Record{
-		ID:      record.RecordID("rec-" + string(p.event) + "-" + string(p.kind)),
-		Event:   p.event,
-		Reason:  reasonFor(t, p.kind),
-		Subject: record.Subject{MemoryID: p.memID, ContentHash: contentHash},
+		ID:      record.RecordID("rec-" + string(event) + "-" + string(kind)),
+		Event:   event,
+		Reason:  reasonFor(t, kind),
+		Subject: record.Subject{MemoryID: memID, ContentHash: contentHash},
 	}
 }
 
-// TestPhraseIsTotalOverConstructibleRecords is the guard the design calls
-// "totality": every pair the record package can construct must have wording. An
-// unphrased claim in a compliance export reads as a missing record, so Phrase
-// returning ("", false) for a constructible pair is a failure here.
-func TestPhraseIsTotalOverConstructibleRecords(t *testing.T) {
-	var unphrased []string
-	for _, p := range constructiblePairs {
-		rec := recordFor(t, p)
-		sentence, ok := export.Phrase(rec)
-		if !ok || sentence == "" {
-			unphrased = append(unphrased,
-				fmt.Sprintf("%s + %s (%s)", p.event, p.kind, p.comment))
-			continue
+// TestPhraseIsTotalOverTheVocabulary is the guard the design calls "totality".
+//
+// It enumerates the FULL cross-product of record's event and reason-kind
+// vocabularies -- not a hand-written list, which was the hole the review found:
+// a pair could be declared and go unworded while the list stayed silent. The
+// vocabulary is the single source of truth (record.EventTypes,
+// record.ReasonKinds), and a gate in internal/record proves it complete against
+// the declarations. So no pair is unworded by construction.
+func TestPhraseIsTotalOverTheVocabulary(t *testing.T) {
+	var unphrased, placeholders []string
+	for _, event := range record.EventTypes() {
+		for _, kind := range record.ReasonKinds() {
+			rec := recordFor(t, event, kind, "mem-1")
+			sentence, ok := export.Phrase(rec)
+			if !ok || sentence == "" {
+				unphrased = append(unphrased, string(event)+" + "+string(kind))
+				continue
+			}
+			// A sentence must not read as a placeholder: no angle-bracket
+			// template, no raw fmt verb.
+			if strings.ContainsAny(sentence, "<>%") {
+				placeholders = append(placeholders, string(event)+" + "+string(kind)+": "+sentence)
+			}
 		}
 	}
-	if len(unphrased) > 0 {
-		t.Fatalf("Phrase has no wording for %d constructible (event, kind) pair(s): %v",
-			len(unphrased), unphrased)
+	require.Emptyf(t, unphrased,
+		"Phrase has no wording for %d vocabulary (event, kind) pair(s): %v", len(unphrased), unphrased)
+	require.Emptyf(t, placeholders,
+		"Phrase produced a placeholder-looking sentence for %d pair(s): %v", len(placeholders), placeholders)
+}
+
+// TestPhraseKeepsTheSpecifiedSentences pins the eleven sentences the design
+// fixes for the pairs a producer emits today. Phrase may grow a generic
+// sentence for every other pair, but these exact words must not change.
+func TestPhraseKeepsTheSpecifiedSentences(t *testing.T) {
+	cases := []struct {
+		event record.EventType
+		kind  record.ReasonKind
+		memID string
+		want  string
+	}{
+		{record.EventAddRequested, record.ReasonAddAcknowledged, "", "an add was requested and Mem0 acknowledged it"},
+		{record.EventAddResolved, record.ReasonStoredByMem0, "mem-7", "the add resolved: Mem0 stored memory mem-7"},
+		{record.EventAddResolved, record.ReasonNoFactsExtracted, "", "the add resolved: no facts were extracted from the interaction"},
+		{record.EventAddResolved, record.ReasonAddFailed, "", "the add resolved: the add to Mem0 failed"},
+		{record.EventMemoryKept, record.ReasonStoredByMem0, "mem-1", "the memory was kept; it is still present in the scope"},
+		{record.EventMemoryKept, record.ReasonKeptByContentMatch, "mem-2", "the memory was kept; its content matched an earlier add"},
+		{record.EventMemoryDropped, record.ReasonRemovedByMem0, "mem-3", "the memory was dropped: Mem0 no longer holds it"},
+		{record.EventMemoryDropped, record.ReasonAbsentFromSearch, "mem-4", "the memory was dropped: a covering search did not return it"},
+		{record.EventSearchPerformed, record.ReasonSearchPerformed, "", "a search ran in this scope"},
+		{record.EventMemorySurfaced, record.ReasonReturnedBySearch, "mem-5", "the memory was returned by a search"},
+		{record.EventAuditGap, record.ReasonAuditUnavailable, "", "an operation happened that Notary failed to record"},
+	}
+	for _, c := range cases {
+		sentence, ok := export.Phrase(recordFor(t, c.event, c.kind, c.memID))
+		require.Truef(t, ok, "%s + %s must be phrased", c.event, c.kind)
+		assert.Equalf(t, c.want, sentence, "%s + %s", c.event, c.kind)
 	}
 }
 
-// TestPhraseStoredAddWithoutAMemoryID exercises the fallback the totality
-// enumeration cannot reach: its only add_resolved + stored_by_mem0 entry
-// carries a memory id ("mem-stored"), yet firstResultID can return "" when
-// Mem0's event status reports no results. Phrase must still produce wording,
-// and a NAMELESS one -- "Mem0 stored a memory" -- rather than a dangling
-// "Mem0 stored memory " with an empty id.
+// TestPhraseGenericSentenceForAnUnconstructedPair pins the shape of the generic
+// sentence a pair no producer emits gets: it names the event and the reason
+// kind and asserts nothing else, so it is honest rather than a placeholder.
+func TestPhraseGenericSentenceForAnUnconstructedPair(t *testing.T) {
+	sentence, ok := export.Phrase(recordFor(t, record.EventSearchPerformed, record.ReasonAddFailed, ""))
+	require.True(t, ok, "an unconstructed but in-vocabulary pair still has wording")
+	assert.Equal(t, "a search ran in this scope, recorded with reason: the add to Mem0 failed.", sentence)
+}
+
+// TestPhraseStoredAddWithoutAMemoryID exercises the fallback the specific
+// sentences cannot cover: a stored add whose Mem0 event status reports no
+// results, so firstResultID returned "". Phrase must still produce wording, and
+// a NAMELESS one rather than a dangling "Mem0 stored memory " with an empty id.
 func TestPhraseStoredAddWithoutAMemoryID(t *testing.T) {
-	rec := recordFor(t, constructiblePair{
-		event: record.EventAddResolved,
-		kind:  record.ReasonStoredByMem0,
-		memID: "",
-	})
-	sentence, ok := export.Phrase(rec)
+	sentence, ok := export.Phrase(recordFor(t, record.EventAddResolved, record.ReasonStoredByMem0, ""))
 	require.True(t, ok, "a memoryless stored add is still a constructible pair with wording")
 	assert.Equal(t, "the add resolved: Mem0 stored a memory", sentence)
 }
 
 // TestRenderedLineCarriesTheStructuredFieldsBesideThePhrasing is the design's
 // "subordination" property: the sentence is printed beside the structured
-// fields, never instead of them. It renders a constructible record and asserts
-// both are present, so a reader can ignore the prose and no consumer can depend
-// on it.
+// fields, never instead of them.
 func TestRenderedLineCarriesTheStructuredFieldsBesideThePhrasing(t *testing.T) {
-	rec := recordFor(t, constructiblePair{
-		event: record.EventMemoryKept,
-		kind:  record.ReasonStoredByMem0,
-		memID: "mem-1",
-	})
+	rec := recordFor(t, record.EventMemoryKept, record.ReasonStoredByMem0, "mem-1")
 	got := renderJSON(t, rec, false)
 
-	// The structured fields the sentence restates are all present, unchanged.
 	for _, field := range []string{"seq", "id", "event", "tier", "reason_kind", "memory_id", "content_hash", "hash"} {
 		_, ok := got[field]
 		assert.Truef(t, ok, "structured field %q must be present beside the phrasing", field)
@@ -149,31 +153,21 @@ func TestRenderedLineCarriesTheStructuredFieldsBesideThePhrasing(t *testing.T) {
 	assert.Equal(t, "stored_by_mem0", got["reason_kind"])
 	assert.Equal(t, "mem-1", got["memory_id"])
 
-	// ...and the phrasing sits beside them, never instead of them.
 	phrasing, ok := got["phrasing"]
 	require.True(t, ok, "the phrasing field must be present")
 	assert.NotEmpty(t, phrasing, "the phrasing must not be empty")
 }
 
-// TestEveryReconcilerRuleKindIsPhrased ties totality to the reconciler's rule
-// registry: a new rule that yields a kind the enumeration does not cover fails
-// here, so the registry cannot grow a claim kind past this guard.
-//
-// LIMITATION -- this check is by KIND alone. reconcile.Rule carries no Event,
-// and the enumeration keys on (event, kind), so a rule that emitted an
-// already-covered kind under a DIFFERENT event would pass this guard while its
-// (event, kind) pair went unphrased. It is the strongest check the registry's
-// shape allows: strengthening it would mean adding an Event field to a registry
-// whose Name/Version are written into signed records, which is out of scope.
-// The totality test above still catches any pair Phrase is handed at render.
+// TestEveryReconcilerRuleKindIsPhrased keeps the reconciler honest: every kind
+// its Rules() registry yields must be part of record's vocabulary, and the
+// vocabulary is phrased in full (above) and proven complete in internal/record.
 func TestEveryReconcilerRuleKindIsPhrased(t *testing.T) {
-	covered := map[record.ReasonKind]bool{}
-	for _, p := range constructiblePairs {
-		covered[p.kind] = true
+	vocabulary := map[record.ReasonKind]bool{}
+	for _, kind := range record.ReasonKinds() {
+		vocabulary[kind] = true
 	}
 	for _, rule := range reconcile.Rules() {
-		assert.Truef(t, covered[rule.Kind],
-			"reconciler rule %q yields kind %q, which the constructible enumeration does not cover",
-			rule.Name, rule.Kind)
+		assert.Truef(t, vocabulary[rule.Kind],
+			"reconciler rule %q yields kind %q, which record's vocabulary does not list", rule.Name, rule.Kind)
 	}
 }

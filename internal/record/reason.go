@@ -44,6 +44,34 @@ const (
 	ReasonAuditUnavailable ReasonKind = "audit_unavailable"
 )
 
+// reasonKinds is the closed vocabulary of reason kinds, in declaration order.
+// It is the single source of truth for that vocabulary: ReasonKinds returns a
+// copy.
+//
+// A new ReasonKind constant must be added here too. If it is not,
+// TestVocabularyMatchesItsDeclarations -- which source-scans this package --
+// fails naming the constant, so the vocabulary cannot silently grow a member
+// that nothing else knows about.
+var reasonKinds = []ReasonKind{
+	ReasonSearchPerformed,
+	ReasonAddAcknowledged,
+	ReasonReturnedBySearch,
+	ReasonStoredByMem0,
+	ReasonKeptByContentMatch,
+	ReasonAbsentFromSearch,
+	ReasonNoFactsExtracted,
+	ReasonRemovedByMem0,
+	ReasonAddFailed,
+	ReasonAuditUnavailable,
+}
+
+// ReasonKinds returns the closed vocabulary of reason kinds, in declaration
+// order. The result is a fresh slice the caller owns and may mutate without
+// disturbing the vocabulary or any other caller.
+func ReasonKinds() []ReasonKind {
+	return append([]ReasonKind(nil), reasonKinds...)
+}
+
 // AllowedTier returns the single VisibilityTier a kind may carry. The second
 // result is false for any kind not in the vocabulary above, so an unknown kind
 // can never be mistaken for a known one.

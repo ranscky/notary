@@ -27,18 +27,41 @@ const (
 	EventAuditGap EventType = "audit_gap"
 )
 
-// allEventTypes is the closed vocabulary of event types. It is populated at
-// package initialisation and never mutated afterwards, so it is safe to read
-// concurrently from Valid.
-var allEventTypes = map[EventType]struct{}{
-	EventAddRequested:    {},
-	EventAddResolved:     {},
-	EventSearchPerformed: {},
-	EventMemorySurfaced:  {},
-	EventMemoryKept:      {},
-	EventMemoryDropped:   {},
-	EventAuditGap:        {},
+// eventTypes is the closed vocabulary of event types, in declaration order. It
+// is the single source of truth for that vocabulary: EventTypes returns a copy,
+// and Valid's membership set is derived from it, so the two cannot disagree.
+//
+// A new EventType constant must be added here too. If it is not,
+// TestVocabularyMatchesItsDeclarations -- which source-scans this package --
+// fails naming the constant, so the vocabulary cannot silently grow a member
+// that nothing else knows about.
+var eventTypes = []EventType{
+	EventAddRequested,
+	EventAddResolved,
+	EventSearchPerformed,
+	EventMemorySurfaced,
+	EventMemoryKept,
+	EventMemoryDropped,
+	EventAuditGap,
 }
+
+// EventTypes returns the closed vocabulary of event types, in declaration
+// order. The result is a fresh slice the caller owns and may mutate without
+// disturbing the vocabulary or any other caller.
+func EventTypes() []EventType {
+	return append([]EventType(nil), eventTypes...)
+}
+
+// allEventTypes is the membership set Valid consults. It is built from
+// eventTypes at initialisation, so eventTypes is the one list that must stay
+// complete; there is no second hand-maintained copy to drift.
+var allEventTypes = func() map[EventType]struct{} {
+	m := make(map[EventType]struct{}, len(eventTypes))
+	for _, et := range eventTypes {
+		m[et] = struct{}{}
+	}
+	return m
+}()
 
 // Valid reports whether et is one of the defined event types. It returns false
 // for the zero value and for any unknown value, so a defaulted or misspelled
