@@ -41,7 +41,7 @@ Notary is a Go CLI and library that sits between an application and Mem0 and pro
 | D7 | `Observed` scope | Means "directly witnessed by Notary"; the source (`mem0_response` or `notary_instrumentation`) is recorded on the evidence |
 | D8 | Truncation | Signed head checkpoints in v1; `verify --checkpoint` detects a shortened chain |
 | D9 | `replay --at` | Knowledge time — filters on `RecordedAt <= T`, inclusive |
-| D10 | Anthropic dependency | Approved, isolated to `internal/phrase`, which no core package imports |
+| D10 | LLM provider dependency | **Corrected (2026-10-03):** providers are pluggable through the OpenAI-compatible chat-completions schema and no provider SDK is added. The load-bearing half survives: `internal/phrase` is isolated to the phrasing pass, which no core package imports. This row originally read "Anthropic dependency — approved, isolated to `internal/phrase`, which no core package imports" |
 
 **Assumption:** `go.mod` declares `go 1.23` per `.clinerules`; `GOTOOLCHAIN=auto` fetches that toolchain on first build, so builds require network on a machine whose local toolchain is older.
 
@@ -108,7 +108,7 @@ type Reconciler  interface { Reconcile(ctx context.Context, window TimeRange) ([
 
 ### Dependency direction
 
-`store` and `sign` depend on `record`; `ledger` depends on `store` and `sign`; `interceptor` and `reconcile` depend on `ledger`; `export`, `replay`, and `explain` read through `ledger`. `internal/phrase` imports the Anthropic SDK and is imported **only** by `internal/export`. No core package imports `internal/phrase`, so "the audit core has no LLM dependency" is enforced by the compiler rather than by convention.
+`store` and `sign` depend on `record`; `ledger` depends on `store` and `sign`; `interceptor` and `reconcile` depend on `ledger`; `export`, `replay`, and `explain` read through `ledger`. `internal/phrase` talks to an LLM through a small OpenAI-compatible HTTP client — it adds no SDK — and is imported **only** by `internal/export`. No core package imports `internal/phrase`, so "the audit core has no LLM dependency" is enforced by the compiler rather than by convention. **Corrected (2026-10-03):** this sentence originally read "`internal/phrase` imports the Anthropic SDK"; providers are now pluggable and no SDK is added.
 
 ---
 
@@ -332,7 +332,7 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 ## 11. Security and privacy
 
 - The audit store is a durable second copy of the memories it describes. Content is stored in full so that hashes remain verifiable; sensitivity is caller/config-supplied and controls redaction only.
-- `internal/phrase` is the sole importer of an LLM SDK, and the compiler enforces it.
+- `internal/phrase` is the only package that talks to an LLM, whatever provider it is pointed at, and the compiler enforces that no core package imports it. **Corrected (2026-10-03):** this bullet originally read "is the sole importer of an LLM SDK"; no SDK is added.
 - No core code path treats generated text as authoritative. `Paraphrase` is display-only.
 - No secret or key material may appear in any log, error, or `%v` rendering; enforced by the redacting key type and a canary test.
 
@@ -389,7 +389,7 @@ The folder structure gains packages the original layout did not account for:
 | `internal/reconcile/` | The reconciler |
 | `internal/explain/` | The per-record and per-memory lifecycle view |
 | `internal/gap/` | The hash-chained fallback gap log |
-| `internal/phrase/` | The isolated Anthropic adapter |
+| `internal/phrase/` | The only package that talks to an LLM, whatever provider it is pointed at. **Corrected (2026-10-03):** this row originally read "The isolated Anthropic adapter" |
 
 `.clinerules` wording that this design refines rather than contradicts: "idempotent from Phase 4 onward" now holds for phases 4+, with `Append` idempotent by construction; "fail-open-loud only" is preserved, with `FailClosed` still defined and unused; the `VisibilityTier` guardrail is implemented as described in §5, with the compile-time limitation stated plainly rather than overclaimed.
 

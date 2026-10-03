@@ -1,0 +1,33 @@
+{
+  "id": "chatcmpl-synthetic-unknown-0002",
+  "object": "chat.completion",
+  "created": 1759400001,
+  "model": "test-model",
+  "system_fingerprint": "fp_synthetic_abc123",
+  "service_tier": "default",
+  "provider_extension": {
+    "vendor": "example",
+    "notes": ["an unknown vendor field the client must ignore, not refuse"]
+  },
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "The memory was kept; it is still present in the scope.",
+        "refusal": null,
+        "annotations": [],
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop",
+      "vendor_score": 0.987
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 16,
+    "total_tokens": 136,
+    "prompt_tokens_details": {"cached_tokens": 0}
+  }
+}

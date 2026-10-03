@@ -150,6 +150,16 @@ func TestEnvSensitivityRulesIsDocumentedName(t *testing.T) {
 	assert.Equal(t, "NOTARY_SENSITIVITY_RULES", config.EnvSensitivityRules)
 }
 
+// TestEnvPhraseNamesAreDocumentedNames pins the three environment variables that
+// configure the optional phrasing provider. They are env-only by design (D10):
+// there is deliberately no config-file path for the key, so the names are a
+// documented interface and not an implementation detail.
+func TestEnvPhraseNamesAreDocumentedNames(t *testing.T) {
+	assert.Equal(t, "NOTARY_PHRASE_API_KEY", config.EnvPhraseAPIKey)
+	assert.Equal(t, "NOTARY_PHRASE_MODEL", config.EnvPhraseModel)
+	assert.Equal(t, "NOTARY_PHRASE_BASE_URL", config.EnvPhraseBaseURL)
+}
+
 // TestConfigDefaultsToReconcileCommand verifies Config.ReconcileMode defaults to
 // the only mode implemented in v1 -- reconcile.ReconcileCommand -- and that the
 // default is one this build can actually run. There is deliberately no

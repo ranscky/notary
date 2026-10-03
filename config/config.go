@@ -40,6 +40,16 @@ const (
 	// records, so a flag would have no command to live on. The value is a path,
 	// read by LoadSensitivityRules.
 	EnvSensitivityRules = "NOTARY_SENSITIVITY_RULES"
+
+	// EnvPhraseAPIKey, EnvPhraseModel and EnvPhraseBaseURL name the environment
+	// variables that configure the optional phrasing provider (design D10):
+	// the key that authenticates the call, the model to ask for, and the
+	// provider's OpenAI-compatible base URL. They are env-only: there is
+	// deliberately no config-file path for the key, and there are no Config
+	// fields for them, so the key can never end up in a rendered config.
+	EnvPhraseAPIKey  = "NOTARY_PHRASE_API_KEY"
+	EnvPhraseModel   = "NOTARY_PHRASE_MODEL"
+	EnvPhraseBaseURL = "NOTARY_PHRASE_BASE_URL"
 )
 
 // Config is the fully resolved runtime configuration. A *Config is passed

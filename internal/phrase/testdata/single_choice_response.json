@@ -1,0 +1,16 @@
+{
+  "id": "chatcmpl-synthetic-single-0001",
+  "object": "chat.completion",
+  "created": 1759400000,
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "A search ran in the user u1 scope, so this record notes that a query was performed."
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}
