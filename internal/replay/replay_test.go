@@ -147,6 +147,19 @@ func TestReplayRedactsSensitiveUnlessIncluded(t *testing.T) {
 	assert.Contains(t, shown.String(), "the secret value")
 }
 
+// TestReplayRejectsZeroAt mirrors Export's zero-bound guard: a zero At is a
+// missing instant, and replaying it would silently return an empty success
+// rather than the wrong question being refused.
+func TestReplayRejectsZeroAt(t *testing.T) {
+	rp := replay.New(&fakeReader{}, nil)
+
+	var buf bytes.Buffer
+	_, err := rp.Replay(context.Background(), replay.Request{}, &buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "At")
+	assert.Empty(t, buf.String())
+}
+
 func TestReplaySurfacesBreaksRatherThanSwallowingThem(t *testing.T) {
 	brk := ledger.Break{RecordID: "rec-9", Seq: 5, Field: "seq", Detail: "hole at seq 4"}
 	rp := replay.New(&fakeReader{breaks: []ledger.Break{brk}}, nil)
@@ -254,10 +267,13 @@ func appendableRecord(t *testing.T, id record.RecordID, at time.Time, content *r
 }
 
 // TestReplayIsByteIdenticalToExport is the guard on Task 3's shared encoder:
-// the same three records are rendered once through export.Export and once
-// through replay.Replay, and the whole JSONL output must be equal byte for
-// byte. If the two paths ever stop sharing the encoder -- or render differently
-// -- this fails.
+// the same records are rendered once through export.Export and once through
+// replay.Replay, and the whole JSONL output must be equal byte for byte. If the
+// two paths ever stop sharing the encoder -- or render differently -- this
+// fails. Its fixture deliberately includes a NON-sensitive record whose prose
+// carries <, > and &, because those are the only characters a bare
+// json.NewEncoder would rewrite; without such a record the test passes even
+// when the encoder is not shared.
 func TestReplayIsByteIdenticalToExport(t *testing.T) {
 	l, v := newReplayLedger(t, 3)
 
@@ -266,6 +282,18 @@ func TestReplayIsByteIdenticalToExport(t *testing.T) {
 	sens := appendableRecord(t, "sens-rec", replayFrom.Add(3*time.Hour),
 		&record.Content{Text: "a sensitive note", Sensitive: true})
 	_, err := l.Append(sens)
+	require.NoError(t, err)
+
+	// A NON-sensitive record whose prose carries the three characters
+	// SetEscapeHTML(false) exists to keep literal. Without it no line renders
+	// any of <, > or & -- the three records carry no content and sens-rec is
+	// withheld -- so a bare json.NewEncoder would produce identical bytes and
+	// the test would guard nothing. This record is what makes the shared
+	// encoder load-bearing, so the assertion below pins it explicitly.
+	const specialText = "sum & difference < 5 > 2"
+	escaped := appendableRecord(t, "esc-rec", replayFrom.Add(4*time.Hour),
+		&record.Content{Text: specialText, Sensitive: false})
+	_, err = l.Append(escaped)
 	require.NoError(t, err)
 
 	e := export.New(l)
@@ -280,6 +308,8 @@ func TestReplayIsByteIdenticalToExport(t *testing.T) {
 	require.Empty(t, res.Breaks, "the prefix the ledger built must verify clean")
 
 	require.NotEmpty(t, exportOut.String())
+	require.Contains(t, exportOut.String(), specialText,
+		"the fixture must exercise literal <, > and & on a rendered line, or the encoder is not under test")
 	assert.Equal(t, exportOut.String(), replayOut.String(),
 		"a replayed line must be byte-identical to an exported one")
 }

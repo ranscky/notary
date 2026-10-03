@@ -11,6 +11,7 @@ package replay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -94,14 +95,22 @@ func New(r Reader, v *sign.Verifier) *Replayer {
 //
 // The prefix's breaks go in Result.Breaks and are NOT an error: replay renders
 // the records the reader returned, and the caller decides how to surface the
-// breaks. Replay fails only on a read error, a render error, a write error, or
-// a cancelled context.
+// breaks. Replay fails only on a zero At, a read error, a render error, a write
+// error, or a cancelled context.
 //
 // Replay does not paraphrase, does not sign, and writes to no file but out. It
 // exists so a replayed line is byte-identical to an exported one by
 // construction (design §6): both paths render through export.Render and encode
 // through export.NewLineEncoder.
 func (rp *Replayer) Replay(ctx context.Context, req Request, out io.Writer) (Result, error) {
+	// A zero At is a missing instant, not midnight of year one: reject it here
+	// rather than silently replaying an empty prefix, mirroring Export's
+	// rejection of a zero bound. Task 5's CLI always parses --at, but the
+	// package is reusable and closing the footgun is cheap.
+	if req.At.IsZero() {
+		return Result{}, errors.New("replay: At must be set; a zero instant would silently replay an empty prefix")
+	}
+
 	records, breaks, err := rp.reader.ReplayAsOf(req.At, rp.v)
 	if err != nil {
 		return Result{}, fmt.Errorf("replay: read ledger: %w", err)
