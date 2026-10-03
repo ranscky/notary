@@ -484,6 +484,22 @@ func TestExportPhraseRequiresProviderConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), config.EnvPhraseBaseURL, "the error must name the missing variable")
 }
 
+// TestNewPhraseParaphraserRequiresModel pins the second refusal branch of the
+// phrase client's construction: with a base URL set but no model, --phrase
+// cannot be honoured, so building the client refuses and names the missing
+// variable rather than sending a request with an empty model. The base-URL
+// branch is covered by TestExportPhraseRequiresProviderConfig, which returns
+// before this branch; this is the model branch it never reaches.
+func TestNewPhraseParaphraserRequiresModel(t *testing.T) {
+	t.Setenv(config.EnvPhraseBaseURL, "https://example.invalid/v1")
+	t.Setenv(config.EnvPhraseModel, "")
+
+	p, err := newPhraseParaphraser()
+	require.Error(t, err, "a base URL without a model must refuse rather than send an empty model")
+	assert.Nil(t, p, "no client must be built when the model is missing")
+	assert.Contains(t, err.Error(), config.EnvPhraseModel, "the error must name the missing variable")
+}
+
 // ---------------------------------------------------------------------------
 // Checkpoint round trip through the REAL verify command (obligation 2).
 // ---------------------------------------------------------------------------

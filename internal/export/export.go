@@ -14,10 +14,14 @@ import (
 	"notary/internal/sign"
 )
 
-// defaultMaxSpan caps an export's range when Request.MaxSpan is unset. The cost
+// DefaultMaxSpan caps an export's range when Request.MaxSpan is unset. The cost
 // of an export scales with the range, and the failure mode of a compliance
 // export should be an error rather than an out-of-memory kill (design §9).
-const defaultMaxSpan = 366 * 24 * time.Hour
+//
+// It is exported so a caller that populates a flag's default -- the CLI's
+// --max-span in particular -- uses this value rather than re-deriving it, so
+// the help text cannot drift from the cap the exporter actually applies.
+const DefaultMaxSpan = 366 * 24 * time.Hour
 
 // Reader is the ledger as the exporter uses it: the read side it renders, plus
 // the head attestation a checkpoint needs. It is the existing ledger read and
@@ -114,7 +118,7 @@ type Request struct {
 	// shortened tail. Empty means no checkpoint and no file.
 	CheckpointOut string
 
-	// MaxSpan caps To-From. A non-positive value selects defaultMaxSpan.
+	// MaxSpan caps To-From. A non-positive value selects DefaultMaxSpan.
 	MaxSpan time.Duration
 
 	// Phrase requests a paraphrase pass: when set, the exporter runs the
@@ -340,7 +344,7 @@ func (r Request) validate() error {
 	}
 	max := r.MaxSpan
 	if max <= 0 {
-		max = defaultMaxSpan
+		max = DefaultMaxSpan
 	}
 	if span := r.To.Sub(r.From); span > max {
 		return fmt.Errorf("export: range %s exceeds --max-span %s", span, max)

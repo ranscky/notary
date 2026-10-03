@@ -468,6 +468,6 @@ Not built in this phase, and not to be reported as missing:
 
 - The in-process reconciliation loop (`ReconcileMode.InProcess` is reserved)
 - `explain`, `export`, `replay`
-- Sensitivity rules and redaction (`SensitivityRules`, §10 of the parent spec) — Phase 6
+- Sensitivity rules and redaction (sensitivity rules, §10 of the parent spec) — Phase 6
 - CLI-driven gap replay (§9.3)
 - Any mutation or deletion of existing records. The reconciler only ever appends.

@@ -17,14 +17,6 @@ import (
 	"notary/internal/store"
 )
 
-// defaultExportMaxSpan is the span cap an export applies when --max-span is left
-// at its default. It mirrors export's own default (design §9): the cost of an
-// export scales with the range, and a compliance export's failure mode should be
-// an error rather than an out-of-memory kill. The two must agree, so this is a
-// named constant rather than a bare literal whose provenance a reader must
-// chase.
-const defaultExportMaxSpan = 366 * 24 * time.Hour
-
 // newExportCmd builds the `notary export` subcommand: the auditor's command for
 // rendering a range of the ledger as JSONL -- one stable object per record,
 // streamed to stdout -- and, on request, writing a signed head checkpoint that
@@ -94,8 +86,8 @@ func newExportCmd() *cobra.Command {
 	cmd.Flags().Bool("phrase", false,
 		"add a display-only language-model paraphrase to each line, beside the record; a phrasing failure degrades to a note and never fails the export")
 	cmd.Flags().String("checkpoint-out", "",
-		"path to write a signed head checkpoint to, in the format `verify --checkpoint` reads")
-	cmd.Flags().Duration("max-span", defaultExportMaxSpan,
+		"path to write a signed head checkpoint to, in the format the verify --checkpoint command reads")
+	cmd.Flags().Duration("max-span", export.DefaultMaxSpan,
 		"maximum span of the export range")
 	cmd.Flags().String("user-id", "", "restrict the export to this Mem0 user id")
 	cmd.Flags().String("agent-id", "", "restrict the export to this Mem0 agent id")

@@ -43,7 +43,7 @@ Notary is a Go CLI and library that sits between an application and Mem0 and pro
 | D9 | `replay --at` | Knowledge time — filters on `RecordedAt <= T`, inclusive |
 | D10 | LLM provider dependency | **Corrected (2026-10-03):** providers are pluggable through the OpenAI-compatible chat-completions schema and no provider SDK is added. The load-bearing half survives: `internal/phrase` is isolated to the phrasing pass, which no core package imports. This row originally read "Anthropic dependency — approved, isolated to `internal/phrase`, which no core package imports" |
 
-**Assumption:** `go.mod` declares `go 1.23` per `.clinerules`; `GOTOOLCHAIN=auto` fetches that toolchain on first build, so builds require network on a machine whose local toolchain is older.
+**Assumption:** `go.mod` declares `go 1.25.0`, which satisfies `.clinerules`' "Go 1.23+" floor; `GOTOOLCHAIN=auto` fetches that toolchain on first build, so builds require network on a machine whose local toolchain is older.
 
 ---
 
@@ -318,12 +318,13 @@ type Config struct {
     FailMode         FailMode      // FailOpenLoud (default); FailClosed reserved, unused in v1
     ReconcileMode    ReconcileMode // Command | InProcess
     GapLogPath       string
-    SensitivityRules []Rule
     Verbose          bool
 }
 ```
 
 `Rule` matches a scope and/or a Mem0 metadata key and marks matching content `Sensitive`. Rules are declarative configuration, never code.
+
+Sensitivity rules are deliberately **not** a `Config` field (corrected during Phase 6). They are loaded from a path given by `NOTARY_SENSITIVITY_RULES`, and `config.LoadSensitivityRules` is an **application-facing** loader: rules mark content at *write* time, and no `notary` command writes records, so the rules belong to whatever application constructs the interceptor rather than to the CLI. There is deliberately no `Config.SensitivityRules` field and no CLI flag for the path.
 
 No secrets in the repository; `.clinerules` guardrails apply unchanged.
 
@@ -361,7 +362,7 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 3 | `interceptor`, `library/mem0`, `internal/mem0`, fail-open-loud, `internal/gap` | ✅ complete |
 | 4 | Idempotency; correlation ID required on every observation | ✅ complete |
 | 5 | **Reconciler** (new): event polling, `get_all` diffing, `kept`/`dropped`, rule registry, `reconcile-mode` | ✅ complete |
-| 6 | `export`, redaction, tier phrasing, `internal/phrase` | ⬜ not started |
+| 6 | `export`, redaction, tier phrasing, `internal/phrase` | ✅ complete |
 | 7 | `replay` | ⬜ not started |
 | 8 | **`explain`** (new) | ⬜ not started |
 | 9 | Proxy mode | ⬜ not started |

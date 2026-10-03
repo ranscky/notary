@@ -7,7 +7,7 @@
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
 ![Dependencies](https://img.shields.io/badge/direct_dependencies-3-blue)
 ![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
-![Scope](https://img.shields.io/badge/scope-core_ledger_and_reconciler_(phases_1--5)-orange)
+![Scope](https://img.shields.io/badge/scope-ledger_export_reconciler_(phases_1--6)-orange)
 
 **A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
 
@@ -133,6 +133,65 @@ go run ./cmd/notary verify --write-checkpoint cp.json # attest the head
 go run ./cmd/notary verify --checkpoint cp.json       # detect a removed tail
 ```
 
+`export` renders a range of the ledger to stdout as JSONL — one stable object per record — so an audit
+can be diffed, grepped and reviewed. It is a read path: it never writes the ledger, and its only
+output of its own is the optional checkpoint file.
+
+```bash
+export NOTARY_DB_PATH=notary.db
+export NOTARY_SIGNING_KEY=<base64 ed25519 key>
+
+go run ./cmd/notary export --from 2026-09-01T00:00:00Z
+go run ./cmd/notary export --from 2026-09-01T00:00:00Z --checkpoint-out cp.json
+go run ./cmd/notary verify --checkpoint cp.json    # verify the range the export covers
+```
+
+- **A signing key is required**, even when `--checkpoint-out` is not given. Like `reconcile`, `export`
+  refuses to start without one rather than silently downgrade, so a keyless stdout-only export is not
+  possible in v1.
+- **Sensitive content is withheld by default.** A line whose stored content is marked sensitive carries
+  the subject's `content_hash` and `"redacted":"sensitive"` instead of the text, so a reader can always
+  tell "not shown" from "nothing was there". `--include-sensitive` prints the stored text instead; it
+  changes only what is printed — never a hash, because rendering is a read path.
+- **`--checkpoint-out <path>`** writes a signed head checkpoint in the exact format
+  `verify --checkpoint` already reads, attesting the ledger head at export time (not the last record in
+  the range), so a truncated tail is detectable later.
+- **`--phrase` is opt-in** and adds an optional, display-only language-model paraphrase beside each
+  record — never instead of it. It is off by default, so a provider is only billed for an export you
+  asked for. It needs provider configuration from the environment: `NOTARY_PHRASE_MODEL` and
+  `NOTARY_PHRASE_BASE_URL`, plus `NOTARY_PHRASE_API_KEY` for endpoints that need one. A phrasing
+  failure never fails the export; it degrades to a note on stderr.
+- **Scope flags** `--user-id`, `--agent-id`, `--app-id` and `--run-id` restrict the export to one
+  entity scope and combine with AND, mirroring `reconcile`.
+- **`--from` is required** and `--to` defaults to now. The range is bounded on each record's *event*
+  time (`At`), not its write time (`RecordedAt`), so a record written late about an old event still
+  belongs to that event's window.
+- **`--max-span`** caps the range (default 366 days). The cost of an export scales with the range, so
+  an over-long range is an error rather than an out-of-memory kill.
+
+Redaction follows content marked sensitive at **write** time. An application marks it either per call
+(`library.Sensitive()`) or declaratively, by pointing `NOTARY_SENSITIVITY_RULES` at a YAML rules file:
+
+```yaml
+# Any rule that matches marks the record's content Sensitive at write time.
+rules:
+  - name: health-data
+    match:
+      scope:
+        user_id: patient-42      # optional; omitted means any scope
+      metadata:
+        category: health         # search-surfaced path ONLY -- see the note below
+```
+
+A rule matches when **every** clause it specifies matches, and a rule specifying neither clause is
+rejected at load time. The rules file is read by the application that constructs the interceptor —
+there is no `export` flag for it, because no `notary` command writes records.
+
+One asymmetry matters when you write a rules file: **a `metadata:` clause can only ever match on the
+search-surfaced path.** An `Add` carries no Mem0 metadata, so a rule whose only clause is `metadata:`
+can never mark an add — only a `scope:` clause can. If the content you mean to protect arrives through
+`Add`, match on `scope:`.
+
 All configuration is environment-only:
 
 | Variable | Purpose |
@@ -143,12 +202,16 @@ All configuration is environment-only:
 | `NOTARY_GAP_LOG_PATH` | gap log (default `notary-gaps.log`) |
 | `NOTARY_SIGNING_KEY` | base64 ed25519 signing key — a 32-byte seed or a 64-byte private key. The key material goes **in** this variable; nothing reads an env var for its name. |
 | `NOTARY_TRUSTED_KEYS_PATH` | file of trusted public keys |
+| `NOTARY_SENSITIVITY_RULES` | path to a YAML sensitivity-rules file (declarative, application-facing — see the export section; no CLI flag) |
+| `NOTARY_PHRASE_BASE_URL` | OpenAI-compatible base URL for `--phrase` (required by `--phrase`) |
+| `NOTARY_PHRASE_MODEL` | model name for `--phrase` (required by `--phrase`) |
+| `NOTARY_PHRASE_API_KEY` | API key for `--phrase`; optional for endpoints that need none |
 
 ---
 
 ## Status
 
-This is the **core ledger and the reconciler: phases 1–5** of the design, complete and tested.
+This is the **core ledger, the reconciler and `export`: phases 1–6** of the design, complete and tested.
 
 **Working today**
 
@@ -169,6 +232,13 @@ This is the **core ledger and the reconciler: phases 1–5** of the design, comp
   it against an unchanged store appends nothing. Every
   inference is named by a rule in a versioned registry. `notary reconcile` is the first command to
   consume `NOTARY_MEM0_API_KEY`.
+- **`notary export`** — streams a range of the ledger to stdout as JSONL, one stable object per
+  record, and (with `--checkpoint-out`) writes a signed head checkpoint that `verify --checkpoint`
+  reads back. It is bounded by `--from`/`--to` (on each record's event time, not its write time) and
+  the four scope flags, and capped by `--max-span`. Sensitive content is withheld by default and its
+  line says so; `--include-sensitive` prints it and changes no hash. `--phrase` adds an opt-in,
+  display-only paraphrase that degrades to a note rather than failing the export. Like `reconcile`,
+  it requires a signing key even when it writes no checkpoint.
 
 **Not built yet** — the README will be updated as these land rather than describing intent as fact
 
@@ -177,7 +247,6 @@ This is the **core ledger and the reconciler: phases 1–5** of the design, comp
   defined and explicitly rejected by validation, so a caller that runs only what this build
   implements gets a matchable error. `notary reconcile` is the one-shot command mode; no long-running
   in-process driver exists
-- **`export`** and redaction-at-render
 - **`replay`** and **`explain`**
 
 There is no `LICENSE` file yet. Until one is added, all rights are reserved by default.

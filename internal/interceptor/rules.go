@@ -13,9 +13,14 @@ import "notary/internal/record"
 // This type decides redaction. They share an English word and nothing else, so
 // neither is named after the other.
 type Rule struct {
-	// Name identifies the rule. It is reported when the rule matches (as the
-	// "rule:<name>" redaction reason) and named in load errors, so an operator
-	// can tell which rule did what. It is not required to be unique.
+	// Name identifies the rule. It is named in load errors, so an operator can
+	// tell which rule did what. It is not required to be unique.
+	//
+	// It is deliberately NOT carried onto the record: record.Content is
+	// {Text, Sensitive} and both are hashed, so persisting which rule matched
+	// would change the digest of every existing record. A redaction names the
+	// fact (sensitive), not the rule that produced it; the rule is reproducible
+	// from the rules file.
 	Name string
 	// Scope is the scope clause. A non-empty field must equal the record's
 	// corresponding scope field; an empty field is "any". The zero Scope is no

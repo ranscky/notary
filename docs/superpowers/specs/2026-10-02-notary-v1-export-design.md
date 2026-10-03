@@ -3,7 +3,7 @@
 **Date:** 2026-10-02
 **Branch:** `feat/export`
 **Parent spec:** [`2026-09-28-notary-v1-architecture-design.md`](./2026-09-28-notary-v1-architecture-design.md) §9, §10, §11, §12
-**Status:** design approved, implementation plan not yet written
+**Status:** implemented — Phase 6 is complete on `feat/export` and its deliverables are documented in the README
 
 ---
 
@@ -112,12 +112,19 @@ rules:
       scope:
         user_id: patient-42      # optional; omitted means any scope
       metadata:
-        category: health         # optional; matches Mem0 metadata key=value
+        category: health         # search-surfaced path ONLY -- see the note below
 ```
 
 A rule matches when **every** clause it specifies matches. A rule specifying neither clause is
 rejected at load time: a rule that matches everything would mark an entire ledger sensitive by
 accident, and that failure should be loud at startup rather than discovered in an export.
+
+**A `metadata:` clause can only ever match on the search-surfaced path.** `Add` carries no Mem0
+metadata -- its signature has no metadata parameter -- so a rule whose only clause is `metadata:`
+can never mark an add; only a `scope:` clause can. An operator who wants the content arriving
+through `Add` protected must point `scope:` at it. This is the one asymmetry a reader of the
+example above would otherwise miss, so it is stated here rather than left to the code: it is
+repeated in the README, where a rules file's author will actually meet it.
 
 ---
 
@@ -205,9 +212,16 @@ is fixed wording, and an example per event cannot describe a function of the pai
 
 Two properties matter more than the wording:
 
-- **Totality.** Phrasing is a total function over the combinations `record` can construct, and a test
-  enumerates them and fails on an unphrased one. A new claim kind must not be able to ship with no
-  wording, because an unphrased claim in a compliance export reads as a missing record.
+- **Totality, with a stated gap.** Phrasing is a total function over the (event, reason-kind) pairs
+  listed above, and a test enumerates them and fails on an unphrased one. The enumeration is
+  hand-maintained, so the guarantee is bounded by what it lists, and it is not equally strong on both
+  paths. A new claim kind that arrives through the reconciler's `Rules()` registry **is** covered: a
+  separate test asserts every registry kind is in the enumeration, so the registry cannot grow a kind
+  past the guard. A new `ReasonKind`/`EventType` introduced on the library/interceptor path is **not**
+  forced to grow the enumeration — nothing connects that code to the table, so a new pair could ship
+  with no wording. When it does reach a render, the failure is at least loud rather than silent: the
+  totality test's message names the offending (event, kind) pairs, so an unphrased claim is a visible
+  gap rather than a blank in a compliance export.
 - **Subordination.** The sentence is printed **beside** the structured fields, never instead of them,
   and a phrasing test asserts the structured fields are always present. A reader can ignore the prose;
   no consumer can depend on it.
@@ -274,7 +288,9 @@ which found that the original "memory does not scale with the export" overstated
 
 **Exit codes.** Zero on success, including a zero-record range. Non-zero on validation failure, on a
 read failure, and on a checkpoint write failure. A phrasing failure does **not** change the exit code
-(§8's degradation rule) but is reported on stderr and noted in the output.
+(§8's degradation rule) but is reported on stderr and carried in the exporter's `Result`, so an
+embedding caller sees it too. It is deliberately **not** written into the output stream: stdout stays
+pure JSONL, because a trailing non-JSON note would break every consumer that parses the stream.
 
 **The JSONL object.**
 
@@ -336,8 +352,13 @@ provider key that does not exist in this repository yet, and will be requested w
 2. **`internal/phrase` is not "the Anthropic adapter".** Parent §11's phrasing is amended: it is the
    only package that talks to an LLM, and the only importer of an LLM client, whatever provider that
    client is pointed at.
-3. **`Config.SensitivityRules` is implemented.** Parent §10 already specifies it; this phase is where
-   it becomes real, together with the `Rule` shape and the file that carries it.
+3. **Sensitivity rules are loadable, but deliberately not a `Config` field.** Parent §10's `Config`
+   listed `SensitivityRules []Rule`; that field does not exist and this phase confirms it should not.
+   The `Rule` shape and the YAML file that carries it become real, but the rules are loaded from a
+   path given by `NOTARY_SENSITIVITY_RULES` through the application-facing `config.LoadSensitivityRules`,
+   because rules mark content at **write** time and no `notary` command writes records — so they are
+   configuration for whatever application constructs the interceptor, not for the CLI. There is
+   deliberately no `Config.SensitivityRules` and no CLI flag.
 4. **The interceptor's doc comment is corrected.** `library/mem0.go` states that `Content.Sensitive`
    is always false and cannot be expressed. After this phase that sentence is no longer true, and
    leaving it would be another documented-but-unimplemented claim in reverse.

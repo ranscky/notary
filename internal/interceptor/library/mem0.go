@@ -146,18 +146,15 @@ func resolveCallOptions(opts []CallOption) callConfig {
 
 // marking is one record's resolved content sensitivity, computed where the
 // record's Content is built and before the record is hashed. sensitive is the
-// OR of the caller's per-call option and the interceptor's rule set; rule is
-// the name of the sensitivity rule that matched, or "" when none did.
+// OR of the caller's per-call option and the interceptor's rule set.
 //
-// rule travels with the marking rather than being reduced to a bare flag, so a
-// redaction can be attributed to the rule that caused it (the "rule:<name>"
-// reason of spec §6). The record's Content persists only the boolean -- there
-// is no field for the name, and adding one is out of this task's scope because
-// Content is covered by the record hash (record.CanonicalBytes), so changing
-// its encoding would change every existing record's digest.
+// It carries only the boolean. Which rule matched -- if any -- cannot be
+// persisted: record.Content is {Text, Sensitive} and both are covered by the
+// record hash, so recording the rule's name would change the digest of every
+// existing record. The flag is the evidentiary fact; which rule produced it is
+// declarative configuration, reproducible from the rules file.
 type marking struct {
 	sensitive bool
-	rule      string
 }
 
 // classify resolves the sensitivity of one record's content. The caller's
@@ -169,11 +166,11 @@ type marking struct {
 // metadata is the Mem0 metadata available where the record is built: the add
 // request's metadata for the add path, and the per-result metadata Mem0
 // returned for the search-surfaced path. A nil rule set matches nothing, so an
-// interceptor built without WithSensitivityRules yields rule == "" and matched
-// == false (RuleSet.Match is nil-safe).
+// interceptor built without WithSensitivityRules matches nothing (RuleSet.Match
+// is nil-safe).
 func (m *Mem0Interceptor) classify(callSensitive bool, metadata map[string]any) marking {
-	rule, matched := m.rules.Match(m.scope, metadata)
-	return marking{sensitive: callSensitive || matched, rule: rule}
+	_, matched := m.rules.Match(m.scope, metadata)
+	return marking{sensitive: callSensitive || matched}
 }
 
 // FailMode reports the mode this interceptor runs under: always FailOpenLoud.
