@@ -1,6 +1,7 @@
 package phrase_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -271,12 +272,14 @@ func TestAuthorizationIsBearer(t *testing.T) {
 }
 
 // TestKeyNeverRenders verifies the API key cannot be recovered from any fmt verb
-// or JSON encoding of the client.
+// the Client doc comment claims to cover (%v, %+v, %s, %q, %x, %X, %#v) or from
+// a JSON encoding.
 func TestKeyNeverRenders(t *testing.T) {
 	c := phrase.NewClient("https://example.test", "sk-secret-value", "test-model", nil)
 	for _, s := range []string{
 		fmt.Sprintf("%v", c), fmt.Sprintf("%+v", c), fmt.Sprintf("%s", c),
 		fmt.Sprintf("%q", c), fmt.Sprintf("%#v", c),
+		fmt.Sprintf("%x", c), fmt.Sprintf("%X", c),
 	} {
 		assert.NotContains(t, s, "sk-secret-value")
 	}
@@ -317,4 +320,85 @@ func TestDialFailureIsAnError(t *testing.T) {
 	require.Error(t, err, "a dial failure must surface as an error, not an empty paraphrase")
 	assert.Contains(t, err.Error(), "phrase:", "the error must be wrapped in this package's prefix")
 	assert.Contains(t, err.Error(), "/chat/completions", "the error must name the call that failed")
+}
+
+// leakSecret is a credential an operator might wrongly put in the base URL
+// query -- the ?key= form several compatible providers accept -- rather than in
+// the Authorization header. No error the client returns may carry it.
+const leakSecret = "QUERY-SECRET-8c1f4a"
+
+// TestTransportErrorNeverLeaksBaseURLCredential is the leak guard the base-URL
+// shape needs. net/http's transport error echoes the request URL, and Go's
+// stripPassword removes only the userinfo PASSWORD -- so a credential in the
+// base URL's query string reaches the printed error. This asserts it does not,
+// on a real dial failure (a closed server), for both the query and userinfo
+// forms.
+func TestTransportErrorNeverLeaksBaseURLCredential(t *testing.T) {
+	srv := serve(t, &captured{}, http.StatusOK, mustFixture(t, "single_choice_response.json"))
+	base := srv.URL
+	srv.Close() // nothing is listening now: the call fails at dial
+
+	cases := []struct{ name, baseURL string }{
+		{"query", base + "/v1?api_key=" + leakSecret},
+		{"userinfo", "http://user:" + leakSecret + "@127.0.0.1:1"},
+		// The same echo happens on a MALFORMED base URL: url.Parse returns a
+		// *url.Error carrying the raw string, before any dial is attempted.
+		{"malformed", "http://ex ample.invalid/v1?key=" + leakSecret},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := phrase.NewClient(tc.baseURL, "test-key", "test-model", nil)
+			_, err := c.Paraphrase(context.Background(), []record.Record{sampleRecord(t)})
+			require.Error(t, err, "the dial must fail")
+			assert.NotContains(t, err.Error(), leakSecret,
+				"no error may carry a credential taken from the base URL")
+		})
+	}
+}
+
+// TestHTTPErrorBodyRedactsAPIKey pins that a provider which echoes the request
+// -- including the Authorization header -- in its error body cannot carry the
+// key into the error string: the body is redacted before it reaches HTTPError.
+func TestHTTPErrorBodyRedactsAPIKey(t *testing.T) {
+	const key = "sk-echo-me-3f9a"
+	cap := &captured{}
+	srv := serve(t, cap, http.StatusUnauthorized, []byte(`{"error":"invalid key: `+key+`"}`))
+
+	c := phrase.NewClient(srv.URL, key, "test-model", nil)
+	_, err := c.Paraphrase(context.Background(), []record.Record{sampleRecord(t)})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), key, "the provider's echo of the key must be redacted")
+	assert.Contains(t, err.Error(), "401", "the status is still reported")
+}
+
+// TestHTTPErrorUnwrapsObjectFormMessage pins the OpenAI-shaped error body
+// {"error":{"message":"..."}}: the object's message is surfaced, not the raw
+// JSON, so an operator sees the provider's own words.
+func TestHTTPErrorUnwrapsObjectFormMessage(t *testing.T) {
+	cap := &captured{}
+	srv := serve(t, cap, http.StatusBadRequest,
+		[]byte(`{"error":{"message":"model not found","type":"invalid_request_error"}}`))
+
+	c := phrase.NewClient(srv.URL, "test-key", "test-model", nil)
+	_, err := c.Paraphrase(context.Background(), []record.Record{sampleRecord(t)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model not found")
+	assert.NotContains(t, err.Error(), "{", "the object form must be unwrapped, not dumped raw")
+}
+
+// TestOversizedErrorBodyStillReportsStatus pins the ordering in do: when a
+// provider errors with a body over the size cap, the operator must see the HTTP
+// STATUS, not a size-limit message. The status is known without reading the
+// body, so it must win. The cap is the client's unexported maxResponseBytes
+// (8 MiB), mirrored here.
+func TestOversizedErrorBodyStillReportsStatus(t *testing.T) {
+	cap := &captured{}
+	big := bytes.Repeat([]byte("x"), (8<<20)+1) // one byte past the 8 MiB cap
+	srv := serve(t, cap, http.StatusBadGateway, big)
+
+	c := phrase.NewClient(srv.URL, "test-key", "test-model", nil)
+	_, err := c.Paraphrase(context.Background(), []record.Record{sampleRecord(t)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502",
+		"an over-size error body must still report the status, not the size cap")
 }
