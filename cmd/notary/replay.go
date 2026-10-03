@@ -57,7 +57,7 @@ func newReplayCmd() *cobra.Command {
 			"By default, stored content marked sensitive is withheld and its line says\n" +
 			"so; --include-sensitive prints it. The flag changes only what is printed --\n" +
 			"never a hash -- because replay is a read path. A replay that finds a break\n" +
-			"in the prefix it renders reports it on stderr and exits non-zero, the way\n" +
+			"in the prefix it renders reports it on stderr and exits non-zero, as\n" +
 			"`notary verify` does for a damaged ledger.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
