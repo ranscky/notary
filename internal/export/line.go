@@ -19,7 +19,7 @@ import (
 // lowercase hex strings, matching the checkpoint wire form, rather than JSON
 // arrays of bytes.
 //
-// Later tasks extend this shape: Task 5 adds the deterministic `phrasing`
+// Later tasks extend this shape: Task 5 added the deterministic `phrasing`
 // sentence, Task 6 adds redaction (setting `redacted` and dropping `content`),
 // and Task 10 adds the display-only `paraphrase` object.
 type Line struct {
@@ -39,7 +39,13 @@ type Line struct {
 	Content *string `json:"content,omitempty"`
 	// Redacted names why content was withheld. It is absent when content was
 	// shown; redaction is Task 6.
-	Redacted    string `json:"redacted,omitempty"`
+	Redacted string `json:"redacted,omitempty"`
+	// Phrasing restates the record's claim as one human sentence (Task 5). It
+	// is derived mechanically from Event, tier, reason kind and memory id, so it
+	// adds no claim of its own. It is always present and always printed BESIDE
+	// the structured fields above it, never instead of them: a reader may
+	// ignore it, and no consumer may depend on it (design §2, §7).
+	Phrasing    string `json:"phrasing"`
 	PrevHash    string `json:"prev_hash"`
 	Hash        string `json:"hash"`
 	Signature   string `json:"signature"`
@@ -68,14 +74,24 @@ type LineScope struct {
 // for it". A non-nil Content with empty Text renders an empty string, which is
 // content that exists and is empty -- distinct from no content at all.
 //
-// Render returns an error only for a record it cannot render at all: one whose
-// reason carries no valid tier.
+// Render returns an error only for a record it cannot render honestly: one
+// whose reason carries no valid tier, or one whose claim has no phrasing. The
+// latter is unreachable for a record the production paths build -- phrasing is
+// total over those (see Phrase and TestPhraseIsTotalOverConstructibleRecords)
+// -- so it fails loudly rather than emitting a line whose prose reads as a
+// missing record.
 func Render(rec record.Record, includeSensitive bool) (Line, error) {
 	_ = includeSensitive // Redaction is Task 6; nothing consults the flag yet.
 
 	tier := rec.Reason.Tier()
 	if !tier.Valid() {
 		return Line{}, fmt.Errorf("export: record %s has an invalid visibility tier", rec.ID)
+	}
+
+	phrasing, ok := Phrase(rec)
+	if !ok {
+		return Line{}, fmt.Errorf("export: record %s has no phrasing for event %s with reason %s",
+			rec.ID, rec.Event, rec.Reason.Kind())
 	}
 
 	line := Line{
@@ -94,6 +110,7 @@ func Render(rec record.Record, includeSensitive bool) (Line, error) {
 			RunID:   rec.Subject.Scope.RunID,
 		},
 		ContentHash: hex.EncodeToString(rec.Subject.ContentHash[:]),
+		Phrasing:    phrasing,
 		PrevHash:    hex.EncodeToString(rec.PrevHash[:]),
 		Hash:        hex.EncodeToString(rec.Hash[:]),
 		Signature:   hex.EncodeToString(rec.Signature),
