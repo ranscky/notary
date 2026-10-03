@@ -106,6 +106,23 @@ func TestLineOrderIsStable(t *testing.T) {
 	assert.Equal(t, string(a), string(b))
 }
 
+// TestEmptyContentIsNotEmptyAbsent pins the distinction between content that
+// was recorded and is empty ("content":"") and content that was never recorded
+// (no content field at all). They are different facts, and a consumer must be
+// able to tell them apart -- the same reason no-content must not render as "".
+func TestEmptyContentIsNotEmptyAbsent(t *testing.T) {
+	rec := sampleRecord(t)
+	rec.Content = &record.Content{Text: ""}
+
+	got := renderJSON(t, rec, false)
+
+	content, hasContent := got["content"]
+	require.True(t, hasContent, "empty content is still content: the field must be present")
+	assert.Equal(t, "", content)
+	_, hasRedacted := got["redacted"]
+	assert.False(t, hasRedacted, "empty content is not redacted content")
+}
+
 // TestRenderRejectsARecordWithoutATier covers Render's error path: a record
 // whose reason carries no valid tier cannot be rendered at all.
 func TestRenderRejectsARecordWithoutATier(t *testing.T) {

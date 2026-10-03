@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,25 @@ func TestMaxSpanIsEnforced(t *testing.T) {
 	}, &buf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--max-span")
+}
+
+// errReadFailed is the sentinel a failing reader returns, so the test can prove
+// the exporter's %w wrap preserves it rather than merely returning some error.
+var errReadFailed = errors.New("ledger read failed")
+
+// TestExportWrapsReadError drives a read failure through Export and asserts the
+// sentinel survives the wrap with errors.Is. The ledger is a file, and files go
+// missing or corrupt, so this is a real path; a bare "an error was returned"
+// assertion would not notice the %w chain losing its sentinel.
+func TestExportWrapsReadError(t *testing.T) {
+	e := export.New(&fakeReader{err: errReadFailed})
+
+	var buf bytes.Buffer
+	res, err := e.Export(context.Background(), export.Request{From: rangeFrom, To: rangeTo}, &buf)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errReadFailed, "the %w wrap must preserve the reader's sentinel")
+	assert.Equal(t, 0, res.Records)
+	assert.Empty(t, buf.String(), "nothing is written when the read fails")
 }
 
 // TestRecordsWithoutContentRenderWithoutIt is Review Focus 1: a record with no

@@ -54,14 +54,22 @@ type Request struct {
 }
 
 // Result reports what an export did.
+//
+// It is meaningful in full only on success. On the error path from Export it
+// records how far the export got before it failed: Records is the lines already
+// written and Checkpoint is nil regardless. A non-zero Result is therefore not
+// by itself a success signal -- a caller must check the error returned beside
+// it before trusting any field.
 type Result struct {
-	// Records is the number of JSONL lines written.
+	// Records is the number of JSONL lines written. On the error path it is the
+	// count written before the failure.
 	Records int
 	// Redacted is the number of lines whose content was withheld. It is always
 	// zero in this task: redaction lands in Task 6.
 	Redacted int
 	// Checkpoint is the signed head checkpoint, when one was requested and
-	// written. It is always nil in this task: the checkpoint lands in Task 7.
+	// written. It is always nil in this task (the checkpoint lands in Task 7),
+	// and it is nil on the error path.
 	Checkpoint *sign.Checkpoint
 }
 
@@ -76,12 +84,19 @@ func New(r Reader) *Exporter {
 }
 
 // Export renders every record in req's range, in ledger order, as one JSONL
-// line each, writing to out. Records are rendered and written as they are read
-// rather than collected first, so output memory does not scale with the range.
+// line each, writing to out.
 //
-// It fails loudly on an invalid request, a read error, or a write error, and it
-// returns a zero Result on any error. A range with no records is a success with
-// zero lines (design §9).
+// The write side streams: each record is rendered and written as it is reached,
+// and no slice of Lines is ever collected, so output memory does not scale with
+// the range. The READ side does not stream -- Reader.ListRecords returns the
+// whole range as a slice, which is the ledger's read interface -- so only the
+// render/write loop is incremental.
+//
+// It fails loudly on an invalid request, a read error, or a write error. On
+// error the returned Result is NOT zero: it carries the counts as they stood
+// when the failure occurred (the lines already written), so a caller must check
+// the error before trusting the Result. A range with no records is a success
+// with zero lines (design §9).
 func (e *Exporter) Export(ctx context.Context, req Request, out io.Writer) (Result, error) {
 	if err := req.validate(); err != nil {
 		return Result{}, err
@@ -99,6 +114,9 @@ func (e *Exporter) Export(ctx context.Context, req Request, out io.Writer) (Resu
 
 	var res Result
 	for _, rec := range records {
+		// ctx stops a long range between records. The read itself is NOT
+		// cancellable: Reader.ListRecords takes no context, so a cancel is
+		// observed only after the read returns, record by record.
 		if err := ctx.Err(); err != nil {
 			return res, fmt.Errorf("export: %w", err)
 		}
