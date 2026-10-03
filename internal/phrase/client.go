@@ -26,6 +26,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -95,24 +96,27 @@ func NewClient(baseURL, apiKey, model string, hc *http.Client) *Client {
 	}
 }
 
-// safeURL renders raw for an error message with its userinfo, query and
-// fragment removed. The client never prints a configured base URL verbatim: an
-// operator may place a credential in its query string -- the ?key= form several
-// compatible providers accept -- and net/http echoes the request URL in a
-// transport error, so a verbatim print would leak it. The query is STRIPPED from
-// the message rather than rejected at construction because a legitimate endpoint
-// may need a non-secret query parameter (Azure OpenAI's api-version, for one);
-// rejecting every query would break providers the design promises to support.
+// safeURL renders raw for an error message as just its scheme and host. The
+// client never prints a configured base URL verbatim: an operator may place a
+// credential in its query string (the ?key= form), its userinfo, or even its
+// path, and net/http echoes the request URL in a transport error, so a verbatim
+// print would leak it. Dropping the path, query, userinfo and fragment removes
+// every place a credential can hide while keeping the part that identifies the
+// endpoint. The query is dropped from the MESSAGE rather than rejected at
+// construction because a legitimate endpoint may need a non-secret query
+// parameter (Azure OpenAI's api-version, for one); rejecting every query would
+// break providers the design promises to support.
+//
+// A URL with no host, or an opaque one -- in which url.Parse keeps everything
+// after the scheme in u.Opaque and never splits or strips it -- is rendered as a
+// constant rather than reconstructed: there is nothing safe to show, and no
+// legitimate http(s) endpoint has that shape.
 func safeURL(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || u.Host == "" || u.Opaque != "" {
 		return "[url omitted]"
 	}
-	u.User = nil
-	u.RawQuery = ""
-	u.Fragment = ""
-	u.RawFragment = ""
-	return u.String()
+	return u.Scheme + "://" + u.Host
 }
 
 // sanitizeTransportError returns err with any *url.Error's URL stripped by
@@ -130,22 +134,61 @@ func sanitizeTransportError(err error) error {
 	return err
 }
 
-// redactKey replaces every occurrence of key in body with the redacted
-// placeholder, so a provider that reflects the request -- the Authorization
-// header included -- in an error body cannot carry the key into HTTPError's
-// message. An empty key has nothing to redact.
-func redactKey(body []byte, key string) []byte {
-	if key == "" {
-		return body
+// credentialComponents returns every substring of the client's configuration
+// that must never appear in an error: the API key, and every part of the base
+// URL an operator could have hidden a credential in -- its userinfo (username
+// and password), its query string, and its path. Which query parameter is a
+// credential cannot be known (the ?key= form and Azure's non-secret api-version
+// look alike), so the whole query is treated as one. The path is included even
+// though credentials rarely live there, because the invariant is "no error this
+// package returns can contain a credential, whatever the operator configured".
+//
+// The result is ordered longest-first so a shorter component cannot partially
+// mask a longer one when they overlap.
+func (c *Client) credentialComponents() []string {
+	var out []string
+	add := func(s string) {
+		if s != "" {
+			out = append(out, s)
+		}
 	}
-	return bytes.ReplaceAll(body, []byte(key), []byte(clientRedacted))
+	add(c.apiKey)
+	if u, err := url.Parse(c.baseURL); err == nil {
+		if u.User != nil {
+			add(u.User.Username())
+			if pw, ok := u.User.Password(); ok {
+				add(pw)
+			}
+		}
+		add(u.RawQuery)
+		add(u.Path)
+	}
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// redact replaces every credential component in body with the placeholder, so a
+// provider that reflects the request -- the Authorization header or the request
+// URI, with its query string, included -- in an error body cannot carry a
+// credential into HTTPError's message or its exported Body field. It is applied
+// at construction, so the stored field is already clean.
+func redact(body []byte, components []string) []byte {
+	out := body
+	for _, s := range components {
+		out = bytes.ReplaceAll(out, []byte(s), []byte(clientRedacted))
+	}
+	return out
 }
 
 // HTTPError reports a non-2xx response from the provider. It carries the status
-// code and the raw response body, because the body is the provider's own
-// explanation and is evidence, not a structured envelope. The body is passed
-// through redactKey before it is stored, so the API key is never part of the
-// error even when a provider echoes the request back.
+// code and the provider's response body, because the body is the provider's own
+// explanation and is evidence, not a structured envelope.
+//
+// The body is scrubbed of every configured credential -- the API key and the
+// base URL's userinfo, query and path -- before it is stored, so BOTH this
+// error's message and its exported Body field are credential-free, even when a
+// provider reflects the request back. Body is the provider's bytes with each
+// credential replaced by "[redacted]"; it is not the raw body.
 type HTTPError struct {
 	StatusCode int
 	Body       []byte
@@ -235,9 +278,10 @@ func (c *Client) Paraphrase(ctx context.Context, records []record.Record) (Parap
 //
 // Every error it returns is credential-free by construction: the base URL is
 // rendered through safeURL, transport errors are rebuilt over a safe URL, and an
-// error body is passed through redactKey. The request itself still carries the
-// base URL's query and the Authorization header -- only the messages are
-// scrubbed.
+// error body is passed through redact over the client's credential components
+// (the API key and the base URL's userinfo, query and path). The request itself
+// still carries the base URL's query and the Authorization header -- only the
+// messages and the stored body are scrubbed.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	safe := safeURL(c.baseURL) + path
 
@@ -277,7 +321,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	// over-size SUCCESS body, which cannot be decoded, is still caught below.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("phrase: %s %s: %w", method, safe,
-			&HTTPError{StatusCode: resp.StatusCode, Body: redactKey(raw, c.apiKey)})
+			&HTTPError{StatusCode: resp.StatusCode, Body: redact(raw, c.credentialComponents())})
 	}
 	if len(raw) > maxResponseBytes {
 		return fmt.Errorf("phrase: %s %s response exceeds %d-byte limit", method, safe, maxResponseBytes)

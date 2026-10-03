@@ -330,9 +330,9 @@ const leakSecret = "QUERY-SECRET-8c1f4a"
 // TestTransportErrorNeverLeaksBaseURLCredential is the leak guard the base-URL
 // shape needs. net/http's transport error echoes the request URL, and Go's
 // stripPassword removes only the userinfo PASSWORD -- so a credential in the
-// base URL's query string reaches the printed error. This asserts it does not,
-// on a real dial failure (a closed server), for both the query and userinfo
-// forms.
+// base URL's query string, or its userinfo USERNAME, or a host-less opaque URL
+// round-trips into the printed error. This asserts none does, on a real dial
+// failure (a closed server) and on the malformed-URL parse path.
 func TestTransportErrorNeverLeaksBaseURLCredential(t *testing.T) {
 	srv := serve(t, &captured{}, http.StatusOK, mustFixture(t, "single_choice_response.json"))
 	base := srv.URL
@@ -340,7 +340,20 @@ func TestTransportErrorNeverLeaksBaseURLCredential(t *testing.T) {
 
 	cases := []struct{ name, baseURL string }{
 		{"query", base + "/v1?api_key=" + leakSecret},
-		{"userinfo", "http://user:" + leakSecret + "@127.0.0.1:1"},
+		// A credential in the base URL PATH: safeURL shows only scheme://host,
+		// so it never reaches the message, and credentialComponents scrubs it
+		// from an echoed body too.
+		{"path", base + "/v1/" + leakSecret},
+		{"userinfo-password", "http://user:" + leakSecret + "@127.0.0.1:1"},
+		// The username is NOT masked by stripPassword, so this is the form
+		// that would have leaked before safeURL dropped userinfo entirely.
+		{"userinfo-username", "http://" + leakSecret + "@127.0.0.1:1"},
+		{"fragment", "http://127.0.0.1:1/v1#" + leakSecret},
+		// An opaque URL keeps whatever follows the scheme in u.Opaque -- which
+		// url.Parse never splits or strips -- so safeURL must refuse to render
+		// it. (A `?key=` on an opaque URL IS split into RawQuery and so already
+		// stripped; the residual is a secret in the opaque component itself.)
+		{"opaque", "http:" + leakSecret},
 		// The same echo happens on a MALFORMED base URL: url.Parse returns a
 		// *url.Error carrying the raw string, before any dial is attempted.
 		{"malformed", "http://ex ample.invalid/v1?key=" + leakSecret},
@@ -358,7 +371,9 @@ func TestTransportErrorNeverLeaksBaseURLCredential(t *testing.T) {
 
 // TestHTTPErrorBodyRedactsAPIKey pins that a provider which echoes the request
 // -- including the Authorization header -- in its error body cannot carry the
-// key into the error string: the body is redacted before it reaches HTTPError.
+// key into the error. It asserts on BOTH the rendered error AND the exported
+// HTTPError.Body, so moving redaction into Error() later cannot pass while the
+// field itself leaks.
 func TestHTTPErrorBodyRedactsAPIKey(t *testing.T) {
 	const key = "sk-echo-me-3f9a"
 	cap := &captured{}
@@ -369,6 +384,35 @@ func TestHTTPErrorBodyRedactsAPIKey(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), key, "the provider's echo of the key must be redacted")
 	assert.Contains(t, err.Error(), "401", "the status is still reported")
+
+	var httpErr *phrase.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.NotContains(t, string(httpErr.Body), key, "the exported body field must be redacted too")
+}
+
+// TestHTTPErrorBodyRedactsBaseURLQueryCredential closes the residual path: a
+// gateway that reflects the request URI into its error body echoes the base
+// URL's query credential, which redacting only the API key would not catch. The
+// body is scrubbed of every configuration-derived secret before HTTPError is
+// built, so neither the error nor the exported field carries it.
+func TestHTTPErrorBodyRedactsBaseURLQueryCredential(t *testing.T) {
+	// A handler that echoes the request URI, exactly what a reflecting gateway
+	// does. The response is a fixed 502.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, `{"error":"upstream refused %s"}`, r.RequestURI)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := phrase.NewClient(srv.URL+"/v1?key="+leakSecret, "test-key", "test-model", nil)
+	_, err := c.Paraphrase(context.Background(), []record.Record{sampleRecord(t)})
+	require.Error(t, err)
+
+	assert.NotContains(t, err.Error(), leakSecret,
+		"the echoed request URI carried the base-URL query credential")
+	var httpErr *phrase.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.NotContains(t, string(httpErr.Body), leakSecret, "the exported body field must be clean too")
 }
 
 // TestHTTPErrorUnwrapsObjectFormMessage pins the OpenAI-shaped error body
