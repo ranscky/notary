@@ -110,6 +110,23 @@ func TestPhraseIsTotalOverConstructibleRecords(t *testing.T) {
 	}
 }
 
+// TestPhraseStoredAddWithoutAMemoryID exercises the fallback the totality
+// enumeration cannot reach: its only add_resolved + stored_by_mem0 entry
+// carries a memory id ("mem-stored"), yet firstResultID can return "" when
+// Mem0's event status reports no results. Phrase must still produce wording,
+// and a NAMELESS one -- "Mem0 stored a memory" -- rather than a dangling
+// "Mem0 stored memory " with an empty id.
+func TestPhraseStoredAddWithoutAMemoryID(t *testing.T) {
+	rec := recordFor(t, constructiblePair{
+		event: record.EventAddResolved,
+		kind:  record.ReasonStoredByMem0,
+		memID: "",
+	})
+	sentence, ok := export.Phrase(rec)
+	require.True(t, ok, "a memoryless stored add is still a constructible pair with wording")
+	assert.Equal(t, "the add resolved: Mem0 stored a memory", sentence)
+}
+
 // TestRenderedLineCarriesTheStructuredFieldsBesideThePhrasing is the design's
 // "subordination" property: the sentence is printed beside the structured
 // fields, never instead of them. It renders a constructible record and asserts
@@ -141,6 +158,14 @@ func TestRenderedLineCarriesTheStructuredFieldsBesideThePhrasing(t *testing.T) {
 // TestEveryReconcilerRuleKindIsPhrased ties totality to the reconciler's rule
 // registry: a new rule that yields a kind the enumeration does not cover fails
 // here, so the registry cannot grow a claim kind past this guard.
+//
+// LIMITATION -- this check is by KIND alone. reconcile.Rule carries no Event,
+// and the enumeration keys on (event, kind), so a rule that emitted an
+// already-covered kind under a DIFFERENT event would pass this guard while its
+// (event, kind) pair went unphrased. It is the strongest check the registry's
+// shape allows: strengthening it would mean adding an Event field to a registry
+// whose Name/Version are written into signed records, which is out of scope.
+// The totality test above still catches any pair Phrase is handed at render.
 func TestEveryReconcilerRuleKindIsPhrased(t *testing.T) {
 	covered := map[record.ReasonKind]bool{}
 	for _, p := range constructiblePairs {

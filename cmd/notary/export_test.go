@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"notary/internal/ledger"
 	"notary/internal/phrase"
 	"notary/internal/record"
+	"notary/internal/sign"
 )
 
 // stubParaphraser is a controllable export.Paraphraser for the CLI tests. It
@@ -541,4 +543,61 @@ func TestExportCheckpointRoundTripThroughVerify(t *testing.T) {
 	require.Error(t, err, "the same verify must now fail on the shortened tail")
 	assert.ErrorIs(t, err, ledger.ErrTruncated, "the failure must wrap ledger.ErrTruncated")
 	assert.Contains(t, vbuf2.String(), "truncation", "the report must name the truncation")
+}
+
+// exportCanarySeed is a fixed seed, distinct from every other test seed, so the
+// material used by the export leak canary below is unmistakable in any output.
+var exportCanarySeed = []byte{
+	0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18,
+	0x29, 0x3a, 0x4b, 0x5c, 0x6d, 0x7e, 0x8f, 0x90,
+	0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+	0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+}
+
+// TestExportNeverPrintsSigningKeyMaterial is the end-to-end canary design §10
+// requires: no export output, in any mode, contains signing key material. It
+// uses the natural configuration -- the material placed IN NOTARY_SIGNING_KEY
+// and the config loaded from the environment -- and drives the mode most likely
+// to echo key state, --checkpoint-out. The material must appear in NEITHER
+// stdout (the JSONL) NOR stderr (the operator prose, plus any returned error
+// the CLI would print there), and the export must actually succeed and emit a
+// line, or the canary would be asserting over nothing.
+func TestExportNeverPrintsSigningKeyMaterial(t *testing.T) {
+	material := base64.StdEncoding.EncodeToString(exportCanarySeed)
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ledger.db")
+
+	// The ledger is signed with the canary key...
+	t.Setenv("NOTARY_EXPORT_CANARY_KEY", material)
+	sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: "NOTARY_EXPORT_CANARY_KEY"})
+	require.NoError(t, err)
+	buildLedger(t, dbPath, sg, 3)
+
+	// ...and the natural configuration holds the material IN NOTARY_SIGNING_KEY.
+	t.Setenv("NOTARY_SIGNING_KEY", material)
+	t.Setenv("NOTARY_DB_PATH", dbPath)
+	t.Setenv("NOTARY_GAP_LOG_PATH", filepath.Join(dir, "gaps.log"))
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	require.Equal(t, config.DefaultSigningKeyEnv, cfg.SigningKeyEnv,
+		"SigningKeyEnv must be the variable NAME, never the material")
+
+	cmd, out, errOut := newTestExportCmd(t)
+	require.NoError(t, cmd.Flags().Set("from", "2026-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("to", "2027-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("checkpoint-out", filepath.Join(dir, "cp.json")))
+
+	runErr := runExport(cmd, cfg)
+
+	stdout := out.String()
+	stderr := errOut.String()
+	if runErr != nil {
+		stderr += runErr.Error()
+	}
+	assert.NotContains(t, stdout, material, "key material must never reach stdout")
+	assert.NotContains(t, stderr, material, "key material must never reach stderr")
+
+	require.NoError(t, runErr, "the export must succeed so the canary exercises a real write")
+	assert.NotEmpty(t, stdout, "the export must actually emit JSONL, or the canary guards nothing")
 }

@@ -284,3 +284,37 @@ func TestKeyNeverRenders(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), "sk-secret-value")
 }
+
+// TestZeroRecordsIsAnError pins the empty-request guard: the client must never
+// make a pointless billed call with nothing to restate, so it errors locally
+// and sends no request at all.
+func TestZeroRecordsIsAnError(t *testing.T) {
+	cap := &captured{}
+	srv := serve(t, cap, http.StatusOK, mustFixture(t, "single_choice_response.json"))
+
+	c := phrase.NewClient(srv.URL, "test-key", "test-model", nil)
+	_, err := c.Paraphrase(context.Background(), nil)
+	require.Error(t, err, "an empty request is a programming error, not a billed call")
+	assert.Contains(t, err.Error(), "no records")
+
+	method, _, _, _ := cap.snapshot()
+	assert.Empty(t, method, "no request may be sent when there is nothing to paraphrase")
+}
+
+// TestDialFailureIsAnError pins the fourth degradation mode at the client: with
+// nothing listening on the endpoint, the call must surface a wrapped error
+// naming the call -- not an empty paraphrase. The export layer degrades on such
+// an error (TestParaphraseFailureDegradesAndDoesNotFailTheExport); this proves
+// the client itself produces one.
+func TestDialFailureIsAnError(t *testing.T) {
+	cap := &captured{}
+	srv := serve(t, cap, http.StatusOK, mustFixture(t, "single_choice_response.json"))
+	url := srv.URL
+	srv.Close() // nothing is listening on url now
+
+	c := phrase.NewClient(url, "test-key", "test-model", nil)
+	_, err := c.Paraphrase(context.Background(), []record.Record{sampleRecord(t)})
+	require.Error(t, err, "a dial failure must surface as an error, not an empty paraphrase")
+	assert.Contains(t, err.Error(), "phrase:", "the error must be wrapped in this package's prefix")
+	assert.Contains(t, err.Error(), "/chat/completions", "the error must name the call that failed")
+}

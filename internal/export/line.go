@@ -56,9 +56,10 @@ type Line struct {
 	// Paraphrase is the optional language model's restatement of the record's
 	// claim, present only when the export ran with Phrase set and the provider
 	// returned one. It sits BESIDE the structured fields, never instead of them,
-	// and is labelled a paraphrase. It is display-only: the type lives in
-	// internal/phrase, which no decision package may import (design D7), so
-	// generated text can never be an input to a decision. It is a pointer so its
+	// and is labelled a paraphrase. It is display-only: no decision package may
+	// IMPORT internal/phrase (design D7), so none can name the type -- but this
+	// field is exactly how generated text is reachable BY VALUE without that
+	// import, so the isolation is of the type, not of the data. It is a pointer so its
 	// absence -- no --phrase, or a failed call -- is distinguishable from a
 	// paraphrase, and because the client never returns an empty one there is no
 	// empty object to mistake for a real paraphrase.

@@ -110,7 +110,7 @@ Two option families, on purpose: `Option` configures the interceptor at construc
 
 **Interfaces:**
 - Consumes: `ledger.ListRecords(from, to time.Time) ([]record.Record, error)`, `store.Head()`, `store.SeqEntries()` (existing).
-- Produces: `export.Reader` (the one-method interface `ListRecords`); `export.Request{From, To time.Time; Scope record.Scope; IncludeSensitive bool; CheckpointOut string; MaxSpan time.Duration; Phrase bool}`; `export.Line` (the JSONL shape); `export.Render(rec record.Record, includeSensitive bool) (Line, error)`; `export.Exporter` with `Export(ctx context.Context, req Request, out io.Writer) (Result, error)`; `export.Result{Records, Redacted int; Checkpoint *sign.Checkpoint}`.
+- Produces: `export.Reader` (the interface with `ListRecords` and `Checkpoint`); `export.Request{From, To time.Time; Scope record.Scope; IncludeSensitive bool; CheckpointOut string; MaxSpan time.Duration; Phrase bool}`; `export.Line` (the JSONL shape); `export.Render(rec record.Record, includeSensitive bool) (Line, error)`; `export.Exporter` with `Export(ctx context.Context, req Request, out io.Writer) (Result, error)`; `export.Result{Records, Redacted int; Checkpoint *sign.Checkpoint}`.
 
 `Reader` is an interface so the exporter can be tested against a fake ledger without SQLite, exactly as `reconcile.Reader` is.
 

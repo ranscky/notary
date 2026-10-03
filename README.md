@@ -5,7 +5,7 @@
 ![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-modernc.org%2Fsqlite-003B57?logo=sqlite&logoColor=white)
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
-![Dependencies](https://img.shields.io/badge/direct_dependencies-3-blue)
+![Dependencies](https://img.shields.io/badge/direct_dependencies-4-blue)
 ![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
 ![Scope](https://img.shields.io/badge/scope-ledger_export_reconciler_(phases_1--6)-orange)
 

@@ -1,8 +1,8 @@
 // Package phrase is Notary's optional language-model pass: it restates a run of
 // records' structured claims as one sentence of prose. It is the only package in
-// Notary that talks to an LLM, and internal/export is its only intended
-// importer, so no decision package can ever treat generated text as an input
-// (design D7).
+// Notary that talks to an LLM, and its only allowed importers are internal/export
+// and cmd/notary, so no decision package can ever name the generated type
+// (design D7; the design's §4.1 records the direct-import limit).
 //
 // The client speaks the OpenAI-compatible chat-completions schema, which the
 // major providers expose, so no provider SDK is added (design D1). A request

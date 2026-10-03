@@ -13,17 +13,25 @@ import (
 //
 // It is display-only. The design (D7) makes that a property of the import graph
 // rather than of review: the type lives in this package, and no decision package
-// imports this package, so generated text can never be an input to a decision.
-// It is rendered beside the structured record and its tier, never instead of
-// them, and labelled a paraphrase.
+// IMPORTS this package, so none can even NAME the type. That is the direct-import
+// guarantee only: a package may still read this value through
+// export.Line.Paraphrase without importing phrase, so "generated text is never an
+// input to a decision" rests on the render path feeding no decision, not on the
+// import graph alone. It is rendered beside the structured record and its tier,
+// never instead of them, and labelled a paraphrase.
 //
 // Text is the model's sentence, already trimmed. Model names what produced it --
 // the model the provider reported, or the configured model when the response
 // did not echo one. At is when the call returned.
+//
+// The json tags make the object's wire keys snake_case, matching every sibling
+// key in an exported line (content_hash, reason_kind, signer_key_id). At is a
+// time.Time, so it encodes as an RFC3339 string exactly as the line's own `at`
+// and `recorded_at` do -- one date format across the whole object.
 type Paraphrase struct {
-	Text  string
-	Model string
-	At    time.Time
+	Text  string    `json:"text"`
+	Model string    `json:"model"`
+	At    time.Time `json:"at"`
 }
 
 // roleSystem and roleUser are the two chat roles a request uses.

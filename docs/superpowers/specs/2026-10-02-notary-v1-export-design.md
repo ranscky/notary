@@ -58,7 +58,7 @@ showing something that looks complete.
 | D4 | Redaction happens **at render only**; `--include-sensitive` cannot change any hash. | Upholds parent D4. Structurally true rather than promised: the hash is computed over the stored content, and rendering never writes. |
 | D5 | Every redacted entry **states that it was redacted**, and redaction is opt-out only via `--include-sensitive`. | The default is the safe one. A reader who sees nothing must be able to tell "nothing was there" from "I am not being shown it". |
 | D6 | Deterministic **tier phrasing** lives in `internal/export` for now. | It is needed by `explain` in Phase 8, which is when it should be extracted. Extracting it now would add a package the parent spec's tree does not have, for a caller that does not exist. |
-| D7 | `Paraphrase` lives in `internal/phrase`, and **no decision package can import it**. | Enforced by the import graph and checked by a test, so "generated text is never an input" is a compile-time property rather than a review item. |
+| D7 | `Paraphrase` lives in `internal/phrase`, and **no decision package can import it**. | Enforced by the import graph and checked by a test — over DIRECT imports (see §4.1's "guard's limit"). No decision package can *name* `phrase.Paraphrase`, so generated text cannot be a typed input. It can still be *read* by value through `export.Line.Paraphrase`, so the transitive claim — "generated text is never an input" — rests on the render path feeding no decision, not on the import graph. |
 | D8 | `export` emits **JSONL to stdout** and writes the checkpoint to a file given by `--checkpoint-out`, **in the format `verify --checkpoint` already reads**. | Keeps a bulk export streamable and greppable, and makes the exported range immediately verifiable with a command that already exists. |
 | D9 | The LLM piece lands **last** and is independently revertable. | It is the only piece with an external service, a cost, and a failure mode that does not exist anywhere else in the project. |
 | D10 | No secrets in the repository. The phrasing provider is configured by `NOTARY_PHRASE_API_KEY`, `NOTARY_PHRASE_MODEL`, `NOTARY_PHRASE_BASE_URL`, env only. | `.clinerules` apply unchanged. There is deliberately no config-file path for the key. |
@@ -79,9 +79,18 @@ cmd/notary ─ notify export · verify · reconcile · gaps · version
       └─ internal/reconcile · internal/ledger · internal/interceptor · internal/record · internal/mem0 · internal/sign · internal/store · internal/gap
 ```
 
-`internal/phrase` is imported by `internal/export` and by nothing else. It imports `internal/record`
-for scope and evidence types only — never `internal/reconcile`, `internal/ledger`, or `internal/store`.
-A test asserts this with a package-graph check, so D7 cannot rot.
+`internal/phrase` is imported by `internal/export` and by `cmd/notary` — the CLI wires the real client
+under `--phrase`, as the diagram above draws — and by nothing else. It imports `internal/record` for scope
+and evidence types only — never `internal/reconcile`, `internal/ledger`, or `internal/store`. A test
+asserts this with a package-graph check, so D7 cannot rot.
+
+**The guard's limit.** The check is over DIRECT imports. The literal promise it enforces is real: no
+decision package can `import` `internal/phrase`, so none can even *name* `phrase.Paraphrase`. The
+transitive promise is not: a package that imports `internal/export` can read generated text through
+`export.Line.Paraphrase` without ever importing `phrase`, because a value's exported fields are
+reachable without naming its type. So "generated text is never an input to a decision" rests on the
+render path feeding no decision — a property of the call graph — and NOT on the import graph alone. The
+guard keeps the *type* unnameable by a decision package; it does not make the *data* unreachable.
 
 ### 4.2 The command
 
@@ -334,7 +343,10 @@ the point of it, per parent §7: the truncation a hash chain cannot see is a sho
 - **Import graph.** A test asserts no decision package imports `internal/phrase` (D7).
 - **Checkpoint integration.** An export with `--checkpoint-out` is accepted by `verify --checkpoint`,
   and a truncated export is rejected by it.
-- **Key-material canary.** No export output, in any mode, contains signing key material.
+- **Key-material canary.** No export output, in any mode, contains signing key material. Asserted
+  end-to-end by `TestExportNeverPrintsSigningKeyMaterial` in `cmd/notary`: the material is placed IN
+  `NOTARY_SIGNING_KEY`, the config is loaded from the environment, and both the export's stdout (the
+  JSONL) and stderr (the operator prose) must be free of it.
 
 The live provider check is a separate, opt-in piece of work using the same discipline as
 `internal/reconcile/live_mem0_test.go`: a build tag, a key from the environment, no gate. It needs a

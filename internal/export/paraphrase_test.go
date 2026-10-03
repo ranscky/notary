@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +95,44 @@ func TestParaphraseAppearsBesideTheRecordNotInsteadOfIt(t *testing.T) {
 	assert.NotEmpty(t, line.Phrasing, "the deterministic phrasing still sits beside the paraphrase")
 	assert.NotEmpty(t, line.ContentHash)
 	assert.NotEmpty(t, line.Hash)
+}
+
+// TestParaphraseObjectKeysAreSnakeCase pins the WIRE keys of the `paraphrase`
+// object. Every sibling key in the line is snake_case (content_hash,
+// reason_kind, signer_key_id), so a paraphrase object marshalled with Go field
+// names would be the one inconsistent key set in an otherwise uniform line.
+//
+// It decodes into a map[string]any, NOT into export.Line: Go's field matching
+// is case-insensitive, so unmarshalling into the struct would accept {"Text"}
+// and {"text"} alike and pin nothing about the wire form. The map sees the keys
+// as they actually are.
+func TestParaphraseObjectKeysAreSnakeCase(t *testing.T) {
+	rec := recordAt(t, "r-1", rangeFrom.Add(time.Hour))
+	at := time.Date(2024, 6, 1, 1, 2, 3, 0, time.UTC)
+	fp := &fakeParaphraser{result: phrase.Paraphrase{Text: "the model's sentence", Model: "test-model", At: at}}
+	e := export.New(&fakeReader{records: []record.Record{rec}}, export.WithParaphraser(fp))
+
+	var buf bytes.Buffer
+	_, err := e.Export(context.Background(), export.Request{From: rangeFrom, To: rangeTo, Phrase: true}, &buf)
+	require.NoError(t, err)
+
+	var line map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &line))
+	obj, ok := line["paraphrase"].(map[string]any)
+	require.True(t, ok, "the line must carry a `paraphrase` object")
+
+	got := make([]string, 0, len(obj))
+	for k := range obj {
+		got = append(got, k)
+	}
+	assert.ElementsMatch(t, []string{"text", "model", "at"}, got,
+		"the paraphrase object's keys must be snake_case, matching every sibling key in the line")
+	assert.Equal(t, "the model's sentence", obj["text"])
+	assert.Equal(t, "test-model", obj["model"])
+	// `at` is a time.Time, so it encodes the same way the line's own `at` and
+	// `recorded_at` do: an RFC3339 string. Consistency matters more than any
+	// other choice here -- a consumer parses one date format across the line.
+	assert.Equal(t, at.Format(time.RFC3339Nano), obj["at"])
 }
 
 // TestParaphraseFailureDegradesAndDoesNotFailTheExport is the rule that
