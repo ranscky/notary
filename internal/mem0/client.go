@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // clientRedacted is what every printable path of Client renders, so the API
@@ -36,6 +37,14 @@ const maxResponseBytes = 8 << 20 // 8 MiB
 // error body from becoming a multi-megabyte error string, while the status --
 // the part an operator needs to see -- is always preserved (see do).
 const maxErrorBodyBytes = 8 << 10 // 8 KiB
+
+// minRedactedQueryValueLen is the shortest decoded base-URL query value added to
+// the redaction set. A gateway may DECODE the query before echoing it, so the
+// raw query string alone does not cover that echo; but redacting every decoded
+// value would mangle error messages with short, non-secret parameters
+// (page=42). A real credential is long, so a value at or above this length is
+// treated as one.
+const minRedactedQueryValueLen = 8
 
 // Client is a thin REST client for the hosted Mem0 API.
 //
@@ -143,6 +152,17 @@ func (c *Client) credentialComponents() []string {
 			}
 		}
 		add(u.RawQuery)
+		// Decoded query values long enough to plausibly be a credential: a
+		// gateway may DECODE the query before echoing it, and the RawQuery above
+		// would then not match. Short, non-secret parameters are left alone so
+		// they cannot mangle every error message.
+		for _, vs := range u.Query() {
+			for _, v := range vs {
+				if len(v) >= minRedactedQueryValueLen {
+					add(v)
+				}
+			}
+		}
 		add(u.Path)
 	}
 	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
@@ -165,10 +185,19 @@ func redact(body []byte, components []string) []byte {
 // capErrorBody truncates b to maxErrorBodyBytes. It bounds the bytes stored in
 // an HTTPError so an oversized error body cannot become a multi-megabyte error
 // string; the status is what carries the essential information and is never
-// affected by this.
+// affected by this. The trim is on a UTF-8 boundary, so Body and Error() stay
+// valid UTF-8 rather than ending mid-rune.
 func capErrorBody(b []byte) []byte {
-	if len(b) > maxErrorBodyBytes {
-		return b[:maxErrorBodyBytes]
+	if len(b) <= maxErrorBodyBytes {
+		return b
+	}
+	b = b[:maxErrorBodyBytes]
+	for len(b) > 0 {
+		r, size := utf8.DecodeLastRune(b)
+		if r != utf8.RuneError || size > 1 {
+			break
+		}
+		b = b[:len(b)-1]
 	}
 	return b
 }
@@ -321,6 +350,10 @@ func (c *Client) Delete(ctx context.Context, memoryID string) error {
 // non-2xx body is scrubbed of every configured credential and capped before it
 // is stored. The request itself still carries the base URL and the Authorization
 // header -- only the messages and the stored body are scrubbed.
+//
+// A non-2xx status is never lost: it is reported whether the body is oversized,
+// normally read, or unreadable (a truncated or reset body joins the status with
+// the read failure).
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -350,7 +383,19 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	// silently truncated (a truncated body could still be valid JSON).
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return fmt.Errorf("mem0: reading %s %s response: %w", method, path, err)
+		readErr := fmt.Errorf("mem0: reading %s %s response: %w", method, path, err)
+		// The status is known before the body is read, so a read failure mid-body
+		// -- a stall, a reset, or a truncated Content-Length -- must not discard
+		// it. This is the same masking the size-ordering fix closes, reached by
+		// truncation instead of size: a non-2xx status must never be lost,
+		// whether the body is oversized, absent, or unreadable. Report both.
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return errors.Join(
+				fmt.Errorf("mem0: %s %s: %w", method, path,
+					&HTTPError{StatusCode: resp.StatusCode, Body: capErrorBody(redact(raw, c.credentialComponents()))}),
+				readErr)
+		}
+		return readErr
 	}
 
 	// Status BEFORE size. A non-2xx is reported by its status, which is known

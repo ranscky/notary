@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -352,6 +353,33 @@ func TestOversizedErrorBodyKeepsStatus(t *testing.T) {
 	assert.LessOrEqual(t, len(httpErr.Body), 8<<10, "the stored error body must still be capped")
 }
 
+// TestTruncatedErrorBodyKeepsStatus pins the SECOND masking route, reached by
+// truncation instead of size. A server that declares a Content-Length larger
+// than the bytes it sends makes the client's read fail AFTER the status is
+// already known. The 502 must not be discarded: a non-2xx status must never be
+// lost, whether the body is oversized, absent, or unreadable. Both the status
+// and the read failure are reported.
+func TestTruncatedErrorBodyKeepsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusBadGateway)
+		// Write fewer bytes than declared, then return: the client reads 5 then
+		// hits EOF expecting 100, so io.ReadAll fails.
+		_, _ = w.Write([]byte("short"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502", "a truncated error body must not lose the status")
+	assert.Contains(t, err.Error(), "reading", "the read failure must still be reported")
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr, "the known status must survive the read failure")
+	assert.Equal(t, http.StatusBadGateway, httpErr.StatusCode)
+}
+
 // leakSecret is a credential an operator might place in NOTARY_MEM0_BASE_URL's
 // query -- arbitrary operator config. No error the client returns may carry it.
 const leakSecret = "MEM0-BASEURL-SECRET-7a2c"
@@ -410,6 +438,46 @@ func TestErrorBodyRedactsConfiguredCredentials(t *testing.T) {
 	require.ErrorAs(t, err, &httpErr)
 	assert.NotContains(t, string(httpErr.Body), leakSecret, "the exported body field must be clean too")
 	assert.NotContains(t, string(httpErr.Body), key, "the exported body field must be clean too")
+}
+
+// TestErrorBodyRedactsDecodedQueryValue pins the decoded-value gap. credential
+// components carry the RawQuery (wire form); a gateway that DECODES the query
+// and echoes the bare value would otherwise leak it. A query value long enough
+// to plausibly be a credential is redacted in its decoded form too.
+func TestErrorBodyRedactsDecodedQueryValue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":"decoded key is %s"}`, r.URL.Query().Get("key"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL+"?key="+leakSecret, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), leakSecret, "a decoded query-value echo must be redacted")
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.NotContains(t, string(httpErr.Body), leakSecret, "the exported body field must be clean too")
+}
+
+// TestCappedErrorBodyStaysValidUTF8 pins the byte-based truncation fix: a body
+// one byte past the cap that ends mid-UTF-8-rune must not leave the stored Body
+// or the error text with invalid UTF-8.
+func TestCappedErrorBodyStaysValidUTF8(t *testing.T) {
+	prefix := bytes.Repeat([]byte("a"), (8<<10)-1) // one short of the cap
+	body := append(append([]byte{}, prefix...), []byte("€")...)
+	srv := serve(t, &captured{}, http.StatusBadGateway, body)
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.LessOrEqual(t, len(httpErr.Body), 8<<10, "the body is still capped")
+	assert.True(t, utf8.Valid(httpErr.Body), "a capped body must not end on a partial UTF-8 rune")
+	assert.True(t, utf8.ValidString(err.Error()), "the error text must stay valid UTF-8")
 }
 
 // TestHTTPErrorUnwrapsObjectFormMessage pins that the OpenAI-shaped error body
