@@ -97,10 +97,12 @@ func linesByID(t *testing.T, out string) map[string]map[string]any {
 // content withheld) and once with IncludeSensitive -- and asserts three
 // independent things:
 //
-//  1. Every hash, prev_hash and signature is identical across both outputs AND
-//     equal to the STORED record's, not merely to each other. Two outputs
-//     agreeing proves only that rendering is deterministic; agreeing with the
-//     stored record proves the export never touched the evidence.
+//  1. Every hash, prev_hash, signature AND content_hash is identical across
+//     both outputs AND equal to the STORED record's, not merely to each other.
+//     Two outputs agreeing proves only that rendering is deterministic;
+//     agreeing with the stored record proves the export never touched the
+//     evidence. content_hash is the record's commitment to the memory's text,
+//     so redaction -- which removes the text -- must leave it untouched too.
 //  2. The sensitive text appears in exactly one output, and the non-sensitive
 //     text in both -- a redaction that redacted nothing fails (2), and a
 //     redaction that redacted everything fails it too.
@@ -117,10 +119,17 @@ func TestRedactionRoundTripIsHashInvariant(t *testing.T) {
 		&record.Content{Text: sensitiveText, Sensitive: true})
 	public := buildRecord(t, "public-rec", time.Date(2024, 6, 11, 0, 0, 0, 0, time.UTC),
 		&record.Content{Text: publicText, Sensitive: false})
+	// A record that carries no content at all (the shape an audit_gap has). It
+	// can never be redacted, so it pins Result.Redacted against a record the
+	// redaction path must not count -- the count is asserted, not merely
+	// derived from line.Redacted by construction.
+	gap := buildRecord(t, "gap-rec", time.Date(2024, 6, 12, 0, 0, 0, 0, time.UTC), nil)
 
 	_, err := l.Append(sens)
 	require.NoError(t, err)
 	_, err = l.Append(public)
+	require.NoError(t, err)
+	_, err = l.Append(gap)
 	require.NoError(t, err)
 
 	// Read the records back from the ledger: this is what the export's hashes
@@ -128,6 +137,8 @@ func TestRedactionRoundTripIsHashInvariant(t *testing.T) {
 	storedSens, err := l.GetRecord("sens-rec")
 	require.NoError(t, err)
 	storedPublic, err := l.GetRecord("public-rec")
+	require.NoError(t, err)
+	storedGap, err := l.GetRecord("gap-rec")
 	require.NoError(t, err)
 
 	e := export.New(l)
@@ -140,8 +151,8 @@ func TestRedactionRoundTripIsHashInvariant(t *testing.T) {
 
 	withheldLines := linesByID(t, withheld.String())
 	shownLines := linesByID(t, shown.String())
-	require.Len(t, withheldLines, 2)
-	require.Len(t, shownLines, 2)
+	require.Len(t, withheldLines, 3)
+	require.Len(t, shownLines, 3)
 
 	// 1. Hash invariance, asserted against the STORED record.
 	for _, tc := range []struct {
@@ -150,10 +161,14 @@ func TestRedactionRoundTripIsHashInvariant(t *testing.T) {
 	}{
 		{"sens-rec", storedSens},
 		{"public-rec", storedPublic},
+		{"gap-rec", storedGap},
 	} {
 		wantHash := hex.EncodeToString(tc.stored.Hash[:])
 		wantPrev := hex.EncodeToString(tc.stored.PrevHash[:])
 		wantSig := hex.EncodeToString(tc.stored.Signature)
+		// content_hash is the record's commitment to the memory text. Redaction
+		// removes the text and must leave this untouched, in BOTH outputs.
+		wantContentHash := hex.EncodeToString(tc.stored.Subject.ContentHash[:])
 
 		assert.Equal(t, wantHash, withheldLines[tc.id]["hash"], "%s: hash under default", tc.id)
 		assert.Equal(t, wantHash, shownLines[tc.id]["hash"], "%s: hash under IncludeSensitive", tc.id)
@@ -161,6 +176,8 @@ func TestRedactionRoundTripIsHashInvariant(t *testing.T) {
 		assert.Equal(t, wantPrev, shownLines[tc.id]["prev_hash"], "%s: prev_hash under IncludeSensitive", tc.id)
 		assert.Equal(t, wantSig, withheldLines[tc.id]["signature"], "%s: signature under default", tc.id)
 		assert.Equal(t, wantSig, shownLines[tc.id]["signature"], "%s: signature under IncludeSensitive", tc.id)
+		assert.Equal(t, wantContentHash, withheldLines[tc.id]["content_hash"], "%s: content_hash under default", tc.id)
+		assert.Equal(t, wantContentHash, shownLines[tc.id]["content_hash"], "%s: content_hash under IncludeSensitive", tc.id)
 	}
 
 	// 2. The sensitive text appears in exactly one output. This is the
@@ -188,12 +205,20 @@ func TestRedactionRoundTripIsHashInvariant(t *testing.T) {
 	// The non-sensitive record is never redacted, either way.
 	_, publicRedacted := withheldLines["public-rec"]["redacted"]
 	assert.False(t, publicRedacted, "non-sensitive content is never redacted")
+	// The no-content record is neither shown nor claimed redacted: there was
+	// nothing to hide.
+	_, gapHasContent := withheldLines["gap-rec"]["content"]
+	assert.False(t, gapHasContent, "a record with no content renders no content field")
+	_, gapRedacted := withheldLines["gap-rec"]["redacted"]
+	assert.False(t, gapRedacted, "a record with no content is never claimed redacted")
 
-	// Result.Redacted counts the records whose text was withheld.
-	assert.Equal(t, 1, withheldRes.Redacted, "exactly one record was redacted")
+	// Result.Redacted counts the records whose text was withheld. The gap
+	// record proves the count is not simply "records minus shown": it is 1 of
+	// 3, and the one is the sensitive record.
+	assert.Equal(t, 1, withheldRes.Redacted, "exactly one record was redacted, not the no-content one")
 	assert.Equal(t, 0, shownRes.Redacted, "nothing is redacted under IncludeSensitive")
-	assert.Equal(t, 2, withheldRes.Records)
-	assert.Equal(t, 2, shownRes.Records)
+	assert.Equal(t, 3, withheldRes.Records)
+	assert.Equal(t, 3, shownRes.Records)
 }
 
 // TestRedactedLineNeverClaimsToHideAbsentContent is Review Focus 1 from the
