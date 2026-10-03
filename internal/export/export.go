@@ -184,7 +184,6 @@ type Result struct {
 // Do not reconfigure the encoder it returns either. NewLineEncoder hands back a
 // concrete *json.Encoder, so a caller can put the escapes back -- calling
 // SetEscapeHTML(true) on it would break the byte-identity a replay depends on.
-
 func NewLineEncoder(w io.Writer) *json.Encoder {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)

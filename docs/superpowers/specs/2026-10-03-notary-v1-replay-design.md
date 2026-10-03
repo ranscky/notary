@@ -53,7 +53,7 @@ func (s *SQLiteStore) ListRecordsAsOf(t time.Time) ([]record.Record, error)
 // WHERE recorded_at <= ? ORDER BY seq ASC
 
 // internal/ledger
-func (l *Ledger) ListRecordsAsOf(t time.Time) ([]record.Record, error)  // delegates
+func (l *Ledger) ReplayAsOf(t time.Time, v *sign.Verifier) ([]record.Record, []Break, error)
 ```
 
 Three properties this must have, each of which is a trap if left unstated:
