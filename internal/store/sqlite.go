@@ -350,6 +350,54 @@ func (s *SQLiteStore) ListRecordsAsOf(t time.Time) ([]record.Record, error) {
 	return out, nil
 }
 
+// ListRecordsByMemory returns every record whose subject memory is memoryID,
+// ordered by Seq ascending -- the lifecycle of one memory as the ledger holds
+// it, including a Reconstructed claim written long after the event it
+// describes.
+//
+// The read filters on the memory_id column, which PutRecord writes from
+// r.Subject.MemoryID, so the whole filter is one SQL predicate rather than a
+// Go-side scan.
+//
+// An empty memoryID is NOT rejected here, and that is deliberate. A record
+// with no memory writes the column's empty-string default, so an empty filter
+// would match every such record -- a silent whole-ledger read masquerading as
+// one memory's life. Refusing "" belongs with the caller (internal/explain
+// the empty --memory check, spec §4); the store is deliberately not the only
+// guard, because the store cannot know whether the empty value was meant as a
+// memory id or as "no filter".
+//
+// A row that cannot be decoded is an error here, matching ListRecords and
+// ListRecordsAsOf and NOT SeqEntries' deliberate tolerance. explain cannot
+// explain what it cannot read, and silently skipping the row would hide a
+// record, quietly shortening the lifecycle. The two policies sit in one file
+// on purpose: SeqEntries must still name a tampered row (Seq and ID read from
+// their own columns, DecodeErr set) so verification can report it rather than
+// lose it, whereas this read path tolerates no undecodable row at all. Do not
+// "align" them -- the difference is the point.
+func (s *SQLiteStore) ListRecordsByMemory(memoryID string) ([]record.Record, error) {
+	rows, err := s.db.Query(
+		`SELECT `+selectColumns+` FROM records WHERE memory_id = ? ORDER BY seq ASC`,
+		memoryID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list records by memory: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []record.Record
+	for rows.Next() {
+		r, err := scanRecord(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: list records by memory: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list records by memory: %w", err)
+	}
+	return out, nil
+}
+
 // Head returns the record with the greatest Seq. It reports false with a zero
 // record and a nil error when the table is empty.
 func (s *SQLiteStore) Head() (record.Record, bool, error) {

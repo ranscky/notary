@@ -210,6 +210,14 @@ func (l *Ledger) ListRecords(from, to time.Time) ([]record.Record, error) {
 	return l.store.ListRecords(from, to)
 }
 
+// ListRecordsByMemory returns the records whose subject memory is memoryID, in
+// Seq order, delegating to the store. It is the single memory's lifecycle --
+// the chain-ordered records that memory accumulated -- matching the store
+// method of the same name. An undecodable row is an error, not a skipped row.
+func (l *Ledger) ListRecordsByMemory(memoryID string) ([]record.Record, error) {
+	return l.store.ListRecordsByMemory(memoryID)
+}
+
 // ReplayAsOf returns the ledger as it stood at instant t -- every record whose
 // RecordedAt is at or before t, inclusive, in Seq order -- and verifies that
 // exact prefix before returning it. It errors only when the read itself fails;

@@ -76,6 +76,13 @@ type Store interface {
 	// ledger as it stood at instant t -- as opposed to ListRecords, which
 	// bounds on the event time At.
 	ListRecordsAsOf(t time.Time) ([]record.Record, error)
+	// ListRecordsByMemory returns the records whose Subject.MemoryID is
+	// memoryID, ordered by Seq ascending. It is one memory's lifecycle -- the
+	// records that memory accumulated, in chain order -- as opposed to the
+	// time-bounded ListRecords and ListRecordsAsOf. A row that cannot be
+	// decoded is an error, matching those reads rather than SeqEntries'
+	// tolerance.
+	ListRecordsByMemory(memoryID string) ([]record.Record, error)
 	// SeqEntries returns every stored row in chain order (seq ascending). It
 	// differs from ListRecords in two ways that matter for verification: it
 	// selects on seq rather than on at, so no record can fall outside a time

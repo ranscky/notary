@@ -382,3 +382,34 @@ func TestReplayAsOfEmptyLedgerReturnsNothing(t *testing.T) {
 	assert.Empty(t, records, "an empty ledger must replay no records")
 	assert.Empty(t, breaks, "an empty ledger must replay no breaks")
 }
+
+// TestListRecordsByMemoryDelegatesAndFilters proves the ledger pass-through
+// reaches the store's memory-filtered read rather than returning everything.
+// Two memories' records are appended -- they interleave on the single chain --
+// and only the requested memory's records must come back, in Seq order. A
+// pass-through that ignored memoryID, or delegated to ListRecords, would
+// return both memories' records here.
+func TestListRecordsByMemoryDelegatesAndFilters(t *testing.T) {
+	l, _, _, _ := newLedger(t)
+
+	appendForMemory := func(id record.RecordID, memoryID string) {
+		rec := validRecord(t, id)
+		rec.Subject.MemoryID = memoryID
+		_, err := l.Append(rec)
+		require.NoError(t, err)
+	}
+	appendForMemory("a-1", "mem-A")
+	appendForMemory("b-1", "mem-B")
+	appendForMemory("a-2", "mem-A")
+
+	got, err := l.ListRecordsByMemory("mem-A")
+	require.NoError(t, err)
+	require.Len(t, got, 2, "only the requested memory's records must come back")
+	assert.Equal(t, []record.RecordID{"a-1", "a-2"},
+		[]record.RecordID{got[0].ID, got[1].ID},
+		"the ledger read must filter on memory and order by Seq ascending")
+	for _, r := range got {
+		assert.Equal(t, "mem-A", r.Subject.MemoryID,
+			"every returned record must belong to the requested memory")
+	}
+}

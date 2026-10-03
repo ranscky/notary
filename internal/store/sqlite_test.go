@@ -573,6 +573,88 @@ func TestListRecordsAsOfErrorsOnAnUndecodableRow(t *testing.T) {
 	require.Error(t, err, "an undecodable row in range must fail the as-of read, not be skipped")
 }
 
+// recordForMemory builds a distinct record assigned to the given memory id,
+// with the given ID and Seq. It is the fixture for the by-memory read, whose
+// filter is the memory_id column and whose order is seq.
+func recordForMemory(t *testing.T, id string, seq uint64, memoryID string) record.Record {
+	t.Helper()
+	r := fullRecord(t)
+	r.ID = record.RecordID(id)
+	r.Seq = seq
+	r.Subject.MemoryID = memoryID
+	r.IdempotencyKey = ""
+	return r
+}
+
+// TestListRecordsByMemoryOrdersBySeq pins the first requirement: a memory's own
+// records come back ordered by seq ascending, the ordering discipline the spec
+// fixes. Records are inserted out of seq order so ordering is not incidental.
+func TestListRecordsByMemoryOrdersBySeq(t *testing.T) {
+	s := newOpenStore(t)
+
+	require.NoError(t, s.PutRecord(recordForMemory(t, "m-a", 5, "mem-A")))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "m-b", 2, "mem-A")))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "m-c", 9, "mem-A")))
+
+	got, err := s.ListRecordsByMemory("mem-A")
+	require.NoError(t, err)
+	require.Len(t, got, 3)
+	assert.Equal(t, []record.RecordID{"m-b", "m-a", "m-c"},
+		[]record.RecordID{got[0].ID, got[1].ID, got[2].ID},
+		"a memory's records must come back ordered by seq ascending")
+}
+
+// TestListRecordsByMemoryFiltersToOneMemoryOnly is the load-bearing guard on
+// the filter. The fixture interleaves two memories' records in one chain, so a
+// query that ignored memory_id entirely -- which a single-memory fixture would
+// happily pass -- would return all four rows. The assertion pins that only the
+// requested memory's two come back, and only those, in seq order.
+func TestListRecordsByMemoryFiltersToOneMemoryOnly(t *testing.T) {
+	s := newOpenStore(t)
+
+	require.NoError(t, s.PutRecord(recordForMemory(t, "a-1", 0, "mem-A")))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "b-1", 1, "mem-B")))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "a-2", 2, "mem-A")))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "b-2", 3, "mem-B")))
+
+	got, err := s.ListRecordsByMemory("mem-A")
+	require.NoError(t, err)
+	require.Len(t, got, 2, "only the requested memory's records must come back")
+	assert.Equal(t, []record.RecordID{"a-1", "a-2"},
+		[]record.RecordID{got[0].ID, got[1].ID},
+		"the other memory's records must not appear, and seq order must hold")
+	for _, r := range got {
+		assert.Equal(t, "mem-A", r.Subject.MemoryID,
+			"every returned record must belong to the requested memory")
+	}
+
+	// The filter must not be a no-op in the other direction either.
+	other, err := s.ListRecordsByMemory("mem-B")
+	require.NoError(t, err)
+	assert.Equal(t, []record.RecordID{"b-1", "b-2"},
+		[]record.RecordID{other[0].ID, other[1].ID},
+		"the other memory's read must return its own records, and only those")
+}
+
+// TestListRecordsByMemoryErrorsOnAnUndecodableRow pins the third requirement:
+// an undecodable row for the requested memory is an ERROR, matching
+// ListRecords and ListRecordsAsOf rather than SeqEntries' deliberate
+// tolerance. explain cannot explain what it cannot read, and skipping the row
+// would hide a record.
+func TestListRecordsByMemoryErrorsOnAnUndecodableRow(t *testing.T) {
+	s := newOpenStore(t)
+	rec := recordForMemory(t, "m-bad", 1, "mem-A")
+	require.NoError(t, s.PutRecord(rec))
+
+	// Corrupt the encoded reason so the row can no longer be rebuilt -- the
+	// same raw edit TestListRecordsAsOfErrorsOnAnUndecodableRow makes.
+	_, err := s.db.Exec(`UPDATE records SET reason_payload = x'00' WHERE id = ?`, string(rec.ID))
+	require.NoError(t, err)
+
+	_, err = s.ListRecordsByMemory("mem-A")
+	require.Error(t, err, "an undecodable row for the memory must fail the read, not be skipped")
+}
+
 // TestForeignKeysEnabledOnEveryConnection proves the per-connection PRAGMA is
 // applied by the driver DSN, not just once via Exec. Holding several
 // connections open at once forces the pool to open distinct ones; each must
