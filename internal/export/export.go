@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"notary/internal/phrase"
 	"notary/internal/record"
 	"notary/internal/sign"
 )
@@ -36,6 +37,17 @@ type Reader interface {
 	Checkpoint(sg *sign.Signer, now time.Time) (sign.Checkpoint, error)
 }
 
+// Paraphraser is the optional language-model pass the exporter may run. It is
+// the one method of phrase.Client, expressed here as an interface so
+// internal/export can be exercised with a fake -- no provider, no network, no
+// key -- and so the CLI supplies the real client only when --phrase is given.
+//
+// It returns phrase.Paraphrase, a display-only type no decision package can
+// import (design D7): the value flows to a JSONL line and nowhere else.
+type Paraphraser interface {
+	Paraphrase(ctx context.Context, records []record.Record) (phrase.Paraphrase, error)
+}
+
 // Option configures an Exporter at construction. It is applied once by New; it
 // is a construction-time decision, not a per-request one, so a signer and a
 // clock are set for the exporter's whole life rather than carried on Request.
@@ -50,6 +62,19 @@ type Option func(*Exporter)
 // process-level key, not a value that varies per export.
 func WithSigner(sg *sign.Signer) Option {
 	return func(e *Exporter) { e.signer = sg }
+}
+
+// WithParaphraser sets the pass a Request.Phrase export runs. Without it, a
+// request that sets Phrase fails rather than silently omitting the paraphrase
+// the operator asked for: a paraphrase that is quietly dropped is exactly the
+// loss the design refuses to hide.
+//
+// The paraphraser is a dependency rather than a Request field because it is a
+// client -- a provider, a credential, a cost -- not a value that varies per
+// export. The CLI supplies the real phrase.Client only under --phrase; a test
+// supplies a fake.
+func WithParaphraser(p Paraphraser) Option {
+	return func(e *Exporter) { e.paraphraser = p }
 }
 
 // WithClock sets the clock a checkpoint is stamped with, so an export can be
@@ -92,7 +117,12 @@ type Request struct {
 	// MaxSpan caps To-From. A non-positive value selects defaultMaxSpan.
 	MaxSpan time.Duration
 
-	// Phrase requests a paraphrase pass. It lands in Task 10.
+	// Phrase requests a paraphrase pass: when set, the exporter runs the
+	// configured paraphraser (see WithParaphraser) over the records it renders
+	// and attaches the result to each line. It is off by default, so no provider
+	// is billed unless it is asked for (design §8). A failure of the pass never
+	// fails the export; it is reported through Result.ParaphraseFailed and
+	// Result.ParaphraseError.
 	Phrase bool
 }
 
@@ -115,19 +145,32 @@ type Result struct {
 	// CheckpointOut and the checkpoint was written. It is nil when no checkpoint
 	// was requested, and nil on the error path.
 	Checkpoint *sign.Checkpoint
+	// ParaphraseFailed reports that a paraphrase pass was requested and the
+	// provider call failed. The failure never fails the export (design §8): the
+	// structured records are rendered unchanged and Export returns no error, so
+	// a phrasing outage cannot cost an operator their audit output. It is the
+	// summary the CLI reports on stderr; the reason is in ParaphraseError.
+	ParaphraseFailed bool
+	// ParaphraseError is the reason a requested paraphrase pass failed, empty on
+	// success or when no pass ran. It is carried out of the exporter so the
+	// failure can be reported with WHY it happened rather than as a bare flag,
+	// because a loss the tool cannot explain is a loss it should not hide.
+	ParaphraseError string
 }
 
 // Exporter renders a range of the ledger as JSONL.
 type Exporter struct {
-	reader Reader
-	signer *sign.Signer
-	now    func() time.Time
+	reader      Reader
+	signer      *sign.Signer
+	paraphraser Paraphraser
+	now         func() time.Time
 }
 
 // New returns an Exporter that reads the range through r. opts configure it for
-// its whole life; WithSigner supplies the key a checkpoint is signed with and
-// WithClock the instant it is stamped with. A nil option is tolerated, so a
-// caller cannot crash construction by passing one.
+// its whole life; WithSigner supplies the key a checkpoint is signed with,
+// WithClock the instant it is stamped with, and WithParaphraser the pass a
+// Request.Phrase export runs. A nil option is tolerated, so a caller cannot
+// crash construction by passing one.
 func New(r Reader, opts ...Option) *Exporter {
 	e := &Exporter{reader: r, now: time.Now}
 	for _, opt := range opts {
@@ -145,13 +188,29 @@ func New(r Reader, opts ...Option) *Exporter {
 // and no slice of Lines is ever collected, so output memory does not scale with
 // the range. The READ side does not stream -- Reader.ListRecords returns the
 // whole range as a slice, which is the ledger's read interface -- so only the
-// render/write loop is incremental.
+// render/write loop is incremental. When a paraphrase pass runs it narrows that
+// slice to the records it will render first, so the pass and the loop agree on
+// what is in the export; that narrowing is a view of the already-held slice and
+// adds no scaling beyond the read.
 //
-// It fails loudly on an invalid request, a read error, or a write error. On
-// error the returned Result is NOT zero: it carries the counts as they stood
-// when the failure occurred (the lines already written), so a caller must check
-// the error before trusting the Result. A range with no records is a success
-// with zero lines (design §9).
+// It fails loudly on an invalid request (including Phrase with no paraphraser),
+// a read error, or a write error. On error the returned Result is NOT zero: it
+// carries the counts as they stood when the failure occurred (the lines already
+// written), so a caller must check the error before trusting the Result. A
+// range with no records is a success with zero lines (design §9).
+//
+// A failed paraphrase pass is deliberately NOT such an error: it degrades the
+// prose, never the evidence.
+//
+// When req.Phrase is set, a paraphrase pass runs over the records the export
+// renders -- after the scope filter, so it never bills for a record the reader
+// cannot see. The pass is attempted once for the whole run, and its result is
+// attached to every line it covers. A failed pass never fails the export: the
+// records render unchanged, the failure is reported through
+// Result.ParaphraseFailed and Result.ParaphraseError, and Export returns no
+// error (design §8). A run with no rendered records is not passed to the
+// paraphraser at all, because the client errors on an empty request rather than
+// making a pointless billed call.
 //
 // When req.CheckpointOut names a file, a signed checkpoint of the ledger HEAD is
 // written there after the lines, and Result.Checkpoint carries it. The head, not
@@ -161,10 +220,40 @@ func (e *Exporter) Export(ctx context.Context, req Request, out io.Writer) (Resu
 	if err := req.validate(); err != nil {
 		return Result{}, err
 	}
+	if req.Phrase && e.paraphraser == nil {
+		return Result{}, errors.New("export: Phrase requested but no paraphraser is set (use WithParaphraser)")
+	}
 
 	records, err := e.reader.ListRecords(req.From, req.To)
 	if err != nil {
 		return Result{}, fmt.Errorf("export: read ledger: %w", err)
+	}
+
+	// Narrow to the records this export renders. The paraphrase pass is handed
+	// only these, so it cannot bill for -- or describe -- a record the reader
+	// never sees. The slice is a filtered view of records, which the read side
+	// already holds whole, so this adds no scaling beyond the read.
+	var matched []record.Record
+	for _, rec := range records {
+		if scopeMatches(req.Scope, rec.Subject.Scope) {
+			matched = append(matched, rec)
+		}
+	}
+
+	var res Result
+	// Run the paraphrase pass once, before rendering, so every line carries the
+	// same run result. An empty run is skipped: the client errors on zero
+	// records rather than making a pointless billed call, so calling it here
+	// would turn every empty range into a spurious failure.
+	var para *phrase.Paraphrase
+	if req.Phrase && len(matched) > 0 {
+		p, perr := e.paraphraser.Paraphrase(ctx, matched)
+		if perr != nil {
+			res.ParaphraseFailed = true
+			res.ParaphraseError = perr.Error()
+		} else {
+			para = &p
+		}
 	}
 
 	enc := json.NewEncoder(out)
@@ -172,21 +261,21 @@ func (e *Exporter) Export(ctx context.Context, req Request, out io.Writer) (Resu
 	// \u003c escapes, so the export stays greppable.
 	enc.SetEscapeHTML(false)
 
-	var res Result
-	for _, rec := range records {
+	for _, rec := range matched {
 		// ctx stops a long range between records. The read itself is NOT
 		// cancellable: Reader.ListRecords takes no context, so a cancel is
 		// observed only after the read returns, record by record.
 		if err := ctx.Err(); err != nil {
 			return res, fmt.Errorf("export: %w", err)
 		}
-		if !scopeMatches(req.Scope, rec.Subject.Scope) {
-			continue
-		}
 		line, err := Render(rec, req.IncludeSensitive)
 		if err != nil {
 			return res, err
 		}
+		// The paraphrase is a guest on the line: set beside the rendered record,
+		// and only on success, so a failed pass leaves the line exactly as it
+		// would have been without --phrase.
+		line.Paraphrase = para
 		if err := enc.Encode(line); err != nil {
 			return res, fmt.Errorf("export: write record %s: %w", rec.ID, err)
 		}

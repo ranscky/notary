@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -10,6 +11,7 @@ import (
 	"notary/config"
 	"notary/internal/export"
 	"notary/internal/ledger"
+	"notary/internal/phrase"
 	"notary/internal/record"
 	"notary/internal/sign"
 	"notary/internal/store"
@@ -40,6 +42,10 @@ const defaultExportMaxSpan = 366 * 24 * time.Hour
 // AND, mirroring reconcile. --include-sensitive is the only way to render
 // stored sensitive content; it changes what is printed and never a hash, because
 // rendering is a read path (design §3 D4, §6). --max-span caps the range.
+// --phrase adds an optional, display-only paraphrase from a language model: it
+// is off by default, so no provider is billed unless it is asked for, and a
+// phrasing failure degrades to a note rather than failing the export (design
+// §8).
 func newExportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export",
@@ -59,7 +65,14 @@ func newExportCmd() *cobra.Command {
 			"so; --include-sensitive prints it. The flag changes only what is printed\n" +
 			"-- never a hash -- because the export is a read path. A range with no\n" +
 			"records is a success that says so on stderr, so 'no records' and 'broken\n" +
-			"invocation' never look the same.",
+			"invocation' never look the same.\n" +
+			"\n" +
+			"--phrase adds a language-model paraphrase to each line, beside the record\n" +
+			"and never instead of it. It is off by default, so the provider is only\n" +
+			"billed for an export someone asked for, and it is configured from the\n" +
+			"environment (" + config.EnvPhraseBaseURL + ", " + config.EnvPhraseModel + ",\n" +
+			config.EnvPhraseAPIKey + "). A phrasing failure never fails the export: the\n" +
+			"records are still written and the failure is reported on stderr.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
@@ -78,6 +91,8 @@ func newExportCmd() *cobra.Command {
 		"end of the export range as RFC3339 (defaults to now); bounds each record's At")
 	cmd.Flags().Bool("include-sensitive", false,
 		"print stored content marked sensitive instead of withholding it (changes only what is printed, never a hash)")
+	cmd.Flags().Bool("phrase", false,
+		"add a display-only language-model paraphrase to each line, beside the record; a phrasing failure degrades to a note and never fails the export")
 	cmd.Flags().String("checkpoint-out", "",
 		"path to write a signed head checkpoint to, in the format `verify --checkpoint` reads")
 	cmd.Flags().Duration("max-span", defaultExportMaxSpan,
@@ -94,15 +109,28 @@ func newExportCmd() *cobra.Command {
 //
 // It returns a non-nil error -- and so a non-zero exit -- for any failure: a
 // missing or malformed --from, a reversed or over-long range, a missing signing
-// key, a store read failure, a render failure, or a checkpoint write failure. A
-// range with no records is a success and prints a line on stderr saying so.
+// key, --phrase with no provider configured, a store read failure, a render
+// failure, or a checkpoint write failure. A range with no records is a success
+// and prints a line on stderr saying so.
 //
 // A missing signing key is a hard failure (design §9), the same refusal
 // reconcile makes: export exists to produce a signed checkpoint that can be
 // verified, so it refuses to start rather than silently downgrade. NewSigner
 // never invents a key, so an unset or empty variable fails here too, naming the
 // variable it looked for.
+//
+// It delegates to runExportWith with no injected paraphraser, so --phrase builds
+// the real phrase.Client from the environment.
 func runExport(cmd *cobra.Command, cfg *config.Config) error {
+	return runExportWith(cmd, cfg, nil)
+}
+
+// runExportWith is runExport with an injectable paraphraser. A nil p means
+// "build the real client from the environment if --phrase asks for one"; a
+// non-nil p is used as given, which is how a test exercises the paraphrase path
+// with a fake -- no provider, no network, no key. It is the single seam the
+// paraphrase wiring passes through.
+func runExportWith(cmd *cobra.Command, cfg *config.Config, p export.Paraphraser) error {
 	out := cmd.OutOrStdout()
 	errOut := cmd.ErrOrStderr()
 
@@ -111,6 +139,17 @@ func runExport(cmd *cobra.Command, cfg *config.Config) error {
 	req, err := exportRequest(cmd, now)
 	if err != nil {
 		return err
+	}
+
+	// Supply the real phrasing client only when --phrase was asked for, and only
+	// if a test has not already injected one. Building it before the signer and
+	// the store means a --phrase with no provider fails fast, naming the
+	// variable, rather than after opening the ledger.
+	if req.Phrase && p == nil {
+		p, err = newPhraseParaphraser()
+		if err != nil {
+			return err
+		}
 	}
 
 	if cfg.SigningKeyEnv == "" {
@@ -135,7 +174,7 @@ func runExport(cmd *cobra.Command, cfg *config.Config) error {
 	// signer. The signer a checkpoint needs is supplied to the EXPORTER, not to
 	// the ledger, which keeps this command structurally a read path.
 	l := ledger.New(st, nil, nil)
-	ex := export.New(l, export.WithSigner(sg), export.WithClock(now))
+	ex := export.New(l, export.WithSigner(sg), export.WithClock(now), export.WithParaphraser(p))
 
 	// cmd.Context() is nil for a command not run through Execute (the test seam
 	// constructs one directly), so fall back to a background context.
@@ -159,6 +198,12 @@ func runExport(cmd *cobra.Command, cfg *config.Config) error {
 	} else {
 		fmt.Fprintf(errOut, "export: wrote %d record(s) to stdout\n", res.Records)
 	}
+	// A phrasing failure degrades the prose, never the evidence: the records are
+	// already written, the exit code stays zero, and the operator is told on
+	// stderr -- with WHY -- so the loss is reported rather than hidden.
+	if res.ParaphraseFailed {
+		fmt.Fprintf(errOut, "export: paraphrase failed: %s\n", res.ParaphraseError)
+	}
 	if res.Checkpoint != nil {
 		fmt.Fprintf(errOut, "export: wrote checkpoint for seq %d to %s\n",
 			res.Checkpoint.Seq, req.CheckpointOut)
@@ -169,8 +214,9 @@ func runExport(cmd *cobra.Command, cfg *config.Config) error {
 // exportRequest resolves an export.Request from cmd's flags. --from is parsed
 // as RFC3339 and is required; --to defaults to now when unset. The four scope
 // flags become the request Scope, whose zero fields are no filter, so combining
-// them yields an AND across the dimensions -- the same rule reconcile uses. The
-// range ordering and the --max-span cap are enforced by export.Request's own
+// them yields an AND across the dimensions -- the same rule reconcile uses.
+// --include-sensitive and --phrase map to their Request fields; the range
+// ordering and the --max-span cap are enforced by export.Request's own
 // validation, so they are not restated here.
 func exportRequest(cmd *cobra.Command, now func() time.Time) (export.Request, error) {
 	var r export.Request
@@ -212,6 +258,12 @@ func exportRequest(cmd *cobra.Command, now func() time.Time) (export.Request, er
 	}
 	r.IncludeSensitive = includeSensitive
 
+	phraseOn, err := cmd.Flags().GetBool("phrase")
+	if err != nil {
+		return export.Request{}, fmt.Errorf("reading --phrase: %w", err)
+	}
+	r.Phrase = phraseOn
+
 	checkpointOut, err := cmd.Flags().GetString("checkpoint-out")
 	if err != nil {
 		return export.Request{}, fmt.Errorf("reading --checkpoint-out: %w", err)
@@ -243,4 +295,25 @@ func exportRequest(cmd *cobra.Command, now func() time.Time) (export.Request, er
 	r.Scope = scope
 
 	return r, nil
+}
+
+// newPhraseParaphraser builds the real phrasing client from the environment,
+// reading the three phrase variables directly rather than through config.Config:
+// the design keeps the API key out of any rendered config by giving it no
+// Config field (design D10). A missing base URL or model is a refusal to start,
+// naming the variable, because --phrase was asked for and cannot be honoured
+// without it. The key is not required here: a self-hosted compatible endpoint
+// may need none, and the client sends whatever is set.
+func newPhraseParaphraser() (export.Paraphraser, error) {
+	baseURL := os.Getenv(config.EnvPhraseBaseURL)
+	if baseURL == "" {
+		return nil, fmt.Errorf(
+			"export: --phrase needs a provider: set %s to the OpenAI-compatible chat-completions base URL",
+			config.EnvPhraseBaseURL)
+	}
+	model := os.Getenv(config.EnvPhraseModel)
+	if model == "" {
+		return nil, fmt.Errorf("export: --phrase needs a model: set %s", config.EnvPhraseModel)
+	}
+	return phrase.NewClient(baseURL, os.Getenv(config.EnvPhraseAPIKey), model, nil), nil
 }

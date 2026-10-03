@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"notary/internal/phrase"
 	"notary/internal/record"
 )
 
@@ -51,11 +52,21 @@ type Line struct {
 	// adds no claim of its own. It is always present and always printed BESIDE
 	// the structured fields above it, never instead of them: a reader may
 	// ignore it, and no consumer may depend on it (design §2, §7).
-	Phrasing    string `json:"phrasing"`
-	PrevHash    string `json:"prev_hash"`
-	Hash        string `json:"hash"`
-	Signature   string `json:"signature"`
-	SignerKeyID string `json:"signer_key_id"`
+	Phrasing string `json:"phrasing"`
+	// Paraphrase is the optional language model's restatement of the record's
+	// claim, present only when the export ran with Phrase set and the provider
+	// returned one. It sits BESIDE the structured fields, never instead of them,
+	// and is labelled a paraphrase. It is display-only: the type lives in
+	// internal/phrase, which no decision package may import (design D7), so
+	// generated text can never be an input to a decision. It is a pointer so its
+	// absence -- no --phrase, or a failed call -- is distinguishable from a
+	// paraphrase, and because the client never returns an empty one there is no
+	// empty object to mistake for a real paraphrase.
+	Paraphrase  *phrase.Paraphrase `json:"paraphrase,omitempty"`
+	PrevHash    string             `json:"prev_hash"`
+	Hash        string             `json:"hash"`
+	Signature   string             `json:"signature"`
+	SignerKeyID string             `json:"signer_key_id"`
 }
 
 // LineScope is the caller context a record belongs to, as it appears in the

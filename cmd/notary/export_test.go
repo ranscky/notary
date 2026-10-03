@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,8 +17,26 @@ import (
 	"notary/config"
 	"notary/internal/export"
 	"notary/internal/ledger"
+	"notary/internal/phrase"
 	"notary/internal/record"
 )
+
+// stubParaphraser is a controllable export.Paraphraser for the CLI tests. It
+// lets runExportWith exercise the paraphrase path with no provider, no network
+// call and no API key -- the reason the client is hidden behind an interface.
+type stubParaphraser struct {
+	result phrase.Paraphrase
+	err    error
+	calls  int
+}
+
+func (s *stubParaphraser) Paraphrase(_ context.Context, _ []record.Record) (phrase.Paraphrase, error) {
+	s.calls++
+	if s.err != nil {
+		return phrase.Paraphrase{}, s.err
+	}
+	return s.result, nil
+}
 
 // newTestExportCmd builds an export command whose stdout and stderr are captured
 // in SEPARATE buffers. It does not mirror newTestReconcileCmd's single shared
@@ -345,13 +365,14 @@ func TestExportBoundsOnAtNotRecordedAt(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Help must be self-describing -- and deliberately omit --phrase.
+// Help must be self-describing.
 // ---------------------------------------------------------------------------
 
 // TestExportHelpListsItsFlags pins that --help names every flag the command
-// reads, and deliberately does NOT mention --phrase or --sensitivity-rules:
-// --phrase lands in Task 10 so Tasks 9-10 stay revertable, and the rules flag
-// was dropped because nothing at the CLI marks content.
+// reads, including --phrase (Task 10). --sensitivity-rules is still deliberately
+// absent: rules mark content at *write* time and no CLI command writes records,
+// so the rules are an application-facing path configured by
+// NOTARY_SENSITIVITY_RULES.
 func TestExportHelpListsItsFlags(t *testing.T) {
 	cmd, out, _ := newTestExportCmd(t)
 	cmd.SetArgs([]string{"--help"})
@@ -360,12 +381,107 @@ func TestExportHelpListsItsFlags(t *testing.T) {
 	help := out.String()
 	for _, flag := range []string{
 		"--from", "--to", "--include-sensitive", "--checkpoint-out", "--max-span",
-		"--user-id", "--agent-id", "--app-id", "--run-id",
+		"--user-id", "--agent-id", "--app-id", "--run-id", "--phrase",
 	} {
 		assert.Contains(t, help, flag, "help must list %s", flag)
 	}
-	assert.NotContains(t, help, "--phrase", "--phrase must not be added until Task 10")
 	assert.NotContains(t, help, "--sensitivity-rules", "the rules flag has nothing to attach to")
+}
+
+// ---------------------------------------------------------------------------
+// Phrasing: opt-in, and a failure degrades rather than failing the export.
+// ---------------------------------------------------------------------------
+
+// TestPhraseIsOffByDefaultAtTheCLI pins that an export without --phrase never
+// asks the paraphraser for anything, even when one is available.
+func TestPhraseIsOffByDefaultAtTheCLI(t *testing.T) {
+	sg, _ := newVerifySigner(t)
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	appendFixtureRecords(t, dbPath, sg,
+		addRequestedRecord(t, "r-1", "evt-1", verifyFixedNow, record.Scope{UserID: "u1"}))
+
+	cmd, out, _ := newTestExportCmd(t)
+	require.NoError(t, cmd.Flags().Set("from", "2026-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("to", "2027-01-01T00:00:00Z"))
+	cfg := &config.Config{DBPath: dbPath, SigningKeyEnv: verifyKeyEnv}
+
+	fp := &stubParaphraser{result: phrase.Paraphrase{Text: "unused"}}
+	require.NoError(t, runExportWith(cmd, cfg, fp))
+
+	assert.Equal(t, 0, fp.calls, "without --phrase the paraphraser must never be called")
+	lines := exportLines(t, out.String())
+	require.Len(t, lines, 1)
+	assert.Nil(t, lines[0].Paraphrase, "no paraphrase appears without --phrase")
+}
+
+// TestPhraseAddsTheParaphraseAtTheCLI pins the happy path through the command:
+// --phrase attaches the provider's paraphrase to the line, beside the record.
+func TestPhraseAddsTheParaphraseAtTheCLI(t *testing.T) {
+	sg, _ := newVerifySigner(t)
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	appendFixtureRecords(t, dbPath, sg,
+		addRequestedRecord(t, "r-1", "evt-1", verifyFixedNow, record.Scope{UserID: "u1"}))
+
+	cmd, out, errOut := newTestExportCmd(t)
+	require.NoError(t, cmd.Flags().Set("from", "2026-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("to", "2027-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("phrase", "true"))
+	cfg := &config.Config{DBPath: dbPath, SigningKeyEnv: verifyKeyEnv}
+
+	fp := &stubParaphraser{result: phrase.Paraphrase{Text: "an add was acknowledged", Model: "test-model"}}
+	require.NoError(t, runExportWith(cmd, cfg, fp))
+	assert.Equal(t, 1, fp.calls)
+
+	lines := exportLines(t, out.String())
+	require.Len(t, lines, 1)
+	require.NotNil(t, lines[0].Paraphrase)
+	assert.Equal(t, "an add was acknowledged", lines[0].Paraphrase.Text)
+	assert.NotEmpty(t, lines[0].Phrasing, "the deterministic phrasing still sits beside the paraphrase")
+	assert.NotContains(t, errOut.String(), "failed", "a successful paraphrase is not reported as a failure")
+}
+
+// TestParaphraseFailureStillExitsZero is Review Focus 5 at the CLI level: a
+// phrasing outage must not change the exit code -- the operator keeps their
+// audit output -- but it must be reported on stderr rather than swallowed.
+func TestParaphraseFailureStillExitsZero(t *testing.T) {
+	sg, _ := newVerifySigner(t)
+	dbPath := filepath.Join(t.TempDir(), "ledger.db")
+	appendFixtureRecords(t, dbPath, sg,
+		addRequestedRecord(t, "r-1", "evt-1", verifyFixedNow, record.Scope{UserID: "u1"}))
+
+	cmd, out, errOut := newTestExportCmd(t)
+	require.NoError(t, cmd.Flags().Set("from", "2026-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("to", "2027-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("phrase", "true"))
+	cfg := &config.Config{DBPath: dbPath, SigningKeyEnv: verifyKeyEnv}
+
+	fp := &stubParaphraser{err: errors.New("phrase: dial tcp: connection refused")}
+	require.NoError(t, runExportWith(cmd, cfg, fp),
+		"a phrasing outage must not change the exit code: the export still succeeds")
+
+	lines := exportLines(t, out.String())
+	require.Len(t, lines, 1, "the record is still exported")
+	assert.Nil(t, lines[0].Paraphrase, "a failed paraphrase leaves no paraphrase object")
+	assert.Contains(t, errOut.String(), "paraphrase", "the operator is told on stderr that the paraphrase failed")
+	assert.Contains(t, errOut.String(), "connection refused", "and told why")
+}
+
+// TestExportPhraseRequiresProviderConfig pins that --phrase with no provider
+// configured refuses to start, naming the variable it looked for, rather than
+// silently exporting without the paraphrase the operator asked for.
+func TestExportPhraseRequiresProviderConfig(t *testing.T) {
+	_, _ = newVerifySigner(t)
+	t.Setenv(config.EnvPhraseBaseURL, "")
+
+	cmd, _, _ := newTestExportCmd(t)
+	require.NoError(t, cmd.Flags().Set("from", "2026-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("to", "2027-01-01T00:00:00Z"))
+	require.NoError(t, cmd.Flags().Set("phrase", "true"))
+	cfg := &config.Config{DBPath: filepath.Join(t.TempDir(), "ledger.db"), SigningKeyEnv: verifyKeyEnv}
+
+	err := runExportWith(cmd, cfg, nil)
+	require.Error(t, err, "--phrase with no provider configured must refuse rather than silently skip")
+	assert.Contains(t, err.Error(), config.EnvPhraseBaseURL, "the error must name the missing variable")
 }
 
 // ---------------------------------------------------------------------------
