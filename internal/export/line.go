@@ -1,6 +1,7 @@
 // Package export renders the ledger as JSONL: one stable JSON object per
-// record, streamed in range order. It is a read path over internal/ledger and
-// writes nothing of its own.
+// record, streamed in range order. It is a read path over internal/ledger; it
+// never writes the ledger, and its only output of its own is the optional
+// signed head checkpoint a request may ask for via Request.CheckpointOut.
 package export
 
 import (

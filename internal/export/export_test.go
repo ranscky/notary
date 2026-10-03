@@ -14,6 +14,7 @@ import (
 
 	"notary/internal/export"
 	"notary/internal/record"
+	"notary/internal/sign"
 )
 
 // fakeReader is an in-memory Reader. Like the store, it returns only the
@@ -40,6 +41,13 @@ func (f *fakeReader) ListRecords(from, to time.Time) ([]record.Record, error) {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// Checkpoint satisfies the Reader interface. This fake has no chain head to
+// attest to, so it reports that rather than fabricating a checkpoint; the
+// checkpoint tests build a real ledger, where the head is meaningful.
+func (f *fakeReader) Checkpoint(_ *sign.Signer, _ time.Time) (sign.Checkpoint, error) {
+	return sign.Checkpoint{}, errors.New("fakeReader: no head to checkpoint")
 }
 
 var (
