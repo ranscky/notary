@@ -380,6 +380,51 @@ func TestTruncatedErrorBodyKeepsStatus(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, httpErr.StatusCode)
 }
 
+// TestTruncatedErrorBodyLeaksNoCredentialPrefix pins the regression the read
+// path introduced. There `raw` is a body TRUNCATED by the read failure, so a
+// gateway that reflects the request URI and then truncates MID-credential leaves
+// a PREFIX that redact -- a full-substring ReplaceAll -- cannot match. Storing
+// that partial body leaked the prefix; the fix stores no body on this route, so
+// only the status (the whole point of the route) is reported.
+func TestTruncatedErrorBodyLeaksNoCredentialPrefix(t *testing.T) {
+	prefix := leakSecret[:10] // a partial credential a mid-echo truncation leaves
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := []byte(`{"error":"refused /?key=` + prefix) // cut mid-echo, no closing quote
+		w.Header().Set("Content-Length", "1000")            // more than we write
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write(body) // fewer bytes than declared -> the client's read fails
+	}))
+	t.Cleanup(srv.Close)
+
+	c := mem0.NewClient(srv.URL+"?key="+leakSecret, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502", "the status must survive")
+	assert.Contains(t, err.Error(), "reading", "the read failure must still be reported")
+	assert.NotContains(t, err.Error(), prefix, "a truncated credential prefix must not leak")
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.Empty(t, httpErr.Body, "the read-error route stores no partial body to leak")
+}
+
+// TestCappedErrorBodyKeepsEvidenceOnInvalidTail pins the bounded UTF-8 back-off:
+// a body whose bytes are all invalid UTF-8 (binary, or gzip mislabelled as JSON)
+// must not be emptied by an unbounded strip, which would discard all evidence.
+func TestCappedErrorBodyKeepsEvidenceOnInvalidTail(t *testing.T) {
+	body := bytes.Repeat([]byte{0xff}, (8<<10)+50) // all invalid, past the cap
+	srv := serve(t, &captured{}, http.StatusBadGateway, body)
+
+	c := mem0.NewClient(srv.URL, "test-key", nil)
+	_, err := c.Search(context.Background(), mem0.SearchRequest{Query: "x"})
+	require.Error(t, err)
+
+	var httpErr *mem0.HTTPError
+	require.ErrorAs(t, err, &httpErr)
+	assert.GreaterOrEqual(t, len(httpErr.Body), (8<<10)-(utf8.UTFMax-1),
+		"the cap must not empty a body whose tail is all invalid bytes")
+}
+
 // leakSecret is a credential an operator might place in NOTARY_MEM0_BASE_URL's
 // query -- arbitrary operator config. No error the client returns may carry it.
 const leakSecret = "MEM0-BASEURL-SECRET-7a2c"

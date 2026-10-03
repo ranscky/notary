@@ -44,6 +44,11 @@ const maxErrorBodyBytes = 8 << 10 // 8 KiB
 // value would mangle error messages with short, non-secret parameters
 // (page=42). A real credential is long, so a value at or above this length is
 // treated as one.
+//
+// The trade-off is deliberate and has a known hole: a genuine credential
+// SHORTER than this that a gateway echoes decoded is NOT redacted. Short values
+// are spared precisely so ordinary parameters do not mangle every message; if
+// you tighten this, do it knowing that boundary is the price.
 const minRedactedQueryValueLen = 8
 
 // Client is a thin REST client for the hosted Mem0 API.
@@ -185,14 +190,16 @@ func redact(body []byte, components []string) []byte {
 // capErrorBody truncates b to maxErrorBodyBytes. It bounds the bytes stored in
 // an HTTPError so an oversized error body cannot become a multi-megabyte error
 // string; the status is what carries the essential information and is never
-// affected by this. The trim is on a UTF-8 boundary, so Body and Error() stay
-// valid UTF-8 rather than ending mid-rune.
+// affected by this. The trim backs up to a UTF-8 boundary so Body and Error()
+// do not end mid-rune -- but by at most utf8.UTFMax-1 bytes, so a tail of wholly
+// invalid bytes (binary, or gzip mislabelled as JSON) is trimmed to a boundary,
+// not emptied of all evidence.
 func capErrorBody(b []byte) []byte {
 	if len(b) <= maxErrorBodyBytes {
 		return b
 	}
 	b = b[:maxErrorBodyBytes]
-	for len(b) > 0 {
+	for i := 0; i < utf8.UTFMax-1; i++ {
 		r, size := utf8.DecodeLastRune(b)
 		if r != utf8.RuneError || size > 1 {
 			break
@@ -200,6 +207,14 @@ func capErrorBody(b []byte) []byte {
 		b = b[:len(b)-1]
 	}
 	return b
+}
+
+// errorBody scrubs every configured credential from a response body and caps it,
+// in that order: redact BEFORE cap, so a credential can never be split across
+// the cap boundary into a leak. It is the single definition of that ordering for
+// the body-bearing route; the read-error route stores no body at all.
+func (c *Client) errorBody(raw []byte) []byte {
+	return capErrorBody(redact(raw, c.credentialComponents()))
 }
 
 // HTTPError reports a non-2xx response from Mem0. It carries the status code
@@ -347,13 +362,14 @@ func (c *Client) Delete(ctx context.Context, memoryID string) error {
 //
 // Its errors are credential-free by construction: the path in the message is the
 // fixed API endpoint, transport errors are rebuilt over a safe URL, and a
-// non-2xx body is scrubbed of every configured credential and capped before it
-// is stored. The request itself still carries the base URL and the Authorization
-// header -- only the messages and the stored body are scrubbed.
+// non-2xx body that was READ is scrubbed of every configured credential and
+// capped before it is stored -- an unreadable one is not stored at all. The
+// request itself still carries the base URL and the Authorization header -- only
+// the messages and the stored body are scrubbed.
 //
 // A non-2xx status is never lost: it is reported whether the body is oversized,
 // normally read, or unreadable (a truncated or reset body joins the status with
-// the read failure).
+// the read failure, carrying no partial body).
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
@@ -386,13 +402,19 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		readErr := fmt.Errorf("mem0: reading %s %s response: %w", method, path, err)
 		// The status is known before the body is read, so a read failure mid-body
 		// -- a stall, a reset, or a truncated Content-Length -- must not discard
-		// it. This is the same masking the size-ordering fix closes, reached by
-		// truncation instead of size: a non-2xx status must never be lost,
-		// whether the body is oversized, absent, or unreadable. Report both.
+		// it: a non-2xx status must never be lost, whether the body is oversized,
+		// absent, or unreadable.
+		//
+		// The body is deliberately NOT stored here. raw is a body the read
+		// failure TRUNCATED, and redact matches only whole credentials, so a
+		// gateway that reflects the request and truncates MID-credential would
+		// leave a credential PREFIX in Body and Error(). The status is the whole
+		// point of this route, so the partial body is dropped rather than
+		// partially scrubbed.
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			return errors.Join(
 				fmt.Errorf("mem0: %s %s: %w", method, path,
-					&HTTPError{StatusCode: resp.StatusCode, Body: capErrorBody(redact(raw, c.credentialComponents()))}),
+					&HTTPError{StatusCode: resp.StatusCode, Body: nil}),
 				readErr)
 		}
 		return readErr
@@ -406,7 +428,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	// discarded.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("mem0: %s %s: %w", method, path,
-			&HTTPError{StatusCode: resp.StatusCode, Body: capErrorBody(redact(raw, c.credentialComponents()))})
+			&HTTPError{StatusCode: resp.StatusCode, Body: c.errorBody(raw)})
 	}
 	if len(raw) > maxResponseBytes {
 		return fmt.Errorf("mem0: %s %s response exceeds %d-byte limit", method, path, maxResponseBytes)
