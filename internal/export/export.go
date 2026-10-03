@@ -175,11 +175,16 @@ type Result struct {
 // not "simplify" it to a bare json.NewEncoder.
 //
 // SetEscapeHTML(false) is deliberate and load-bearing. The content is text a
-// human reads -- prose, ids, hashes -- so <, > and & are written as themselves
+// human reads -- prose -- so <, > and & are written as themselves
 // rather than as the \u003c / \u003e / \u0026 escapes encoding/json emits by
 // default; keeping them literal is what keeps the output greppable. Turning
 // HTML escaping back on would rewrite the bytes of every line that happens to
 // contain one of those characters.
+//
+// Do not reconfigure the encoder it returns either. NewLineEncoder hands back a
+// concrete *json.Encoder, so a caller can put the escapes back -- calling
+// SetEscapeHTML(true) on it would break the byte-identity a replay depends on.
+
 func NewLineEncoder(w io.Writer) *json.Encoder {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
