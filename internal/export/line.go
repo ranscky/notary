@@ -20,8 +20,9 @@ import (
 // arrays of bytes.
 //
 // Later tasks extend this shape: Task 5 added the deterministic `phrasing`
-// sentence, Task 6 adds redaction (setting `redacted` and dropping `content`),
-// and Task 10 adds the display-only `paraphrase` object.
+// sentence, Task 6 added redaction (setting `redacted` and dropping `content`
+// for sensitive records rendered without IncludeSensitive), and Task 10 adds
+// the display-only `paraphrase` object.
 type Line struct {
 	Seq         uint64                `json:"seq"`
 	ID          record.RecordID       `json:"id"`
@@ -37,8 +38,12 @@ type Line struct {
 	// It is a pointer so "no content" (omit) and "empty content" (a non-nil
 	// pointer to "") are distinguishable.
 	Content *string `json:"content,omitempty"`
-	// Redacted names why content was withheld. It is absent when content was
-	// shown; redaction is Task 6.
+	// Redacted names why content was withheld: it is set to redactedSensitive
+	// when the stored record marked its content sensitive and the export was
+	// not asked to include sensitive content. It is absent whenever content was
+	// shown -- and, critically, whenever the record carried no content at all,
+	// so a consumer can always tell "nothing was recorded" from "you are not
+	// cleared for it".
 	Redacted string `json:"redacted,omitempty"`
 	// Phrasing restates the record's claim as one human sentence (Task 5). It
 	// is derived mechanically from Event, tier, reason kind and memory id, so it
@@ -62,17 +67,32 @@ type LineScope struct {
 	RunID   string `json:"run_id,omitempty"`
 }
 
+// redactedSensitive is the value of Line.Redacted when content was withheld
+// because the stored record marked it sensitive.
+//
+// It names the FLAG -- the evidentiary fact -- not the rule that produced it.
+// record.Content is {Text, Sensitive} and both are mixed into the record hash,
+// so persisting which rule fired would change the digest of every record ever
+// written; the flag is what is stored, and which rule set it is declarative
+// configuration, reproducible from the rules file (design §6).
+const redactedSensitive = "sensitive"
+
 // Render turns one record into its JSONL shape.
 //
-// includeSensitive is accepted so the signature is stable for the redaction
-// task that will consult it; no redaction exists yet, so content is rendered
-// whenever the record carries any and `redacted` is never set.
+// includeSensitive decides whether a record whose stored content is marked
+// sensitive has its text shown. When it is false (the safe default) the text is
+// WITHHELD and Redacted is set to redactedSensitive, so the withheld line still
+// states why it is empty. When it is true the text is shown and Redacted is
+// left absent. Redaction removes only the text: it never touches the hash, the
+// chain fields, or the fact that content existed, because rendering is a read
+// path and the hash was fixed at Append.
 //
 // Content is rendered only when the record carries a non-nil Content: a record
 // with no content (a derived record, or an audit_gap) has no `content` field at
-// all, so a consumer can tell "nothing was recorded" from "you are not cleared
-// for it". A non-nil Content with empty Text renders an empty string, which is
-// content that exists and is empty -- distinct from no content at all.
+// all AND no `redacted` claim, so a consumer can tell "nothing was recorded"
+// from "you are not cleared for it". A non-nil Content with empty Text is
+// content that exists and is empty -- distinct from no content at all -- and if
+// it is sensitive it is redacted like any other sensitive content.
 //
 // Render returns an error only for a record it cannot render honestly: one
 // whose reason carries no valid tier, or one whose claim has no phrasing. The
@@ -81,8 +101,6 @@ type LineScope struct {
 // -- so it fails loudly rather than emitting a line whose prose reads as a
 // missing record.
 func Render(rec record.Record, includeSensitive bool) (Line, error) {
-	_ = includeSensitive // Redaction is Task 6; nothing consults the flag yet.
-
 	tier := rec.Reason.Tier()
 	if !tier.Valid() {
 		return Line{}, fmt.Errorf("export: record %s has an invalid visibility tier", rec.ID)
@@ -117,8 +135,16 @@ func Render(rec record.Record, includeSensitive bool) (Line, error) {
 		SignerKeyID: rec.SignerKeyID,
 	}
 	if rec.Content != nil {
-		text := rec.Content.Text
-		line.Content = &text
+		if rec.Content.Sensitive && !includeSensitive {
+			// Withhold the text and say so. Nothing else on the line -- the
+			// content hash, the chain fields, the record's identity -- is
+			// touched: redaction is a rendering decision, and the evidence was
+			// fixed at Append.
+			line.Redacted = redactedSensitive
+		} else {
+			text := rec.Content.Text
+			line.Content = &text
+		}
 	}
 	return line, nil
 }

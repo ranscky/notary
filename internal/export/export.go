@@ -39,7 +39,10 @@ type Request struct {
 	Scope record.Scope
 
 	// IncludeSensitive, when true, allows sensitive content to be rendered.
-	// Redaction itself lands in Task 6; this task renders all content.
+	// When false -- the safe default -- a record whose stored content is marked
+	// sensitive has its text withheld and its line states redacted="sensitive".
+	// The flag changes only what is printed; it never touches a hash, because
+	// rendering is a read path (design §3 D4, §6).
 	IncludeSensitive bool
 
 	// CheckpointOut names the file a signed head checkpoint is written to. The
@@ -64,8 +67,9 @@ type Result struct {
 	// Records is the number of JSONL lines written. On the error path it is the
 	// count written before the failure.
 	Records int
-	// Redacted is the number of lines whose content was withheld. It is always
-	// zero in this task: redaction lands in Task 6.
+	// Redacted is the number of lines whose content was withheld because the
+	// stored record marked it sensitive and IncludeSensitive was false. A
+	// record that carried no content is not counted: nothing was hidden.
 	Redacted int
 	// Checkpoint is the signed head checkpoint, when one was requested and
 	// written. It is always nil in this task (the checkpoint lands in Task 7),
@@ -131,6 +135,9 @@ func (e *Exporter) Export(ctx context.Context, req Request, out io.Writer) (Resu
 			return res, fmt.Errorf("export: write record %s: %w", rec.ID, err)
 		}
 		res.Records++
+		if line.Redacted != "" {
+			res.Redacted++
+		}
 	}
 	return res, nil
 }
