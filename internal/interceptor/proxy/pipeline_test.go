@@ -279,6 +279,12 @@ func TestPipelineCloseDrainsQueuedRecords(t *testing.T) {
 // it closes its sink, because the sink owns the gap log and closing it first
 // would lose every drop entry still in the tally. The fake sink records the gap
 // log's contents at the instant its Close runs.
+//
+// It is load-bearing, not merely observable: the writer goroutine is stalled on
+// a record and Close has already begun, so the writer yields the tally to Close
+// (see run). That makes Close the sole drainer, so swapping sink.Close() and
+// drainTally() inside Close leaves the gap empty at the moment the sink is
+// closed and fails this test.
 func TestPipelineCloseDrainsTheTallyBeforeClosingTheSink(t *testing.T) {
 	gapPath := filepath.Join(t.TempDir(), "gaps.log")
 	g, err := gap.Open(gapPath)
@@ -305,21 +311,44 @@ func TestPipelineCloseDrainsTheTallyBeforeClosingTheSink(t *testing.T) {
 	require.NoError(t, p.Write(proxyTestRecord(t, "dropped-1", record.EventMemorySurfaced, scope)))
 	require.Equal(t, uint64(1), p.Drops())
 
-	// Close blocks until the writer goroutine finishes, so run it alongside the
-	// release that lets the writer drain.
+	// Close blocks until the writer goroutine finishes, so stop accepting from a
+	// second goroutine and let the sink release the writer below.
 	closeDone := make(chan struct{})
 	go func() {
 		_ = p.Close()
 		close(closeDone)
 	}()
+
+	// Wait until Close has stopped the pipeline accepting: a probe write is no
+	// longer counted as a drop. Once that is seen, the writer goroutine is
+	// guaranteed -- through p.mu -- to observe the closure and leave the tally
+	// to Close, making Close the sole drainer. The stray probes overflow the
+	// depth-1 tally, which is fine: the test asserts the named drop is durable,
+	// not that it is the only entry.
+	probe := proxyTestRecord(t, "probe", record.EventMemorySurfaced, scope)
+	require.Eventually(t, func() bool {
+		before := p.Drops()
+		_ = p.Write(probe)
+		return p.Drops() == before
+	}, 2*time.Second, time.Millisecond, "Close never stopped the pipeline accepting")
+
 	sink.Release()
 	<-closeDone
 
 	require.True(t, readAtClose, "the sink's Close must have run")
 	require.NoError(t, readCloseErr)
-	require.Len(t, gapAtClose, 1,
-		"the gap already held the dropped record's entry at the moment the sink was closed")
-	assert.Equal(t, "dropped-1", gapAtClose[0].CorrelationID)
+	require.NotEmpty(t, gapAtClose,
+		"the gap held no entry at the moment the sink was closed -- Close drained the tally after closing its sink")
+
+	found := false
+	for _, e := range gapAtClose {
+		if e.CorrelationID == "dropped-1" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"the dropped record's gap entry must be durable before the sink is closed")
 }
 
 // TestPipelineBoundedTallyCountsTheDropsItCannotName pins the bounded tally: it
@@ -427,8 +456,9 @@ func TestPipelineCloseIsIdempotentAndDrainsTheWriter(t *testing.T) {
 	assert.True(t, sink.closed(), "Close must close the sink")
 }
 
-// TestPipelineWriteAfterCloseIsSafe pins that a write racing (or following)
-// Close never panics on a send to a closed channel.
+// TestPipelineWriteAfterCloseIsSafe pins that a write following Close never
+// panics on a send to a closed channel. It is sequential; the concurrent
+// companion below is what pins the racing case.
 func TestPipelineWriteAfterCloseIsSafe(t *testing.T) {
 	sink := newStallingSink()
 	p := proxy.NewPipeline(sink, nil, nil, 4)
@@ -439,4 +469,71 @@ func TestPipelineWriteAfterCloseIsSafe(t *testing.T) {
 	assert.NotPanics(t, func() {
 		_ = p.Write(proxyTestRecord(t, "late", record.EventMemorySurfaced, scope))
 	}, "a write after Close must never panic on a closed channel")
+}
+
+// TestPipelineConcurrentWritesDuringCloseAreSafe pins the Critical-class
+// invariant the plan names (plan:33): a write racing Close must never send on a
+// closed channel or panic, and no record accepted before Close may be lost. It
+// runs N writer goroutines against a concurrent Close, so it is the test that
+// fails if the p.mu guard around Write's send is removed -- under -race as a
+// data race on the closing flag, and often as a "send on closed channel" panic.
+//
+// The queue is deliberately larger than the whole workload, so nothing is ever
+// refused for being full: every write accepted before Close is drained to the
+// sink, which is how "no accepted record is lost" is checked here.
+func TestPipelineConcurrentWritesDuringCloseAreSafe(t *testing.T) {
+	sink := newStallingSink()
+	sink.Release() // non-blocking sink: the writer always drains
+
+	const depth = 2048 // larger than the workload below, so nothing drops
+	p := proxy.NewPipeline(sink, nil, nil, depth)
+
+	const writers, perWriter = 8, 128
+	const total = writers * perWriter
+
+	// Build records on the test goroutine: proxyTestRecord uses require, which
+	// must not run on a spawned goroutine.
+	records := make([]record.Record, total)
+	for i := range records {
+		records[i] = proxyTestRecord(t, fmt.Sprintf("cw-%d", i), record.EventMemorySurfaced, record.Scope{UserID: "u1"})
+	}
+
+	start := make(chan struct{})
+	var begun sync.WaitGroup // each writer signals after its first write
+	begun.Add(writers)
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			<-start
+			_ = p.Write(records[w*perWriter])
+			begun.Done()
+			for i := 1; i < perWriter; i++ {
+				_ = p.Write(records[w*perWriter+i])
+			}
+		}(w)
+	}
+
+	close(start)
+	// Wait until every writer is under way, so Close races in-flight writes
+	// rather than an idle pipeline.
+	begun.Wait()
+	require.NoError(t, p.Close())
+	wg.Wait()
+
+	// No panic and no data race: the guarded send never touched the closed
+	// queue, so Close did not close it out from under a producer.
+	assert.Equal(t, uint64(0), p.Drops(),
+		"a queue larger than the workload refuses nothing: no accepted record was dropped")
+
+	inPool := make(map[string]bool, total)
+	for _, r := range records {
+		inPool[string(r.ID)] = true
+	}
+	received := sink.received()
+	assert.NotEmpty(t, received, "writes accepted before Close reached the sink")
+	for _, r := range received {
+		assert.True(t, inPool[string(r.ID)], "the sink only ever received a record a writer wrote")
+	}
 }

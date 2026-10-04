@@ -186,18 +186,40 @@ func (p *Pipeline) recordDropLocked(rec record.Record) {
 
 // run is the single writer goroutine. It ranges over the queue, writes each
 // record through the sink, and drains the tally between appends so drops are
-// recorded promptly rather than only at shutdown. It exits when Close closes
-// the queue.
+// recorded promptly rather than only at shutdown (spec section 6). It exits
+// when Close closes the queue.
+//
+// Once Close has begun, the writer yields the tally to Close rather than
+// draining it itself. That is what makes Close's drain-then-close-sink ordering
+// load-bearing instead of incidentally redundant: after Close has set the
+// closing flag, this goroutine stops draining, so Close -- running after it has
+// waited for this goroutine -- is the sole drainer, and the tally is written
+// while the sink (and the gap log it owns) is still open. The writer still
+// drains between appends throughout normal operation, so prompt recording under
+// overload is unchanged; only the shutdown window defers to Close.
 func (p *Pipeline) run() {
 	defer p.wg.Done()
 	for rec := range p.queue {
 		if err := p.sink.Write(rec); err != nil {
 			p.report(err)
 		}
+		if p.closing() {
+			continue
+		}
 		if err := p.drainTally(); err != nil {
 			p.report(err)
 		}
 	}
+}
+
+// closing reports whether Close has stopped the pipeline accepting, which is
+// the writer goroutine's cue to leave the tally to Close. The flag is read
+// under p.mu, the same lock Close takes to set it, so once closing is observed
+// the drain ordering is guaranteed rather than raced.
+func (p *Pipeline) closing() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closed
 }
 
 // Close stops accepting, drains the queue, drains the drop tally, and then
