@@ -143,11 +143,17 @@ func runExplain(cmd *cobra.Command, cfg *config.Config) error {
 
 	// An empty memory view is a success to the package but a failure to the
 	// operator, and the package wrote nothing to stdout for it -- so this
-	// non-zero exit contradicts no output. Name the memory that turned up empty
-	// so the absence is reported, never mistaken for a broken read. (A
-	// single-record view never reaches here with zero records: it either errors
-	// above or returns exactly one.)
+	// non-zero exit contradicts no output. Name the subject that turned up
+	// empty, scoped to the view that was asked for, so the message can never
+	// name an empty one: the memory view names the memory. A zero-record record
+	// view is unreachable today -- a successful record read yields exactly one
+	// record -- but if a Reader ever returned an empty slice for a RecordID
+	// request, that path names the record id rather than printing "no records
+	// found for memory " with no subject at all.
 	if res.Records == 0 {
+		if req.RecordID != "" {
+			return fmt.Errorf("explain: no records found for record %s", req.RecordID)
+		}
 		return fmt.Errorf("explain: no records found for memory %s", req.MemoryID)
 	}
 	return nil
