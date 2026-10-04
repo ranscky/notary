@@ -362,10 +362,10 @@ func (s *SQLiteStore) ListRecordsAsOf(t time.Time) ([]record.Record, error) {
 // An empty memoryID is NOT rejected here, and that is deliberate. A record
 // with no memory writes the column's empty-string default, so an empty filter
 // would match every such record -- a silent whole-ledger read masquerading as
-// one memory's life. Refusing "" belongs with the caller (internal/explain
-// the empty --memory check, spec §4); the store is deliberately not the only
-// guard, because the store cannot know whether the empty value was meant as a
-// memory id or as "no filter".
+// one memory's life. Refusing "" belongs with the caller: internal/explain
+// owns the empty --memory check (spec §4), and the store is deliberately not
+// the only guard, because the store cannot know whether the empty value was
+// meant as a memory id or as "no filter".
 //
 // A row that cannot be decoded is an error here, matching ListRecords and
 // ListRecordsAsOf and NOT SeqEntries' deliberate tolerance. explain cannot

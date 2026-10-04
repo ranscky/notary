@@ -574,34 +574,52 @@ func TestListRecordsAsOfErrorsOnAnUndecodableRow(t *testing.T) {
 }
 
 // recordForMemory builds a distinct record assigned to the given memory id,
-// with the given ID and Seq. It is the fixture for the by-memory read, whose
-// filter is the memory_id column and whose order is seq.
-func recordForMemory(t *testing.T, id string, seq uint64, memoryID string) record.Record {
+// with the given ID, Seq, At and RecordedAt. It is the fixture for the
+// by-memory read, whose filter is the memory_id column and whose order is seq.
+// Hash is recomputed after the mutations above, so the stored row hashes to
+// its own contents.
+func recordForMemory(t *testing.T, id string, seq uint64, memoryID string, at, recordedAt time.Time) record.Record {
 	t.Helper()
 	r := fullRecord(t)
 	r.ID = record.RecordID(id)
 	r.Seq = seq
 	r.Subject.MemoryID = memoryID
+	r.At = at
+	r.RecordedAt = recordedAt
 	r.IdempotencyKey = ""
+	// fullRecord computed Hash before the mutations above, so recompute it:
+	// the stored row must hash to its own contents, or a later integrity
+	// assertion on this fixture would be misled.
+	h, err := record.ComputeHash(r)
+	require.NoError(t, err)
+	r.Hash = h
 	return r
 }
 
 // TestListRecordsByMemoryOrdersBySeq pins the first requirement: a memory's own
 // records come back ordered by seq ascending, the ordering discipline the spec
-// fixes. Records are inserted out of seq order so ordering is not incidental.
+// fixes. At and RecordedAt are deliberately the REVERSE of seq order (seq 2 is
+// the newest, seq 9 the oldest), so an implementation that ordered by either
+// timestamp would return the reverse of what is required. This is the same
+// shape TestListRecordsAsOfOrdersBySeqNotRecordedAt uses, and the reason a
+// constant-timestamp fixture cannot tell ORDER BY seq from ORDER BY at: seq is
+// the rowid, so a scan is already in seq order and a timestamp sort over a
+// complete tie degrades to that same physical order. Rows are also inserted
+// out of seq order, so ordering is not incidental.
 func TestListRecordsByMemoryOrdersBySeq(t *testing.T) {
 	s := newOpenStore(t)
+	base := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 
-	require.NoError(t, s.PutRecord(recordForMemory(t, "m-a", 5, "mem-A")))
-	require.NoError(t, s.PutRecord(recordForMemory(t, "m-b", 2, "mem-A")))
-	require.NoError(t, s.PutRecord(recordForMemory(t, "m-c", 9, "mem-A")))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "m-b", 2, "mem-A", base.Add(2*time.Minute), base.Add(2*time.Minute))))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "m-a", 5, "mem-A", base.Add(1*time.Minute), base.Add(1*time.Minute))))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "m-c", 9, "mem-A", base, base)))
 
 	got, err := s.ListRecordsByMemory("mem-A")
 	require.NoError(t, err)
 	require.Len(t, got, 3)
 	assert.Equal(t, []record.RecordID{"m-b", "m-a", "m-c"},
 		[]record.RecordID{got[0].ID, got[1].ID, got[2].ID},
-		"a memory's records must come back ordered by seq ascending")
+		"a memory's records must come back ordered by seq ascending, not by At or RecordedAt")
 }
 
 // TestListRecordsByMemoryFiltersToOneMemoryOnly is the load-bearing guard on
@@ -611,11 +629,12 @@ func TestListRecordsByMemoryOrdersBySeq(t *testing.T) {
 // requested memory's two come back, and only those, in seq order.
 func TestListRecordsByMemoryFiltersToOneMemoryOnly(t *testing.T) {
 	s := newOpenStore(t)
+	base := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 
-	require.NoError(t, s.PutRecord(recordForMemory(t, "a-1", 0, "mem-A")))
-	require.NoError(t, s.PutRecord(recordForMemory(t, "b-1", 1, "mem-B")))
-	require.NoError(t, s.PutRecord(recordForMemory(t, "a-2", 2, "mem-A")))
-	require.NoError(t, s.PutRecord(recordForMemory(t, "b-2", 3, "mem-B")))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "a-1", 0, "mem-A", base, base)))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "b-1", 1, "mem-B", base, base)))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "a-2", 2, "mem-A", base, base)))
+	require.NoError(t, s.PutRecord(recordForMemory(t, "b-2", 3, "mem-B", base, base)))
 
 	got, err := s.ListRecordsByMemory("mem-A")
 	require.NoError(t, err)
@@ -643,7 +662,8 @@ func TestListRecordsByMemoryFiltersToOneMemoryOnly(t *testing.T) {
 // would hide a record.
 func TestListRecordsByMemoryErrorsOnAnUndecodableRow(t *testing.T) {
 	s := newOpenStore(t)
-	rec := recordForMemory(t, "m-bad", 1, "mem-A")
+	rec := recordForMemory(t, "m-bad", 1, "mem-A",
+		time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC), time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC))
 	require.NoError(t, s.PutRecord(rec))
 
 	// Corrupt the encoded reason so the row can no longer be rebuilt -- the
