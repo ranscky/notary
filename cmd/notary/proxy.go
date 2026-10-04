@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -170,8 +171,9 @@ func parseByteSize(s string) (int64, error) {
 		return 0, fmt.Errorf("byte size %q: %w", s, err)
 	}
 
+	suffix := strings.TrimSpace(t[i:])
 	var mult int64
-	switch strings.ToLower(strings.TrimSpace(t[i:])) {
+	switch strings.ToLower(suffix) {
 	case "", "b":
 		mult = 1
 	case "k", "kb", "kib":
@@ -181,7 +183,13 @@ func parseByteSize(s string) (int64, error) {
 	case "g", "gb", "gib":
 		mult = 1 << 30
 	default:
-		return 0, fmt.Errorf("byte size %q: unknown unit %q (use B, KiB, MiB or GiB)", s, t[i:])
+		return 0, fmt.Errorf("byte size %q: unknown unit %q (use B, KiB, MiB or GiB)", s, suffix)
+	}
+	// The integer part is bounded by ParseInt, but the multiplication is not:
+	// a large-but-parseable count times a unit multiplier can wrap to a wrong
+	// or negative value, so it is refused rather than silently coerced.
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("byte size %q: %d bytes overflows int64", s, n)
 	}
 	return n * mult, nil
 }

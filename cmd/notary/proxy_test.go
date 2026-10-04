@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -132,6 +133,37 @@ func addUpstream(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// holdWriteLock takes SQLite's write lock on the ledger at dbPath from a second
+// connection (BEGIN IMMEDIATE) and returns a function that releases it. While
+// the lock is held the proxy's single ledger writer blocks on its append, so a
+// record the proxy accepted sits in the pipeline instead of being written
+// immediately. It is how the shutdown test forces a record to be genuinely
+// queued at Close time rather than relying on the writer happening to be slow
+// on the day.
+//
+// The DSN mirrors the store's own (internal/store): _busy_timeout makes the
+// proxy's writer wait for the lock rather than error out at once, and
+// _txlock=immediate makes Begin take the write lock up front. The lock is also
+// released by t.Cleanup, and release is idempotent, so a failure cannot leak it.
+func holdWriteLock(t *testing.T, dbPath string) func() {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=5000&_txlock=immediate")
+	require.NoError(t, err)
+	db.SetMaxOpenConns(1)
+	tx, err := db.Begin()
+	require.NoError(t, err, "taking the ledger write lock")
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			_ = tx.Rollback()
+			_ = db.Close()
+		})
+	}
+	t.Cleanup(release)
+	return release
+}
+
 // ---------------------------------------------------------------------------
 // Spec §8: a signing key is required, a Mem0 API key is not.
 // ---------------------------------------------------------------------------
@@ -229,9 +261,9 @@ func TestProxyCmdRegistersTheThreeFlagsAndNoOthers(t *testing.T) {
 		"--max-body must read as a human size, not a raw byte count")
 }
 
-// TestProxyMaxBodyFlagParsesHumanSizes pins the byte-size flag's two accepted
-// spellings: a binary suffix ("4MiB") and a raw count ("4194304"). A typo'd or
-// negative size must be refused rather than silently coerced.
+// TestProxyMaxBodyFlagParsesHumanSizes pins the byte-size flag's accepted
+// spellings: a binary suffix ("4MiB") and a raw count ("4194304"). A typo'd,
+// negative, or overflowing size must be refused rather than silently coerced.
 func TestProxyMaxBodyFlagParsesHumanSizes(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
@@ -250,10 +282,28 @@ func TestProxyMaxBodyFlagParsesHumanSizes(t *testing.T) {
 		assert.Equal(t, tc.want, got, "--max-body %s", tc.in)
 	}
 
-	for _, bad := range []string{"", "8XiB", "-1MiB", "MiB"} {
+	for _, bad := range []string{"", "8XiB", "-1MiB", "MiB", "9223372036854775807MiB"} {
 		cmd := newProxyCmd()
 		assert.Error(t, cmd.Flags().Set("max-body", bad), "--max-body %q must be refused", bad)
 	}
+
+	// An integer part that parses but overflows int64 once scaled must be
+	// refused, not silently wrapped to a wrong or negative size.
+	t.Run("overflows int64 when scaled", func(t *testing.T) {
+		cmd := newProxyCmd()
+		err := cmd.Flags().Set("max-body", "9223372036854775807MiB")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "overflow")
+	})
+
+	// An unknown unit is rendered trimmed, so "8 xib" reports "xib", not " xib".
+	t.Run("unknown unit is trimmed in the error", func(t *testing.T) {
+		cmd := newProxyCmd()
+		err := cmd.Flags().Set("max-body", "8 xib")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"xib"`)
+		assert.NotContains(t, err.Error(), `" xib"`)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -261,12 +311,21 @@ func TestProxyMaxBodyFlagParsesHumanSizes(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestProxyCmdShutdownDrainsThePipeline is the command-level proof of the
-// shutdown contract. A record accepted before the shutdown signal must be in
-// the ledger after runProxy returns, not merely counted or flagged. The add is
-// enqueued into the pipeline before its response reaches the caller, so a
-// record exists in the queue when we stop; h.Close -- the command's whole
-// shutdown path -- must drain it, or the queue is lost. Asserting the ledger's
-// row count is what makes this non-vacuous: a flag would prove nothing.
+// shutdown contract, made non-vacuous with respect to the drain. A record
+// accepted before the shutdown signal must be in the ledger after runProxy
+// returns.
+//
+// The naive version of this test is weak: the pipeline's writer goroutine
+// drains the queue continuously, so a single add is usually appended by the
+// time the test cancels, and deleting h.Close would not change the outcome. To
+// pin the drain, the test takes SQLite's write lock BEFORE sending the add, so
+// the writer BLOCKS on its append and the accepted record provably cannot be
+// written until the lock is released. Shutdown is then signalled while the
+// record is still in the pipeline; the lock is released on a delay, and only a
+// real drain (h.Close, the command's whole shutdown path) makes runProxy return
+// with the record written. A shutdown that returned without draining would
+// return before that delay, with the record still blocked, and the ledger
+// assertion would fail.
 func TestProxyCmdShutdownDrainsThePipeline(t *testing.T) {
 	sg, _ := newVerifySigner(t)
 	require.NotNil(t, sg)
@@ -283,16 +342,25 @@ func TestProxyCmdShutdownDrainsThePipeline(t *testing.T) {
 
 	addr, cancel, errCh := startTestProxy(t, cfg)
 
+	// Block the ledger writer before any add can be written, so the accepted
+	// record is deterministically still in the pipeline when we shut down.
+	release := holdWriteLock(t, dbPath)
+
 	body := `{"messages":[{"role":"user","content":"hello"}],"user_id":"u1"}`
 	resp, err := http.Post("http://"+addr+"/v3/memories/add/", "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	_ = resp.Body.Close()
 
-	// The add's record is enqueued from inside the proxy's ModifyResponse,
-	// before the response is written to this caller, so by the time Post
-	// returns the queue holds it. Shutting down now must drain it.
+	// The record was enqueued before this response reached us and the writer is
+	// blocked on the lock we hold, so nothing has been appended yet. Signal
+	// shutdown; the drain must wait for the writer, which can only proceed once
+	// the lock is released -- so release it shortly after. A shutdown that
+	// returned without draining (no h.Close) returns immediately, before this
+	// release, with the record still queued, which the assertion below catches.
 	cancel()
+	time.AfterFunc(300*time.Millisecond, release)
+
 	awaitProxyStop(t, errCh)
 
 	_, ok, rows := ledgerSnapshot(t, dbPath)

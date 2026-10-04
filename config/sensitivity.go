@@ -16,9 +16,11 @@ import (
 // LoadSensitivityRules reads the declarative sensitivity-rules YAML file at path
 // and returns the rules it holds, in file order. The path comes from
 // EnvSensitivityRules (NOTARY_SENSITIVITY_RULES); Load does not read it, because
-// the rules belong to whatever application constructs the interceptor, at the
-// point the interceptor is constructed -- no notary command writes records, so
-// the rules are not a CLI concern.
+// rules mark content sensitive at WRITE time, so they belong to whatever writes
+// records -- an application constructing an interceptor, and `notary proxy`, the
+// command that writes records. There is deliberately no CLI flag for the path:
+// the variable already exists and is the documented way, and a second way to say
+// the same thing is how configuration drifts.
 //
 // The document shape is:
 //
