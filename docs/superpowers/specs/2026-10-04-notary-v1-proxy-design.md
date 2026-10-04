@@ -315,7 +315,12 @@ and the upstream base URL from `NOTARY_MEM0_BASE_URL`.
 **The sensitivity-rules problem, and its resolution.** `config/config.go:36-42` documents that sensitivity
 rules are reachable only through `NOTARY_SENSITIVITY_RULES`, with no `Config` field and no CLI flag, *because*
 *"rules mark content at WRITE time and no notary command writes records, so a flag would have no command to
-live on."* `notary proxy` is the first command that writes records, so that sentence becomes false. The
+live on."* The second half of that clause was already false before this phase: `notary reconcile` writes
+records (derived claims through `ledger.Append`). What is true of reconcile is narrower and is the fact the
+sentence was reaching for — **none of its records carry content** (`internal/reconcile` sets no `Content`
+field anywhere), so no rule can mark them. `notary proxy` is the first command whose records DO carry caller
+content — the add's messages, each surfaced memory's text — so it is the first command the rules concern, and
+the sentence is now false on both halves. The
 resolution keeps the flag absent and makes the comment true: the proxy reads the rules path from
 `NOTARY_SENSITIVITY_RULES`, through the same path an application does, and there is still no flag — on the
 grounds that the variable already exists, is already the documented way, and a second way to say the same thing
