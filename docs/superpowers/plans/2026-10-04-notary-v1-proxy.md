@@ -265,7 +265,7 @@ git commit -m "feat(proxy): forward Mem0 traffic and observe what library mode w
 **Interfaces:**
 - Consumes: `proxy.New`, `proxy.NewPipeline`, `interceptor.NewObserver`, `interceptor.NewAuditWriter`, `config.Config`, `store.Open`, `ledger.New`, `gap.Open`, `sign.NewSigner`.
 
-**Flags:** `--addr` (default `127.0.0.1:8080`), `--queue-depth` (default `1024`), `--max-body` (default `8MiB`, pflag's `Bytes`). Follow `cmd/notary/reconcile.go`'s shape for opening the store, ledger, signer and gap log.
+**Flags:** `--addr` (default `127.0.0.1:8080`), `--queue-depth` (default `1024`), `--max-body` (default `8MiB`, parsed by a stdlib `pflag.Value` — pflag has `BytesHex`/`BytesBase64` but no human-readable byte-size type, so the flag type is ours). Follow `cmd/notary/reconcile.go`'s shape for opening the store, ledger, signer and gap log.
 
 **Notes the implementer needs:** this command needs a signing key and **must not** require a Mem0 API key (spec §8) — it forwards the caller's credentials. Its stdout is unused; the listen banner and every marker go to stderr. It must install a signal-aware context (`SIGINT`, `SIGTERM`) and call `Close` on the pipeline before returning, because the queue is only ever drained by `Close`, and without this every graceful stop would lose it.
 
