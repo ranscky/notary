@@ -34,11 +34,13 @@ const (
 	// of trusted public keys.
 	EnvTrustedKeysPath = "NOTARY_TRUSTED_KEYS_PATH"
 	// EnvSensitivityRules names the environment variable that holds the path to
-	// the declarative sensitivity-rules YAML file. It is the ONLY way to point
-	// an application at a rules file: there is deliberately no CLI flag, because
-	// rules mark content sensitive at WRITE time and no notary command writes
-	// records, so a flag would have no command to live on. The value is a path,
-	// read by LoadSensitivityRules.
+	// the declarative sensitivity-rules YAML file. It is the way to point a
+	// WRITE path at a rules file, because rules mark content sensitive at write
+	// time: an application constructing an interceptor reads it, and so does
+	// `notary proxy`, the command that writes records. There is deliberately no
+	// CLI flag -- the variable already exists and is the documented way, and a
+	// second way to say the same thing is how configuration drifts. The value
+	// is a path, read by LoadSensitivityRules.
 	EnvSensitivityRules = "NOTARY_SENSITIVITY_RULES"
 
 	// EnvPhraseAPIKey, EnvPhraseModel and EnvPhraseBaseURL name the environment

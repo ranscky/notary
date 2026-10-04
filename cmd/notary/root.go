@@ -51,6 +51,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newExportCmd())
 	cmd.AddCommand(newReplayCmd())
 	cmd.AddCommand(newExplainCmd())
+	cmd.AddCommand(newProxyCmd())
 
 	return cmd
 }
