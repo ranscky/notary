@@ -211,7 +211,7 @@ All configuration is environment-only:
 
 ## Status
 
-This is the **core ledger, the reconciler and `export`: phases 1–6** of the design, complete and tested.
+This is the **core ledger, the reconciler, `export`, `replay` and `explain`: phases 1–8** of the design, complete and tested.
 
 **Working today**
 
@@ -239,6 +239,22 @@ This is the **core ledger, the reconciler and `export`: phases 1–6** of the de
   line says so; `--include-sensitive` prints it and changes no hash. `--phrase` adds an opt-in,
   display-only paraphrase that degrades to a note rather than failing the export. Like `reconcile`,
   it requires a signing key even when it writes no checkpoint.
+- **`notary replay`** — streams the ledger as it stood at one instant to stdout as JSONL, one stable
+  object per record, byte-identical to an exported line: the records whose `RecordedAt` (the write
+  time — the knowledge instant — not the event time) is at or before the required `--at`, in Seq
+  order, verified as a chain prefix before they are written. The four scope flags restrict the replay
+  to one entity scope, and an unparseable `--at` is refused rather than silently treated as now.
+  Sensitive content is withheld by default and its line says so; `--include-sensitive` prints it and
+  changes no hash. Because it verifies rather than signs, it requires a trusted-key file and no
+  signing key, and it reports any break in the prefix on stderr and exits non-zero, leaving stdout as
+  the JSONL stream it promised.
+- **`notary explain`** — answers one question about the ledger as prose: why a single record was
+  written, or what happened to a single memory over its life. The subject is one `<record-id>`
+  argument or `--memory <mem0-id>`, never both, and the memory view renders one line per record in
+  Seq order. `--json` prints the same records, in the same order, as one small JSON object instead
+  of prose. Sensitive content is withheld by default and the view says so; `--include-sensitive`
+  prints it and changes no hash. It is a read path that signs and verifies nothing, so it needs
+  neither a signing key nor a trusted-key file.
 
 **Not built yet** — the README will be updated as these land rather than describing intent as fact
 
@@ -247,7 +263,6 @@ This is the **core ledger, the reconciler and `export`: phases 1–6** of the de
   defined and explicitly rejected by validation, so a caller that runs only what this build
   implements gets a matchable error. `notary reconcile` is the one-shot command mode; no long-running
   in-process driver exists
-- **`replay`** and **`explain`**
 
 There is no `LICENSE` file yet. Until one is added, all rights are reserved by default.
 
