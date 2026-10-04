@@ -169,9 +169,14 @@ phase is edited except the one this section is authorised to change.
 |---|---|
 | `internal/interceptor/observer.go` | New. The extracted `Observer` and its `Sink`. |
 | `internal/interceptor/library/mem0.go` | Refactored to delegate. Public API and emitted records unchanged. |
-| `internal/interceptor/proxy/proxy.go` | New. The forwarding handler, observation hooks and the pipeline. |
+| `internal/interceptor/proxy/pipeline.go` | New. The queue, the writer goroutine, the drop tally and drain, and `Close`. |
+| `internal/interceptor/proxy/proxy.go` | New. The forwarding handler and the observation hooks. |
 | `cmd/notary/proxy.go` | New. The command. |
 | `cmd/notary/root.go` | One line: registration. |
+
+The proxy package is two files rather than the architecture tree's single `proxy.go`, on the same reasoning
+that makes `internal/interceptor/library` two: a forwarding handler and a write pipeline are different
+responsibilities, and the tree's line names the package's entry point rather than a file count.
 
 ## 5. One request, in order
 
