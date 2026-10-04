@@ -8,7 +8,7 @@
 - Config: stdlib os.Getenv + github.com/joho/godotenv (dev only) v1.5+
 - Testing: stdlib testing + github.com/stretchr/testify v1.9+
 - Target integration: Mem0 via its REST API (net/http directly, no official Go SDK)
-- Optional LLM phrasing: Anthropic Messages API (github.com/anthropics/anthropic-sdk-go), export path only, never the write path
+- Optional LLM phrasing: an OpenAI-compatible chat-completions provider (net/http, no provider SDK added), export path only, never the write path
 
 ## 2. Folder Structure
 notary/

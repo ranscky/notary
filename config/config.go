@@ -36,11 +36,12 @@ const (
 	// EnvSensitivityRules names the environment variable that holds the path to
 	// the declarative sensitivity-rules YAML file. It is the way to point a
 	// WRITE path at a rules file, because rules mark content sensitive at write
-	// time: an application constructing an interceptor reads it, and so does
-	// `notary proxy`, the command that writes records. There is deliberately no
-	// CLI flag -- the variable already exists and is the documented way, and a
-	// second way to say the same thing is how configuration drifts. The value
-	// is a path, read by LoadSensitivityRules.
+	// time, so they concern the paths whose records CARRY content: an
+	// application constructing an interceptor, and `notary proxy`, the first
+	// command whose records do. There is deliberately no CLI flag -- the
+	// variable already exists and is the documented way, and a second way to
+	// say the same thing is how configuration drifts. The value is a path, read
+	// by LoadSensitivityRules.
 	EnvSensitivityRules = "NOTARY_SENSITIVITY_RULES"
 
 	// EnvPhraseAPIKey, EnvPhraseModel and EnvPhraseBaseURL name the environment

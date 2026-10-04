@@ -365,7 +365,7 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 6 | `export`, redaction, tier phrasing, `internal/phrase` | ✅ complete |
 | 7 | `replay` | ✅ complete |
 | 8 | **`explain`** (new) | ✅ complete |
-| 9 | **Proxy mode** | ✅ complete |
+| 9 | Proxy mode | ✅ complete |
 | 10 | Polish, README, demo fixtures | ⬜ not started |
 
 Phases 0–9 are implemented and merged to `master`. Each phase that needs design work of its own gets a

@@ -202,7 +202,7 @@ All configuration is environment-only:
 | `NOTARY_GAP_LOG_PATH` | gap log (default `notary-gaps.log`) |
 | `NOTARY_SIGNING_KEY` | base64 ed25519 signing key — a 32-byte seed or a 64-byte private key. The key material goes **in** this variable; nothing reads an env var for its name. |
 | `NOTARY_TRUSTED_KEYS_PATH` | file of trusted public keys |
-| `NOTARY_SENSITIVITY_RULES` | path to a YAML sensitivity-rules file (declarative, application-facing — see the export section; no CLI flag) |
+| `NOTARY_SENSITIVITY_RULES` | path to a YAML sensitivity-rules file, read by the write paths (an application constructing an interceptor, and `notary proxy`); there is deliberately no CLI flag — see the export section |
 | `NOTARY_PHRASE_BASE_URL` | OpenAI-compatible base URL for `--phrase` (required by `--phrase`) |
 | `NOTARY_PHRASE_MODEL` | model name for `--phrase` (required by `--phrase`) |
 | `NOTARY_PHRASE_API_KEY` | API key for `--phrase`; optional for endpoints that need none |
@@ -289,7 +289,7 @@ gofmt -l .         # no output expected
 go test ./...
 ```
 
-`go test ./...` runs eleven packages. `internal/ledger` is the slow one (a subprocess crash test
+`go test ./...` runs sixteen packages. `internal/ledger` is the slow one (a subprocess crash test
 SIGKILLs a writer mid-transaction, ~30s), so a full run takes a couple of minutes — run packages
 individually if you are on a short timeout.
 
