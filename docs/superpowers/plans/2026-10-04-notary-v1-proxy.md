@@ -132,6 +132,8 @@ git commit -m "refactor(interceptor): extract the record observer the proxy will
 
 **Notes the implementer needs:** `Pipeline` borrows `gaps`; it does not close it. `Close` drains the tally (which needs the gap log) **before** calling `sink.Close()`, because `AuditWriter.Close` is what closes the gap log. A `depth` below 1 is clamped to 1 rather than accepted, since a zero-capacity channel would make every write a drop. The drop tally holds up to `depth` identities plus a count of the rest (spec §6).
 
+**This task owns the package's shared test fixtures.** Task 3's tests live in the same package and need the same things — a stalling `RecordSink` fake, and a temp-dir ledger plus gap log harness — so Task 3 reuses what this task defines rather than declaring its own, which in one package would be a duplicate symbol. Define them here with the names Task 3's Interfaces block cites.
+
 - [ ] **Step 1: Write the failing tests**
 
 Against a fake `RecordSink` the test can stall, and a real `gap.Log` over `t.TempDir()`:
