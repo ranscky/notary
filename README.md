@@ -7,7 +7,7 @@
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
 ![Dependencies](https://img.shields.io/badge/direct_dependencies-4-blue)
 ![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
-![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_(phases_1--8)-orange)
+![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_proxy_(phases_1--9)-orange)
 
 **A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
 
@@ -184,8 +184,8 @@ rules:
 ```
 
 A rule matches when **every** clause it specifies matches, and a rule specifying neither clause is
-rejected at load time. The rules file is read by the application that constructs the interceptor —
-there is no `export` flag for it, because no `notary` command writes records.
+rejected at load time. The rules file is read by the write paths — an application that constructs the
+interceptor, and `notary proxy` — so there is no `export` flag for it: `export` writes no records.
 
 One asymmetry matters when you write a rules file: **a `metadata:` clause can only ever match on the
 search-surfaced path.** An `Add` carries no Mem0 metadata, so a rule whose only clause is `metadata:`
@@ -211,7 +211,7 @@ All configuration is environment-only:
 
 ## Status
 
-This is the **core ledger, the reconciler, `export`, `replay` and `explain`: phases 1–8** of the design, complete and tested.
+This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `proxy`: phases 1–9** of the design, complete and tested.
 
 **Working today**
 
@@ -258,10 +258,19 @@ This is the **core ledger, the reconciler, `export`, `replay` and `explain`: pha
   withheld by default and the view says so; `--include-sensitive` prints it and changes no hash. It
   is a read path that signs and verifies nothing, so it needs neither a signing key nor a trusted-key
   file.
+- **`notary proxy`** — serves Mem0 traffic and records the `add` and `search` requests that pass through
+  it. The application re-points its Mem0 base URL at Notary, which forwards every request to the real
+  Mem0 and returns the response untouched, recording exactly what library mode records, with no code
+  change in the application, in any language. `get_all`, history, event-status and delete pass through
+  unrecorded by design. It needs a signing key (`NOTARY_SIGNING_KEY`, because ledger appends are signed),
+  the upstream base URL from `NOTARY_MEM0_BASE_URL`, and the ledger and gap log paths (`NOTARY_DB_PATH`,
+  `NOTARY_GAP_LOG_PATH`); its sensitivity rules come from `NOTARY_SENSITIVITY_RULES` with no flag. It
+  needs **no** Mem0 API key — it forwards the caller's own `Authorization` header and holds no credential
+  of its own. Its flags are `--addr`, `--queue-depth` and `--max-body`, and its stdout is unused: the
+  listen banner and every drop marker go to stderr.
 
 **Not built yet** — the README will be updated as these land rather than describing intent as fact
 
-- **Proxy mode** (an HTTP proxy in front of Mem0) — library mode only today
 - **`ReconcileMode.InProcess`** — a reconcile mode that is **reserved, not implemented**: it is
   defined and explicitly rejected by validation, so a caller that runs only what this build
   implements gets a matchable error. `notary reconcile` is the one-shot command mode; no long-running

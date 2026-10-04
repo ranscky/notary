@@ -25,10 +25,12 @@ notary/
 │   │   └── sign.go
 │   ├── interceptor/
 │   │   ├── interceptor.go           # The pluggable Interceptor interface + fail-mode config
+│   │   ├── observer.go              # The shared Observer: library and proxy build the same records
 │   │   ├── library/
 │   │   │   └── mem0.go              # LibraryInterceptor
 │   │   └── proxy/
-│   │       └── proxy.go             # ProxyInterceptor (Phase 7)
+│   │       ├── proxy.go             # ProxyInterceptor (Phase 9)
+│   │       └── pipeline.go          # The bounded write queue: queue, writer goroutine, drop tally, drain
 │   ├── export/
 │   │   └── export.go
 │   └── replay/

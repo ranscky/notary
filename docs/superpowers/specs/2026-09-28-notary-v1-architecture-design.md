@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-28
 **Status:** Approved for planning
-**Scope:** v1 (library mode). Proxy mode is Phase 9 of the same build but is not the subject of this document.
+**Scope:** v1 (library mode). Proxy mode is Phase 9 of the same build but is not the subject of this document. (Corrected after implementation: Phase 9 shipped, so v1 is no longer library-mode only; "(library mode)" scopes this document, not v1.)
 
 ---
 
@@ -324,7 +324,7 @@ type Config struct {
 
 `Rule` matches a scope and/or a Mem0 metadata key and marks matching content `Sensitive`. Rules are declarative configuration, never code.
 
-Sensitivity rules are deliberately **not** a `Config` field (corrected during Phase 6). They are loaded from a path given by `NOTARY_SENSITIVITY_RULES`, and `config.LoadSensitivityRules` is an **application-facing** loader: rules mark content at *write* time, and no `notary` command writes records, so the rules belong to whatever application constructs the interceptor rather than to the CLI. There is deliberately no `Config.SensitivityRules` field and no CLI flag for the path.
+Sensitivity rules are deliberately **not** a `Config` field (corrected during Phase 6). They are loaded from a path given by `NOTARY_SENSITIVITY_RULES`, and `config.LoadSensitivityRules` is a **write-path** loader: rules mark content at *write* time, so they belong to whatever writes records — an application that constructs the interceptor, and `notary proxy`, which writes records on the live path. There is deliberately no `Config.SensitivityRules` field and no CLI flag for the path. (Corrected after implementation: this paragraph originally called the loader *application-facing* and said *no `notary` command writes records, so the rules belong to whatever application constructs the interceptor rather than to the CLI* — Phase 9's `notary proxy` writes records and reads this variable.)
 
 No secrets in the repository; `.clinerules` guardrails apply unchanged.
 
@@ -365,10 +365,10 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 6 | `export`, redaction, tier phrasing, `internal/phrase` | ✅ complete |
 | 7 | `replay` | ✅ complete |
 | 8 | **`explain`** (new) | ✅ complete |
-| 9 | Proxy mode | ⬜ not started |
+| 9 | **Proxy mode** | ✅ complete |
 | 10 | Polish, README, demo fixtures | ⬜ not started |
 
-Phases 0–8 are implemented and merged to `master`. Each phase that needs design work of its own gets a
+Phases 0–9 are implemented and merged to `master`. Each phase that needs design work of its own gets a
 dated design spec and implementation plan under `docs/superpowers/`; the reconciler's are
 `specs/2026-09-30-notary-v1-reconciler-design.md` and `plans/2026-09-30-notary-v1-reconciler.md`. This
 table is updated as each phase lands, so a ⬜ here means genuinely not built — not merely undocumented.
