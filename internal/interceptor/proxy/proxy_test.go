@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -449,4 +450,120 @@ func TestProxyForwardsAScopelessRequestWithoutRecording(t *testing.T) {
 	seen := stub.lastSeen(t)
 	require.Equal(t, body, string(seen.body), "the body must reach the upstream untouched")
 	require.Empty(t, listRecords(t, l), "a scopeless request records nothing")
+}
+
+// ---------------------------------------------------------------------------
+// compressed responses
+// ---------------------------------------------------------------------------
+
+// TestProxyRecordsAGzippedResponseAndLeavesTheCallersBytesGzipped pins the
+// finding that a caller which sets its own Accept-Encoding makes Go's transport
+// forward a still-compressed body -- the transport decompresses transparently
+// only when IT added the header itself. The proxy must decode the OBSERVATION
+// COPY (recording the add) while the caller still receives the upstream's gzip
+// bytes, byte for byte. Without decoding the copy, json.Unmarshal fails, no
+// record is written, and the loss is silent.
+func TestProxyRecordsAGzippedResponseAndLeavesTheCallersBytesGzipped(t *testing.T) {
+	plain := `{"event_id":"evt-gz","status":"PENDING"}`
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, err := zw.Write([]byte(plain))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	gzBytes := gz.Bytes()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(gzBytes)
+			return
+		}
+		_, _ = io.WriteString(w, plain)
+	}))
+	t.Cleanup(srv.Close)
+
+	sink, l, _, _ := newProxyHarness(t)
+	var out bytes.Buffer
+	p := newTestProxy(t, srv.URL, sink, &out, 8<<20)
+
+	body := `{"messages":[{"role":"user","content":"hi"}],"user_id":"u1"}`
+	rr := doRequest(p, http.MethodPost, "/v3/memories/add/", body, map[string]string{
+		proxy.CorrelationHeader: "corr-gz",
+		"Accept-Encoding":       "gzip",
+	})
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	// The caller's response is still gzip, byte-identical to what the upstream
+	// sent: the decompression was for the observation copy only.
+	assert.Equal(t, "gzip", rr.Header().Get("Content-Encoding"))
+	assert.Equal(t, gzBytes, rr.Body.Bytes(), "the caller's bytes must be the upstream's gzip bytes unchanged")
+
+	// Yet the add was recorded, from the decoded copy.
+	recs := listRecords(t, l)
+	require.Len(t, recs, 1, "a gzipped response must still be recorded")
+	assert.Equal(t, record.RecordID("corr-gz"), recs[0].ID)
+	assert.Empty(t, out.String(), "a successful decode must not mark")
+	ev, ok := recs[0].Reason.Observed()
+	require.True(t, ok)
+	assert.JSONEq(t, plain, string(ev.Payload()))
+}
+
+// TestProxyMarksAndRecordsNothingForAnUndecodableResponseEncoding pins the loud
+// half of the gzip fix: a response compressed with an encoding the proxy will
+// not decode (br, zstd, deflate) is recorded nothing but MARKED, so the loss is
+// never silent. The caller's response is unaffected.
+func TestProxyMarksAndRecordsNothingForAnUndecodableResponseEncoding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "br")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"event_id":"e","status":"PENDING"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	sink, l, _, _ := newProxyHarness(t)
+	var out bytes.Buffer
+	p := newTestProxy(t, srv.URL, sink, &out, 8<<20)
+
+	body := `{"messages":[{"role":"user","content":"hi"}],"user_id":"u1"}`
+	rr := doRequest(p, http.MethodPost, "/v3/memories/add/", body, map[string]string{
+		proxy.CorrelationHeader: "corr-br",
+		"Accept-Encoding":       "br",
+	})
+	require.Equal(t, http.StatusOK, rr.Code, "the caller's response is unaffected")
+
+	assert.Empty(t, listRecords(t, l), "an undecodable response is not recorded")
+	assert.Contains(t, out.String(), "br", "the loss must be loud, not silent")
+}
+
+// ---------------------------------------------------------------------------
+// the response cap
+// ---------------------------------------------------------------------------
+
+// TestProxyForwardsAnOverCapResponseWithoutRecordingIt is the request-side cap
+// test's response twin: a response body over --max-body is still delivered to
+// the caller in full, with no record.
+//
+// The cap sits between the request body and the response body: the request
+// (small) is observed so the response path runs, and the response (large) is
+// not.
+func TestProxyForwardsAnOverCapResponseWithoutRecordingIt(t *testing.T) {
+	const maxBody = 100
+	big := strings.Repeat("y", 500)
+	stub := &mem0Stub{addBody: `{"event_id":"e","status":"PENDING","pad":"` + big + `"}`}
+	srv := newStubServer(t, stub)
+	sink, l, _, _ := newProxyHarness(t)
+	p := newTestProxy(t, srv.URL, sink, io.Discard, maxBody)
+
+	body := `{"messages":[{"role":"user","content":"hi"}],"user_id":"u1"}`
+	require.Less(t, len(body), maxBody, "the request must be under the cap so it is observed")
+	require.Greater(t, len(stub.addBody), maxBody, "the response must be over the cap so it is not observed")
+
+	rr := doRequest(p, http.MethodPost, "/v3/memories/add/", body,
+		map[string]string{proxy.CorrelationHeader: "corr-bigresp"})
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	require.Greater(t, int64(rr.Body.Len()), int64(maxBody), "the caller must receive the whole over-cap response")
+	assert.Equal(t, stub.addBody, rr.Body.String(), "the caller's over-cap response body is the upstream's bytes, in full")
+	require.Empty(t, listRecords(t, l), "an over-cap response is not recorded")
 }

@@ -9,6 +9,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,7 +92,9 @@ type ProxyInterceptor struct {
 	// Close; a nil sink is tolerated.
 	sink RecordSink
 	// out receives drop and error markers only. The response body is never
-	// written there. A nil out discards markers.
+	// written there. A nil out discards markers. Writes to it are serialized
+	// under markMu (see mark), so out need not itself be safe for concurrent
+	// use.
 	out io.Writer
 	// maxBody caps how much of a request or response body is buffered for
 	// observation. A body larger than it is forwarded untouched and not
@@ -99,6 +103,11 @@ type ProxyInterceptor struct {
 	// rp is the stdlib reverse proxy that handles the forwarding, including
 	// the hop-by-hop rules a hand-rolled forwarder gets wrong.
 	rp *httputil.ReverseProxy
+
+	// markMu serializes writes to out. The handler runs concurrently, so two
+	// requests failing at once must not interleave bytes in a writer that is
+	// not itself concurrency-safe (a bytes.Buffer, for example).
+	markMu sync.Mutex
 
 	// closeOnce makes Close idempotent; closeErr is its memoised result.
 	closeOnce sync.Once
@@ -118,6 +127,12 @@ var _ interceptor.Interceptor = (*ProxyInterceptor)(nil)
 // stop every body from being observed. obs and sink are borrowed; obs must
 // have been built over a Sink that is (or wraps) the same sink, so records
 // reach it.
+//
+// out receives one-line markers from request goroutines that run concurrently.
+// The proxy serializes its own writes to out under an internal lock, so a
+// caller may hand over a writer that is not itself safe for concurrent use (a
+// bytes.Buffer, for example). If the caller also writes to out from outside,
+// the caller owns that synchronization.
 func New(upstream *url.URL, obs *interceptor.Observer, sink RecordSink, out io.Writer, maxBody int64) *ProxyInterceptor {
 	if maxBody < 1 {
 		maxBody = defaultMaxBody
@@ -193,8 +208,12 @@ func (p *ProxyInterceptor) serveObserved(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	o, ok := p.buildObservation(r, kind, buf, at)
-	if !ok {
+	o, decodeReason := p.buildObservation(r, kind, buf, at)
+	if o == nil {
+		if decodeReason != "" {
+			p.mark("notary: proxy: %s; forwarded unrecorded: method=%s path=%s\n",
+				decodeReason, r.Method, r.URL.Path)
+		}
 		p.rp.ServeHTTP(w, r)
 		return
 	}
@@ -202,21 +221,24 @@ func (p *ProxyInterceptor) serveObserved(w http.ResponseWriter, r *http.Request,
 }
 
 // buildObservation decodes the request body and assembles the observation
-// context, reporting false when this request cannot be attributed and should
-// therefore be forwarded without a record: a body that does not decode, or a
-// body carrying no scope. The scope is sourced from the body because the proxy
-// has no construction-time scope; an add carries it at the top level and a
-// search inside filters (internal/mem0/types.go).
-func (p *ProxyInterceptor) buildObservation(r *http.Request, kind observedKind, body []byte, at time.Time) (*obsRequest, bool) {
+// context. It returns a non-nil obsRequest on success. When it returns nil the
+// request is forwarded without a record, and the returned reason distinguishes
+// the two cases: a non-empty reason means the body could not be read -- a
+// decode failure, which the caller marks loud -- while an empty reason means
+// the body decoded but carries no scope, a documented boundary that is not a
+// read failure (design section 10). The scope is sourced from the body because
+// the proxy has no construction-time scope; an add carries it at the top level
+// and a search inside filters (internal/mem0/types.go).
+func (p *ProxyInterceptor) buildObservation(r *http.Request, kind observedKind, body []byte, at time.Time) (*obsRequest, string) {
 	switch kind {
 	case kindAdd:
 		var req mem0.AddRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, false
+			return nil, "request body is not valid JSON"
 		}
 		scope := record.Scope{UserID: req.UserID, AgentID: req.AgentID, AppID: req.AppID, RunID: req.RunID}
 		if scopeEmpty(scope) {
-			return nil, false
+			return nil, ""
 		}
 		messages := make([]string, 0, len(req.Messages))
 		for _, m := range req.Messages {
@@ -229,11 +251,11 @@ func (p *ProxyInterceptor) buildObservation(r *http.Request, kind observedKind, 
 			scope:    scope,
 			messages: messages,
 			metadata: req.Metadata,
-		}, true
+		}, ""
 	case kindSearch:
 		var req mem0.SearchRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, false
+			return nil, "request body is not valid JSON"
 		}
 		scope := record.Scope{
 			UserID:  req.Filters.UserID,
@@ -242,7 +264,7 @@ func (p *ProxyInterceptor) buildObservation(r *http.Request, kind observedKind, 
 			RunID:   req.Filters.RunID,
 		}
 		if scopeEmpty(scope) {
-			return nil, false
+			return nil, ""
 		}
 		return &obsRequest{
 			kind:      kindSearch,
@@ -250,9 +272,9 @@ func (p *ProxyInterceptor) buildObservation(r *http.Request, kind observedKind, 
 			corrID:    p.correlationID(r, scope, body),
 			scope:     scope,
 			searchReq: req,
-		}, true
+		}, ""
 	default:
-		return nil, false
+		return nil, ""
 	}
 }
 
@@ -273,7 +295,9 @@ func (p *ProxyInterceptor) correlationID(r *http.Request, scope record.Scope, bo
 // cap, hands the same bytes back to the caller by restoring resp.Body, and only
 // then builds records. It never returns an error: every failure degrades to
 // "no record" rather than to a broken response, so nothing here can turn an
-// audit problem into the caller's problem.
+// audit problem into the caller's problem. A failure that means "we could not
+// read this" is marked loud rather than left to look like "there was nothing
+// to record".
 func (p *ProxyInterceptor) modifyResponse(resp *http.Response) error {
 	if resp == nil || resp.Request == nil {
 		return nil
@@ -303,8 +327,23 @@ func (p *ProxyInterceptor) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 	// A Mem0 failure records nothing: it is a real error, not an audit gap,
-	// exactly as library.Add and library.Search write no record on error.
+	// exactly as library.Add and library.Search write no record on error. This
+	// is checked before decoding so a failure response never yields a marker.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil
+	}
+
+	// Decode the OBSERVATION COPY only. resp.Body was already restored to the
+	// upstream's exact bytes above, so the caller's response is untouched:
+	// gzip bytes still reach a client that asked for gzip. Go's transport
+	// decompresses transparently only when IT added the Accept-Encoding header;
+	// when the caller set it -- Python requests and Node fetch both do by
+	// default -- the body reaches us still compressed, so it must be decoded
+	// here or the record would be lost in silence.
+	payload, decodeReason := decodeResponseBody(body, resp.Header.Get("Content-Encoding"), p.maxBody)
+	if decodeReason != "" {
+		p.mark("notary: proxy: %s; not recorded: method=%s path=%s\n",
+			decodeReason, resp.Request.Method, resp.Request.URL.Path)
 		return nil
 	}
 	if p.obs == nil {
@@ -314,7 +353,9 @@ func (p *ProxyInterceptor) modifyResponse(resp *http.Response) error {
 	switch o.kind {
 	case kindAdd:
 		var ar mem0.AddResponse
-		if err := json.Unmarshal(body, &ar); err != nil {
+		if err := json.Unmarshal(payload, &ar); err != nil {
+			p.mark("notary: proxy: add response is not valid JSON; not recorded: method=%s path=%s\n",
+				resp.Request.Method, resp.Request.URL.Path)
 			return nil
 		}
 		p.obs.Add(interceptor.AddObservation{
@@ -330,7 +371,9 @@ func (p *ProxyInterceptor) modifyResponse(resp *http.Response) error {
 		})
 	case kindSearch:
 		var sr mem0.SearchResponse
-		if err := json.Unmarshal(body, &sr); err != nil {
+		if err := json.Unmarshal(payload, &sr); err != nil {
+			p.mark("notary: proxy: search response is not valid JSON; not recorded: method=%s path=%s\n",
+				resp.Request.Method, resp.Request.URL.Path)
 			return nil
 		}
 		p.obs.Search(interceptor.SearchObservation{
@@ -344,6 +387,45 @@ func (p *ProxyInterceptor) modifyResponse(resp *http.Response) error {
 	return nil
 }
 
+// decodeResponseBody returns the bytes to OBSERVE for a response whose
+// Content-Encoding is encoding, decoding only the observation copy; the
+// caller's response bytes are never affected. It returns decoded with an empty
+// reason on success. On failure it returns a non-empty reason -- the response
+// is compressed in a way this proxy will not or cannot decode -- so the caller
+// can mark the loss loudly instead of recording nothing in silence.
+//
+// gzip is decoded, because it is the encoding a caller that sets its own
+// Accept-Encoding asks for in practice, and Go's transport will not have
+// transparently decompressed the body in that case. "identity" and an absent
+// encoding are returned unchanged. Any other encoding (br, zstd, deflate) is
+// not decoded: stdlib has no decoder for br or zstd, and declining is safer
+// than guessing. The decoded copy is bounded by maxBody, so a small compressed
+// response cannot expand without limit.
+func decodeResponseBody(body []byte, encoding string, maxBody int64) ([]byte, string) {
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+		return body, ""
+	case "gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, "gzip response could not be decoded"
+		}
+		defer func() { _ = zr.Close() }()
+		decoded, err := io.ReadAll(io.LimitReader(zr, maxBody+1))
+		if err != nil {
+			return nil, "gzip response could not be read"
+		}
+		if int64(len(decoded)) > maxBody {
+			return nil, fmt.Sprintf("decoded response body exceeds %d bytes", maxBody)
+		}
+		return decoded, ""
+	default:
+		// %q escapes the header value, so a hostile upstream cannot inject a
+		// newline (or other control byte) into the marker line.
+		return nil, fmt.Sprintf("response Content-Encoding %q is not decoded", encoding)
+	}
+}
+
 // handleError answers a caller whose request could not reach the upstream. It
 // writes a real HTTP error, records nothing, and deliberately never renders err
 // or the request URL: either can carry the caller's credentials -- the
@@ -354,14 +436,17 @@ func (p *ProxyInterceptor) handleError(w http.ResponseWriter, r *http.Request, _
 	w.WriteHeader(http.StatusBadGateway)
 }
 
-// mark writes a one-line marker to out, best-effort. A nil out discards it.
-// Markers name only the request method and path -- never a header value, a
-// query string or a body -- so no credential can reach the operator through
-// this path.
+// mark writes a one-line marker to out, best-effort. A nil out discards it. Its
+// writes are serialized under markMu, so concurrent failures cannot interleave
+// their bytes in a writer that is not itself concurrency-safe. Markers name
+// only the request method and path -- never a header value, a query string or a
+// body -- so no credential can reach the operator through this path.
 func (p *ProxyInterceptor) mark(format string, args ...any) {
 	if p.out == nil {
 		return
 	}
+	p.markMu.Lock()
+	defer p.markMu.Unlock()
 	_, _ = fmt.Fprintf(p.out, format, args...)
 }
 

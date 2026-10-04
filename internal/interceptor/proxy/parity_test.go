@@ -109,6 +109,27 @@ func TestProxyAndLibraryProduceTheSameRecords(t *testing.T) {
 	for _, r := range proxyRecs {
 		proxyByID[r.ID] = r
 	}
+
+	// N-C: pin the proxy side's LITERAL expected shape too. Comparing the two
+	// modes cannot catch a shared-builder regression -- a missed "#rank"
+	// suffix, a swapped payload, a different idem-key input -- because both
+	// modes delegate to the same interceptor.Observer. These literal checks are
+	// the proxy half of the claim, asserted independently of library mode.
+	require.Equal(t,
+		[]record.RecordID{"parity-add", "parity-search", "parity-search#1", "parity-search#2"},
+		ids(proxyRecs),
+		"the proxy's literal record ID set")
+	addRec := proxyByID["parity-add"]
+	require.Equal(t, record.EventAddRequested, addRec.Event)
+	addObs, ok := addRec.Reason.Observed()
+	require.True(t, ok)
+	require.JSONEq(t, `{"event_id":"evt-parity","status":"PENDING"}`, string(addObs.Payload()))
+	surf1 := proxyByID["parity-search#1"]
+	require.Equal(t, "m1", surf1.Subject.MemoryID)
+	surf1Obs, ok := surf1.Reason.Observed()
+	require.True(t, ok)
+	require.JSONEq(t, `{"score":0.9,"rank":1}`, string(surf1Obs.Payload()))
+
 	for _, libRec := range libRecs {
 		proxyRec, found := proxyByID[libRec.ID]
 		require.True(t, found, "the proxy must produce a record with ID %q", libRec.ID)
