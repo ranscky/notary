@@ -23,7 +23,11 @@ const correlationDomain = "notary/corr/v1"
 // the proxy hands it its queue (a non-blocking enqueue). Neither knows which.
 //
 // *AuditWriter already satisfies it, so library mode passes the writer it
-// already has. A nil Sink is safe: the Observer writes nothing.
+// already has. An UNTYPED nil Sink is safe: the Observer writes nothing. The
+// distinction matters, and pipeline.go's NewPipeline states the same rule for
+// its own sink: a nil *AuditWriter stored in a Sink is a NON-nil interface, so
+// passing one would call Write on a nil pointer -- a caller must guard that
+// case itself, exactly as library mode does.
 type Sink interface {
 	Write(rec record.Record) error
 }
@@ -38,9 +42,10 @@ type Sink interface {
 // points. The only state it retains is the immutable rule set, so its Add and
 // Search are safe for concurrent use as long as the Sink is.
 type Observer struct {
-	// sink is where built records go. A nil sink is tolerated -- the record is
-	// then simply not written -- matching library's tolerance of a nil
-	// AuditWriter.
+	// sink is where built records go. An untyped nil sink is tolerated --
+	// the record is then simply not written -- matching library's tolerance
+	// of a nil AuditWriter; a typed-nil interface is not nil and is the
+	// caller's to guard (see Sink).
 	sink Sink
 	// rules is the sensitivity rule set consulted for every record, or nil for
 	// none. It is set once, by NewObserver, and never mutated afterwards, so
@@ -293,8 +298,8 @@ func (o *Observer) writeSurfaced(obs SearchObservation, rank int, res mem0.Searc
 	o.write(rec)
 }
 
-// write hands rec to the Sink, if any. A nil Sink is tolerated -- the record is
-// simply not written.
+// write hands rec to the Sink, if any. An untyped nil Sink is tolerated -- the
+// record is simply not written (see Sink for the typed-nil case).
 //
 // The Sink's error is deliberately discarded. When the caller has a
 // fail-open-loud Sink (the AuditWriter), it has already absorbed a ledger

@@ -372,9 +372,11 @@ func TestExportBoundsOnAtNotRecordedAt(t *testing.T) {
 
 // TestExportHelpListsItsFlags pins that --help names every flag the command
 // reads, including --phrase (Task 10). --sensitivity-rules is still deliberately
-// absent: rules mark content at *write* time and no CLI command writes records,
-// so the rules are an application-facing path configured by
-// NOTARY_SENSITIVITY_RULES.
+// absent, but not because no command writes records: `notary proxy` does. The
+// precise reason is that rules mark content at WRITE time, so they concern the
+// paths whose records CARRY content -- an application constructing an
+// interceptor, and `notary proxy` -- and `export` writes no records at all. The
+// rules are an application-facing path configured by NOTARY_SENSITIVITY_RULES.
 func TestExportHelpListsItsFlags(t *testing.T) {
 	cmd, out, _ := newTestExportCmd(t)
 	cmd.SetArgs([]string{"--help"})

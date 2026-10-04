@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -42,6 +43,29 @@ const (
 	// proxyShutdownTimeout bounds a graceful stop, so a stuck in-flight
 	// request cannot hang the shutdown indefinitely.
 	proxyShutdownTimeout = 10 * time.Second
+
+	// proxyReadHeaderTimeout bounds how long a client may take to send the
+	// request line and headers once the connection is accepted. Headers are
+	// small and arrive with the request, so they are held to a short bound:
+	// this is the slowloris guard that keeps a client from parking connections
+	// by dribbling headers.
+	proxyReadHeaderTimeout = 10 * time.Second
+	// proxyReadTimeout bounds a whole request, headers and body. The body cap
+	// (--max-body) bounds bytes, not time, and the proxy buffers a recorded
+	// request's body before forwarding it, so without this a client that sends
+	// headers and then dribbles a body would hold a goroutine and a connection
+	// with nothing reaching Mem0. Five minutes accepts a genuinely slow,
+	// multi-megabyte upload while making "indefinitely" finite.
+	proxyReadTimeout = 5 * time.Minute
+	// proxyWriteTimeout bounds a whole response, from the request's headers
+	// being read to the last response byte. A Mem0 response is a finite JSON
+	// document, so five minutes is far beyond any legitimate one; the bound is
+	// there so a stalled upstream cannot hold the caller's goroutine forever.
+	proxyWriteTimeout = 5 * time.Minute
+	// proxyIdleTimeout bounds an idle kept-alive connection between requests.
+	// Two minutes is long enough to spare a chatty caller a new handshake and
+	// short enough to release sockets a client has abandoned.
+	proxyIdleTimeout = 2 * time.Minute
 )
 
 // newProxyCmd builds the `notary proxy` subcommand: a reverse proxy in front of
@@ -65,6 +89,16 @@ const (
 // the same loader an application uses, and there is deliberately no flag for
 // that path (spec section 8): a second way to say the same thing is how
 // configuration drifts.
+//
+// Its listener carries deliberate time bounds, because --addr can expose it
+// beyond the loopback default and a body cap bounds bytes, not time: a client
+// that sends headers and then dribbles a body would otherwise hold a goroutine
+// and a connection indefinitely, and this proxy buffers a request body before
+// forwarding, so nothing reaches Mem0 until that body arrives. The bounds are
+// proxyReadHeaderTimeout (10s: headers arrive with the request), proxyReadTimeout
+// and proxyWriteTimeout (5m each: long enough for a slow multi-megabyte upload
+// or a slow upstream, finite enough that a stuck peer cannot hold a connection
+// forever), and proxyIdleTimeout (2m: a kept-alive connection between requests).
 func newProxyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "proxy",
@@ -187,9 +221,11 @@ func parseByteSize(s string) (int64, error) {
 	}
 	// The integer part is bounded by ParseInt, but the multiplication is not:
 	// a large-but-parseable count times a unit multiplier can wrap to a wrong
-	// or negative value, so it is refused rather than silently coerced.
+	// or negative value, so it is refused rather than silently coerced. The
+	// message says so precisely: the count the operator typed does not
+	// overflow on its own -- the unit scales it past int64.
 	if n > math.MaxInt64/mult {
-		return 0, fmt.Errorf("byte size %q: %d bytes overflows int64", s, n)
+		return 0, fmt.Errorf("byte size %q: %d scaled by the unit overflows int64", s, n)
 	}
 	return n * mult, nil
 }
@@ -225,8 +261,8 @@ func maxBodyBytes(cmd *cobra.Command) (int64, error) {
 // It requires a signing key and deliberately does NOT require a Mem0 API key:
 // the proxy forwards the caller's credentials, so an empty cfg.Mem0APIKey is
 // not a reason to refuse. It returns a non-nil error for a missing signing
-// key, an unreadable rules file, a bind or serve failure, or a failed drain,
-// and it never panics.
+// key, an unreadable rules file, an unusable upstream base URL, a bind or
+// serve failure, or a failed drain, and it never panics.
 func runProxy(cmd *cobra.Command, cfg *config.Config) error {
 	errOut := cmd.ErrOrStderr()
 
@@ -271,9 +307,9 @@ func runProxy(cmd *cobra.Command, cfg *config.Config) error {
 		return err
 	}
 
-	upstream, err := url.Parse(cfg.Mem0BaseURL)
+	upstream, err := parseUpstream(cfg.Mem0BaseURL)
 	if err != nil {
-		return fmt.Errorf("parsing upstream Mem0 base URL %q: %w", cfg.Mem0BaseURL, err)
+		return err
 	}
 
 	st, err := store.Open(cfg.DBPath)
@@ -290,11 +326,20 @@ func runProxy(cmd *cobra.Command, cfg *config.Config) error {
 	}
 
 	// The composition order is load-bearing; see runProxy's doc comment.
-	channels := []io.Writer{errOut}
+	//
+	// One synchronizing writer backs every operator-facing marker. The
+	// AuditWriter's channels, the pipeline's drop markers and the handler's
+	// out all receive writes from different goroutines -- the pipeline's
+	// single writer, and every request goroutine -- and the handler serializes
+	// only its own. Wrapping once here makes sharing one writer safe by
+	// construction, rather than leaving it to each component's private
+	// discipline (or its absence) on a writer that may be a plain buffer.
+	out := &syncWriter{w: errOut}
+	channels := []io.Writer{out}
 	aw := interceptor.NewAuditWriter(l, g, channels)
 	pipe := proxy.NewPipeline(aw, g, channels, depth)
 	obs := interceptor.NewObserver(pipe, interceptor.WithRules(rs))
-	h := proxy.New(upstream, obs, pipe, errOut, maxBody)
+	h := proxy.New(upstream, obs, pipe, out, maxBody)
 
 	// h.Close closes the pipeline (draining it) and, through it, the
 	// AuditWriter and the gap log. Deferring it guarantees the drain even on an
@@ -310,12 +355,20 @@ func runProxy(cmd *cobra.Command, cfg *config.Config) error {
 		return fmt.Errorf("listening on %s: %w", addr, err)
 	}
 
-	srv := &http.Server{Handler: h}
+	srv := newProxyServer(h)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 
-	// The operator's channel is stderr, not stdout (design section 8).
-	fmt.Fprintf(errOut, "notary proxy: listening on %s\n", ln.Addr())
+	// The operator's channel is stderr, not stdout (design section 8). The
+	// banner is two lines: the listen line keeps the shape every operator and
+	// test already reads (`listening on <addr>`, one line, address only), and
+	// the second names the EFFECTIVE upstream, so an operator can see what
+	// they are forwarding to -- in particular, that an unset
+	// NOTARY_MEM0_BASE_URL means the hosted default. The upstream is rendered
+	// through proxy.RedactedURL (scheme and host only), so a credential in
+	// the configured URL is never echoed.
+	fmt.Fprintf(out, "notary proxy: listening on %s\n", ln.Addr())
+	fmt.Fprintf(out, "notary proxy: forwarding to %s\n", proxy.RedactedURL(cfg.Mem0BaseURL))
 
 	// The signal-aware context is the whole graceful-stop mechanism: SIGINT or
 	// SIGTERM cancels it, and the shutdown below drains the queue. cmd.Context
@@ -372,4 +425,94 @@ func loadProxyRules() (*interceptor.RuleSet, error) {
 		return nil, fmt.Errorf("loading sensitivity rules: %w", err)
 	}
 	return interceptor.NewRuleSet(rules), nil
+}
+
+// parseUpstream parses and validates the upstream base URL the proxy forwards
+// to, from cfg.Mem0BaseURL, and returns it as the borrowed *url.URL proxy.New
+// takes.
+//
+// Parsing alone is not validation: url.Parse("mem0.internal:8081") SUCCEEDS,
+// with scheme "mem0.internal", an empty host and "8081" in url.Opaque, so a
+// plausible typo would otherwise start a proxy that 502s every request. The
+// value must therefore be an absolute http(s) URL with a host. Anything else is
+// refused at startup, naming NOTARY_MEM0_BASE_URL, so the operator's fix is
+// named with the failure.
+//
+// Every rendering of the value here goes through proxy.RedactedURL -- scheme
+// and host only, never path, query or userinfo -- and a parse error contributes
+// only its cause, never url.Parse's own message, which repeats the raw value
+// verbatim. An operator may put a credential in the base URL (the ?key= form),
+// so the refusal must not be the thing that logs it.
+func parseUpstream(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"upstream Mem0 base URL %s is not a valid URL: %w (set %s to an absolute URL such as http://mem0.internal:8081)",
+			proxy.RedactedURL(raw), urlParseCause(err), config.EnvMem0BaseURL)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf(
+			"upstream Mem0 base URL %s has scheme %q, which is not http or https (set %s to an absolute URL such as http://mem0.internal:8081)",
+			proxy.RedactedURL(raw), u.Scheme, config.EnvMem0BaseURL)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf(
+			"upstream Mem0 base URL %s has an empty host (set %s to an absolute URL such as http://mem0.internal:8081)",
+			proxy.RedactedURL(raw), config.EnvMem0BaseURL)
+	}
+	return u, nil
+}
+
+// urlParseCause returns the cause of a url.Parse failure without its URL.
+// url.Parse wraps every failure in a *url.Error whose message is
+// `parse "<the raw value>": <cause>`, so wrapping that error as-is would echo
+// the value the redaction exists to hide. The cause alone names the fault
+// (an invalid port, an invalid escape) without the URL.
+func urlParseCause(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		if uerr.Err != nil {
+			return uerr.Err
+		}
+		return errors.New("invalid URL")
+	}
+	return err
+}
+
+// newProxyServer returns the HTTP server the command serves on, with the time
+// bounds documented on newProxyCmd: a listener the operator can expose with
+// --addr must not let one client hold a connection and a goroutine forever by
+// dribbling headers or a body.
+func newProxyServer(h http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: proxyReadHeaderTimeout,
+		ReadTimeout:       proxyReadTimeout,
+		WriteTimeout:      proxyWriteTimeout,
+		IdleTimeout:       proxyIdleTimeout,
+	}
+}
+
+// syncWriter serializes writes to one underlying writer.
+//
+// The proxy's operator-facing markers have two independent producers -- request
+// handlers (proxy.ProxyInterceptor.mark, which serializes only its own writes)
+// and the pipeline's single writer goroutine (drop and error markers, and the
+// AuditWriter's gap failures) -- and runProxy hands them all the same channel.
+// Handing them one synchronizing writer makes that sharing safe by
+// construction: a writer that is not itself concurrency-safe (a bytes.Buffer,
+// for instance) can no longer be interleaved just because two components were
+// wired to it. The alternative -- documenting the requirement on both
+// constructors -- leaves a hazard the compiler cannot check, and the command
+// would still have to satisfy its own rule.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+// Write writes p to the underlying writer under the lock.
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }

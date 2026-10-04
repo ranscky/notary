@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -147,6 +148,21 @@ func New(upstream *url.URL, obs *interceptor.Observer, sink RecordSink, out io.W
 		maxBody: maxBody,
 	}
 	p.rp = httputil.NewSingleHostReverseProxy(upstream)
+	// NewSingleHostReverseProxy rewrites the outbound URL's scheme, host
+	// and path but deliberately leaves req.Host alone, so the caller's Host
+	// header would reach Mem0. A self-hosted Mem0 routed by virtual host
+	// would then misroute (or refuse) the request, so the director sets it
+	// to the upstream's host. The reverse proxy also matches on the
+	// outbound URL, not req.Host, so this changes what the upstream sees
+	// and nothing about how the request is dialed. The empty-host case is
+	// left as it was: there is no upstream host to name.
+	inner := p.rp.Director
+	p.rp.Director = func(req *http.Request) {
+		inner(req)
+		if upstream.Host != "" {
+			req.Host = upstream.Host
+		}
+	}
 	p.rp.ModifyResponse = p.modifyResponse
 	p.rp.ErrorHandler = p.handleError
 	return p
@@ -427,13 +443,56 @@ func decodeResponseBody(body []byte, encoding string, maxBody int64) ([]byte, st
 }
 
 // handleError answers a caller whose request could not reach the upstream. It
-// writes a real HTTP error, records nothing, and deliberately never renders err
-// or the request URL: either can carry the caller's credentials -- the
-// Authorization header or a query-string sentinel -- and the proxy holds no
-// credential of its own to justify echoing one.
-func (p *ProxyInterceptor) handleError(w http.ResponseWriter, r *http.Request, _ error) {
-	p.mark("notary: proxy: upstream request failed: method=%s path=%s\n", r.Method, r.URL.Path)
+// writes a real HTTP error, records nothing, and marks the failure on the loud
+// channel with the REASON it failed: a DNS failure, a refused connection, a TLS
+// error and a timeout are otherwise indistinguishable to whoever runs this
+// proxy. The reason is rendered through redactError, which strips the transport
+// error's outbound request URL down to its scheme and host first -- that URL's
+// path and query come from the caller and can carry a credential (the
+// query-string sentinel), and the proxy holds no credential of its own to
+// justify echoing one. The reason text is the transport's own cause, which
+// names the failure and not the caller's headers.
+func (p *ProxyInterceptor) handleError(w http.ResponseWriter, r *http.Request, err error) {
+	p.mark("notary: proxy: upstream request failed: method=%s path=%s reason=%s\n",
+		r.Method, r.URL.Path, redactError(err))
 	w.WriteHeader(http.StatusBadGateway)
+}
+
+// redactError renders err for the operator with no credential-bearing URL. A
+// transport error is a *url.Error whose message is `Op "URL": cause`, where URL
+// is the OUTBOUND request URL -- the caller's path and query joined onto the
+// upstream -- so it is rebuilt over RedactedURL before rendering, keeping
+// errors.Is/As and the Timeout method working while removing the leak. This
+// mirrors internal/mem0/client.go's sanitizeTransportError, which gives a Mem0
+// call error the same treatment. Every other error is rendered as-is.
+func redactError(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		err = &url.Error{Op: uerr.Op, URL: RedactedURL(uerr.URL), Err: uerr.Err}
+	}
+	return err.Error()
+}
+
+// RedactedURL renders raw for an error message or an operator banner as just
+// its scheme and host -- never its path, query, userinfo or fragment, the
+// places an operator-supplied credential can hide (an operator may put a key in
+// the base URL's query string, and net/http echoes the request URL in a
+// transport error). It mirrors internal/mem0/client.go's safeURL, so the
+// proxy's printable paths and that package's errors render a URL the same way.
+//
+// A value that does not parse, has no host, or is opaque (url.Parse keeps
+// everything after a non-slash scheme in u.Opaque and never splits or strips
+// it) is rendered as the constant "[url omitted]": there is nothing safe to
+// show, and no legitimate http(s) endpoint has that shape.
+func RedactedURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Opaque != "" {
+		return "[url omitted]"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // mark writes a one-line marker to out, best-effort. A nil out discards it. Its

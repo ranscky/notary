@@ -35,7 +35,11 @@ type seenRequest struct {
 	rawQuery    string
 	authz       string
 	contentType string
-	body        []byte
+	// host is the Host header the upstream saw. The proxy sets it to the
+	// upstream's own host, so a vhost-routed self-hosted Mem0 routes by its
+	// name rather than by whatever the caller sent.
+	host string
+	body []byte
 }
 
 // mem0Stub is a minimal in-test Mem0: it records every request it receives and
@@ -62,6 +66,7 @@ func (s *mem0Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rawQuery:    r.URL.RawQuery,
 		authz:       r.Header.Get("Authorization"),
 		contentType: r.Header.Get("Content-Type"),
+		host:        r.Host,
 		body:        append([]byte(nil), body...),
 	})
 	st := s.status
@@ -194,6 +199,30 @@ func TestProxyForwardsStatusHeadersAndBodyUnchanged(t *testing.T) {
 			require.Empty(t, listRecords(t, l), "a non-observed endpoint records nothing")
 		})
 	}
+}
+
+// TestProxySetsTheUpstreamHostHeader pins finding F: the stdlib reverse proxy
+// rewrites the outbound URL's scheme, host and path but deliberately leaves
+// req.Host alone, so the caller's Host header would reach Mem0. A self-hosted
+// Mem0 routed by virtual host would then misroute. The stub must see its own
+// host, not httptest.NewRequest's "example.com".
+func TestProxySetsTheUpstreamHostHeader(t *testing.T) {
+	stub := &mem0Stub{addBody: `{"event_id":"e","status":"PENDING"}`}
+	srv := newStubServer(t, stub)
+	sink, _, _, _ := newProxyHarness(t)
+	p := newTestProxy(t, srv.URL, sink, io.Discard, 8<<20)
+
+	body := `{"messages":[{"role":"user","content":"hi"}],"user_id":"u1"}`
+	rr := doRequest(p, http.MethodPost, "/v3/memories/add/", body,
+		map[string]string{proxy.CorrelationHeader: "corr-host"})
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	up, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	seen := stub.lastSeen(t)
+	assert.Equal(t, up.Host, seen.host, "the upstream must see its own Host, not the caller's")
+	assert.NotEqual(t, "example.com", seen.host,
+		"httptest.NewRequest's caller Host must not be forwarded to the upstream")
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +436,13 @@ func TestProxyReturnsAnErrorWhenTheUpstreamIsUnreachable(t *testing.T) {
 		})
 
 	require.Equal(t, http.StatusBadGateway, rr.Code, "the caller must get a real HTTP error")
+	// The marker carries the failure REASON (finding E): a DNS failure, a
+	// refused connection, a TLS error and a timeout must be distinguishable to
+	// an operator. It is the transport's own cause, not a placeholder, and the
+	// *url.Error's outbound URL -- whose path and query are the caller's -- is
+	// stripped to scheme and host before it is rendered.
+	assert.Contains(t, out.String(), "reason=", "the marker must say why the upstream request failed")
+	assert.NotContains(t, out.String(), "reason=unknown error", "the transport's own reason must survive")
 	require.NotContains(t, out.String(), "SUPER-SECRET-KEY-123", "the marker must not leak the API key")
 	require.NotContains(t, out.String(), sentinel, "the marker must not leak the query string")
 	require.NotContains(t, out.String(), apiKey)
@@ -536,6 +572,53 @@ func TestProxyMarksAndRecordsNothingForAnUndecodableResponseEncoding(t *testing.
 	assert.Contains(t, out.String(), "br", "the loss must be loud, not silent")
 }
 
+// TestProxyMarksAndRecordsNothingWhenAGzippedResponseExpandsPastTheCap pins the
+// loud half of the decoded-copy bound: a small compressed response whose decoded
+// copy exceeds --max-body is recorded nothing but MARKED, exactly like an
+// undecodable encoding, and the caller still receives the upstream's gzip bytes
+// untouched. Without the bound the decoded copy would be read into memory in
+// full for observation, so this is the half that keeps the cap a cap.
+func TestProxyMarksAndRecordsNothingWhenAGzippedResponseExpandsPastTheCap(t *testing.T) {
+	const maxBody = 1024
+	plain := `{"event_id":"evt-gz-big","status":"PENDING","pad":"` +
+		strings.Repeat("z", 64<<10) + `"}`
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	_, err := zw.Write([]byte(plain))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	gzBytes := gz.Bytes()
+	require.Less(t, int64(len(gzBytes)), int64(maxBody),
+		"the compressed body must fit under the cap so the decode path runs")
+	require.Greater(t, int64(len(plain)), int64(maxBody),
+		"the decoded body must exceed the cap so the decode is declined")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(gzBytes)
+	}))
+	t.Cleanup(srv.Close)
+
+	sink, l, _, _ := newProxyHarness(t)
+	var out bytes.Buffer
+	p := newTestProxy(t, srv.URL, sink, &out, maxBody)
+
+	body := `{"messages":[{"role":"user","content":"hi"}],"user_id":"u1"}`
+	require.Less(t, len(body), maxBody, "the request must be under the cap so it is observed")
+	rr := doRequest(p, http.MethodPost, "/v3/memories/add/", body, map[string]string{
+		proxy.CorrelationHeader: "corr-gz-over",
+		"Accept-Encoding":       "gzip",
+	})
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	assert.Equal(t, "gzip", rr.Header().Get("Content-Encoding"))
+	assert.Equal(t, gzBytes, rr.Body.Bytes(), "the caller's bytes are the upstream's gzip bytes unchanged")
+	require.Empty(t, listRecords(t, l), "a decoded body past the cap is not recorded")
+	assert.Contains(t, out.String(), "decoded response body exceeds",
+		"the loss must be loud: the bounded decode declined instead of recording nothing in silence")
+}
+
 // ---------------------------------------------------------------------------
 // the response cap
 // ---------------------------------------------------------------------------
@@ -566,4 +649,29 @@ func TestProxyForwardsAnOverCapResponseWithoutRecordingIt(t *testing.T) {
 	require.Greater(t, int64(rr.Body.Len()), int64(maxBody), "the caller must receive the whole over-cap response")
 	assert.Equal(t, stub.addBody, rr.Body.String(), "the caller's over-cap response body is the upstream's bytes, in full")
 	require.Empty(t, listRecords(t, l), "an over-cap response is not recorded")
+}
+
+// ---------------------------------------------------------------------------
+// redaction of printable URLs
+// ---------------------------------------------------------------------------
+
+// TestRedactedURLRendersSchemeAndHostOnly pins the redaction both the proxy's
+// error marker and the command's banner and refusals use: scheme and host
+// survive, and every place an operator-supplied credential can hide -- userinfo,
+// path, query, fragment -- does not. A value that does not parse, has no host,
+// or is opaque is rendered as a constant rather than reconstructed, because
+// there is nothing safe to show.
+func TestRedactedURLRendersSchemeAndHostOnly(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"https://mem0.internal:8081", "https://mem0.internal:8081"},
+		{"https://operator:SUPER-SECRET@mem0.internal:8081/v1/long/path?key=SUPER-SECRET#frag", "https://mem0.internal:8081"},
+		{"http://[::1]:8081/x?q=1", "http://[::1]:8081"},
+		{"mem0.internal:8081", "[url omitted]"},
+		{"https://", "[url omitted]"},
+		{"http://[::1]:namedport/?key=SUPER-SECRET", "[url omitted]"},
+	} {
+		got := proxy.RedactedURL(tc.in)
+		assert.Equal(t, tc.want, got, "RedactedURL(%q)", tc.in)
+		assert.NotContains(t, got, "SUPER-SECRET", "RedactedURL(%q) must not echo a credential", tc.in)
+	}
 }

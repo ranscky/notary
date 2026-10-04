@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -302,7 +303,8 @@ func TestPipelineCloseDrainsTheTallyBeforeClosingTheSink(t *testing.T) {
 		readAtClose = true
 	}
 
-	p := proxy.NewPipeline(sink, g, nil, 1)
+	var marks bytes.Buffer
+	p := proxy.NewPipeline(sink, g, []io.Writer{&marks}, 1)
 
 	scope := record.Scope{UserID: "u1"}
 	require.NoError(t, p.Write(proxyTestRecord(t, "first", record.EventMemorySurfaced, scope)))
@@ -319,17 +321,19 @@ func TestPipelineCloseDrainsTheTallyBeforeClosingTheSink(t *testing.T) {
 		close(closeDone)
 	}()
 
-	// Wait until Close has stopped the pipeline accepting: a probe write is no
-	// longer counted as a drop. Once that is seen, the writer goroutine is
-	// guaranteed -- through p.mu -- to observe the closure and leave the tally
-	// to Close, making Close the sole drainer. The stray probes overflow the
-	// depth-1 tally, which is fine: the test asserts the named drop is durable,
-	// not that it is the only entry.
+	// Wait until Close has stopped the pipeline accepting. A probe write that
+	// arrives before that is a queue-full drop and one that arrives after it is
+	// a write-after-close drop; both are counted, so the Drops tally alone
+	// cannot tell them apart, and the marker is what distinguishes them. Once
+	// the after-close marker is seen, the writer goroutine is guaranteed --
+	// through p.mu -- to observe the closure and leave the tally to Close,
+	// making Close the sole drainer. The stray probes overflow the depth-1
+	// tally, which is fine: the test asserts the named drop is durable, not
+	// that it is the only entry.
 	probe := proxyTestRecord(t, "probe", record.EventMemorySurfaced, scope)
 	require.Eventually(t, func() bool {
-		before := p.Drops()
 		_ = p.Write(probe)
-		return p.Drops() == before
+		return strings.Contains(marks.String(), "write after close")
 	}, 2*time.Second, time.Millisecond, "Close never stopped the pipeline accepting")
 
 	sink.Release()
@@ -471,6 +475,28 @@ func TestPipelineWriteAfterCloseIsSafe(t *testing.T) {
 	}, "a write after Close must never panic on a closed channel")
 }
 
+// TestPipelineWriteAfterCloseIsCountedAndMarked pins the fix for the pipeline's
+// one silent-loss path: a write that arrives after Close can neither be queued
+// nor gap-logged (Close has drained the tally, and the sink that owns the gap
+// log is closing), so it must at least be counted and named on the loud
+// channels. Without this, a handler still in flight when srv.Shutdown returns
+// would have its record vanish with no trace anywhere.
+func TestPipelineWriteAfterCloseIsCountedAndMarked(t *testing.T) {
+	sink := newStallingSink()
+	var out bytes.Buffer
+	p := proxy.NewPipeline(sink, nil, []io.Writer{&out}, 4)
+	require.NoError(t, p.Close())
+
+	before := p.Drops()
+	late := proxyTestRecord(t, "late-after-close", record.EventMemorySurfaced, record.Scope{UserID: "u1"})
+	require.NoError(t, p.Write(late))
+
+	assert.Equal(t, before+1, p.Drops(), "a write after Close must be counted, not silently discarded")
+	assert.Contains(t, out.String(), "late-after-close", "the late drop must be marked loudly")
+	assert.Contains(t, out.String(), "write after close",
+		"the marker must say the drop cannot be gap-logged")
+}
+
 // TestPipelineConcurrentWritesDuringCloseAreSafe pins the Critical-class
 // invariant the plan names (plan:33): a write racing Close must never send on a
 // closed channel or panic, and no record accepted before Close may be lost. It
@@ -478,9 +504,11 @@ func TestPipelineWriteAfterCloseIsSafe(t *testing.T) {
 // fails if the p.mu guard around Write's send is removed -- under -race as a
 // data race on the closing flag, and often as a "send on closed channel" panic.
 //
-// The queue is deliberately larger than the whole workload, so nothing is ever
-// refused for being full: every write accepted before Close is drained to the
-// sink, which is how "no accepted record is lost" is checked here.
+// The queue is deliberately larger than the whole workload, so no write is
+// ever refused for being full: every write is either accepted before Close and
+// drained to the sink, or refused by Close and counted. Those two halves must
+// add up to the whole workload, which is how "no accepted record is lost" is
+// checked here.
 func TestPipelineConcurrentWritesDuringCloseAreSafe(t *testing.T) {
 	sink := newStallingSink()
 	sink.Release() // non-blocking sink: the writer always drains
@@ -524,14 +552,20 @@ func TestPipelineConcurrentWritesDuringCloseAreSafe(t *testing.T) {
 
 	// No panic and no data race: the guarded send never touched the closed
 	// queue, so Close did not close it out from under a producer.
-	assert.Equal(t, uint64(0), p.Drops(),
-		"a queue larger than the workload refuses nothing: no accepted record was dropped")
+	//
+	// Every write was either accepted before Close or refused by it, and the
+	// closed branch counts each refusal. The queue is larger than the whole
+	// workload, so no write was ever refused for being FULL: accepted plus
+	// refused must equal the whole workload, which is what pins that no
+	// accepted record was lost and that every refusal is attributed.
+	received := sink.received()
+	assert.Equal(t, uint64(total), uint64(len(received))+p.Drops(),
+		"every write was either accepted and drained to the sink or refused after Close")
 
 	inPool := make(map[string]bool, total)
 	for _, r := range records {
 		inPool[string(r.ID)] = true
 	}
-	received := sink.received()
 	assert.NotEmpty(t, received, "writes accepted before Close reached the sink")
 	for _, r := range received {
 		assert.True(t, inPool[string(r.ID)], "the sink only ever received a record a writer wrote")

@@ -131,9 +131,12 @@ func TestProxyAndLibraryProduceTheSameRecords(t *testing.T) {
 	require.JSONEq(t, `{"score":0.9,"rank":1}`, string(surf1Obs.Payload()))
 
 	for _, libRec := range libRecs {
-		proxyRec, found := proxyByID[libRec.ID]
-		require.True(t, found, "the proxy must produce a record with ID %q", libRec.ID)
-		assertRecordsAgree(t, libRec, proxyRec)
+		// The ID-set equality asserted above makes this lookup total: every
+		// library ID is in proxyByID, so a separate "found" assertion here
+		// could never fail and would only look like a check. The map lookup's
+		// zero value cannot be reached, and assertRecordsAgree asserts the IDs
+		// agree again.
+		assertRecordsAgree(t, libRec, proxyByID[libRec.ID])
 	}
 }
 

@@ -102,6 +102,12 @@ type Pipeline struct {
 // (when the queue is full) are counted and, on Close, recorded through gaps. The
 // drop marker is written to every element of channels, best-effort.
 //
+// channels are written from the writer goroutine, so a writer that another
+// producer also writes to -- proxy.New's out is the natural example -- must be
+// safe for concurrent use, or the two must be handed the same synchronizing
+// wrapper (cmd/notary/proxy.go does the latter). The pipeline serializes only
+// its own writes to them.
+//
 // depth below 1 is clamped to 1: a zero-capacity channel would make every write
 // a drop, so a non-positive depth is treated as the smallest useful one rather
 // than accepted. The drop tally retains up to depth identities plus a count of
@@ -141,12 +147,27 @@ func NewPipeline(sink RecordSink, gaps *gap.Log, channels []io.Writer, depth int
 //
 // A drop is not an error: it increments the drop tally and marks every loud
 // channel, then Write still returns nil -- the fail-open-loud contract, so an
-// audit problem can never become a caller's problem. Write is safe to call
-// after Close: it returns nil without sending on the closed queue.
+// audit problem can never become a caller's problem.
+//
+// Write is safe to call after Close, and a write that late is NOT silently
+// discarded: it is counted and marked on the loud channels, but it cannot be
+// gap-logged. The gap log is owned by the sink, which Close is in the middle of
+// (or has finished) closing, and this branch cannot know which side of Close's
+// tally drain it is on -- so no durable entry can be promised here, and the
+// loud channel is the only honest one left. The late window is real: the
+// command's srv.Shutdown returns after its timeout with handlers still running,
+// and a handler still inside ModifyResponse calls Write after Close.
 func (p *Pipeline) Write(rec record.Record) error {
 	p.mu.Lock()
 	if p.closed {
+		// Counting the dropped record is deliberate rather than incidental:
+		// this branch cannot know whether Close's one-shot tally drain has
+		// already snapshotted, or whether the gap log it drains through is
+		// still open, so it promises no durable entry and keeps the count --
+		// the part that is always honest.
+		p.drops++
 		p.mu.Unlock()
+		p.markDrop(rec, dropAfterClose)
 		return nil
 	}
 	select {
@@ -156,7 +177,7 @@ func (p *Pipeline) Write(rec record.Record) error {
 	default:
 		p.recordDropLocked(rec)
 		p.mu.Unlock()
-		p.markDrop(rec)
+		p.markDrop(rec, dropQueueFull)
 		return nil
 	}
 }
@@ -231,6 +252,13 @@ func (p *Pipeline) closing() bool {
 // send every remaining drop entry into a closed log and lose it. Its error is
 // the doubly-failed case only: a tally that could not be recorded, or a sink
 // that could not be closed.
+//
+// The drain is one-shot, and that bounds what Close can promise: a Write that
+// arrives after the pipeline is closed is counted and marked, but cannot be
+// gap-logged (see Write). Close therefore has a window in which a late record
+// is visible only on the loud channels -- stated here because "no record is
+// lost silently" is the pipeline's whole purpose, and that window is the one
+// place it is narrowed rather than met.
 func (p *Pipeline) Close() error {
 	p.closeOnce.Do(func() {
 		p.mu.Lock()
@@ -318,13 +346,21 @@ func (p *Pipeline) recordOverflowGap(n uint64) error {
 	return nil
 }
 
+// dropQueueFull and dropAfterClose name why a record was dropped, in the
+// marker text. The after-Close reason states its own gap-log consequence,
+// because that is the one drop that cannot also be gapped.
+const (
+	dropQueueFull  = "queue full"
+	dropAfterClose = "write after close; this drop cannot be gap-logged"
+)
+
 // markDrop writes the one-line drop marker to every loud channel. It is
 // best-effort -- a failing channel must not itself become an error -- and a nil
 // element is skipped rather than dereferenced. The marker names only
 // non-sensitive metadata: the event, the correlation ID and the scope. It never
 // names the record's content.
-func (p *Pipeline) markDrop(rec record.Record) {
-	marker := dropMarker(rec)
+func (p *Pipeline) markDrop(rec record.Record, reason string) {
+	marker := dropMarker(reason, rec)
 	for _, ch := range p.channels {
 		if ch == nil {
 			continue
@@ -349,13 +385,13 @@ func (p *Pipeline) report(err error) {
 }
 
 // dropMarker renders the single-line, human-readable marker for a dropped
-// record. It names only the event, the correlation ID and the scope -- never
-// the record's content -- so no memory text can reach a log through the loud
-// path.
-func dropMarker(rec record.Record) string {
+// record: why it was dropped, and only the event, the correlation ID and the
+// scope -- never the record's content -- so no memory text can reach a log
+// through the loud path.
+func dropMarker(reason string, rec record.Record) string {
 	s := rec.Subject.Scope
 	return fmt.Sprintf(
-		"notary: proxy queue full; audit record dropped: event=%s correlation=%s scope{user=%q agent=%q app=%q run=%q}\n",
-		rec.Event, rec.ID, s.UserID, s.AgentID, s.AppID, s.RunID,
+		"notary: proxy audit record dropped (%s): event=%s correlation=%s scope{user=%q agent=%q app=%q run=%q}\n",
+		reason, rec.Event, rec.ID, s.UserID, s.AgentID, s.AppID, s.RunID,
 	)
 }

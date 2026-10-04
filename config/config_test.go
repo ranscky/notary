@@ -143,9 +143,11 @@ func TestLoadFromFailMode(t *testing.T) {
 
 // TestEnvSensitivityRulesIsDocumentedName pins the environment variable that
 // names the declarative sensitivity-rules file. It is the ONLY way an operator
-// points an application at the rules (there is deliberately no CLI flag, because
-// rules mark content at write time and no notary command writes records), so the
-// name is a documented interface and not an implementation detail.
+// points a write path at the rules: there is deliberately no CLI flag, because
+// rules mark content at write time, so they concern the paths whose records
+// CARRY content -- an application constructing an interceptor, and `notary
+// proxy` -- not the reading commands. The name is a documented interface and
+// not an implementation detail.
 func TestEnvSensitivityRulesIsDocumentedName(t *testing.T) {
 	assert.Equal(t, "NOTARY_SENSITIVITY_RULES", config.EnvSensitivityRules)
 }

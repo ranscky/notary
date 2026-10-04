@@ -180,17 +180,18 @@ rules:
       scope:
         user_id: patient-42      # optional; omitted means any scope
       metadata:
-        category: health         # search-surfaced path ONLY -- see the note below
+        category: health         # matches a proxied add or a surfaced memory; see the note below
 ```
 
 A rule matches when **every** clause it specifies matches, and a rule specifying neither clause is
 rejected at load time. The rules file is read by the write paths — an application that constructs the
 interceptor, and `notary proxy` — so there is no `export` flag for it: `export` writes no records.
 
-One asymmetry matters when you write a rules file: **a `metadata:` clause can only ever match on the
-search-surfaced path.** An `Add` carries no Mem0 metadata, so a rule whose only clause is `metadata:`
-can never mark an add — only a `scope:` clause can. If the content you mean to protect arrives through
-`Add`, match on `scope:`.
+One asymmetry matters when you write a rules file: **whether a `metadata:` clause can match an add
+depends on the mode.** `library.Add`'s signature carries no metadata at all, so in library mode a rule
+whose only clause is `metadata:` can never mark an add — only a `scope:` clause can. `notary proxy`
+decodes each add's `metadata` from the request body, so the same rule CAN mark a proxied add. If the
+content you mean to protect arrives through `library.Add`, match on `scope:`.
 
 All configuration is environment-only:
 
@@ -260,7 +261,8 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `pr
   file.
 - **`notary proxy`** — serves Mem0 traffic and records the `add` and `search` requests that pass through
   it. The application re-points its Mem0 base URL at Notary, which forwards every request to the real
-  Mem0 and returns the response untouched, recording exactly what library mode records, with no code
+  Mem0 and returns the response untouched, recording the same records library mode records for those two
+  endpoints (the mode differences are noted under sensitivity rules above), with no code
   change in the application, in any language. `get_all`, history, event-status and delete pass through
   unrecorded by design. It needs a signing key (`NOTARY_SIGNING_KEY`, because ledger appends are signed),
   the upstream base URL from `NOTARY_MEM0_BASE_URL`, and the ledger and gap log paths (`NOTARY_DB_PATH`,
