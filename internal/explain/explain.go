@@ -20,6 +20,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode"
 
 	"notary/internal/export"
 	"notary/internal/record"
@@ -141,7 +142,7 @@ func (e *Explainer) Explain(ctx context.Context, req Request, out io.Writer) (Re
 	// The header names the subject only when there is a timeline beneath it, so
 	// an empty view leaves the builder empty rather than carrying a lone header.
 	if !req.JSON && req.RecordID == "" && len(records) > 0 {
-		fmt.Fprintf(&prose, "Memory %s\n", req.MemoryID)
+		fmt.Fprintf(&prose, "Memory %s\n", proseText(req.MemoryID))
 	}
 
 	for _, rec := range records {
@@ -265,28 +266,35 @@ func toJSONRecord(rec record.Record, line export.Line, sentence string) jsonReco
 
 // writeRecordProse writes the single-record view: the subject, then the phrased
 // claim, then the recorded-at instant and the tier, then the content or the
-// fact that it was withheld.
+// fact that it was withheld. Every stored or otherwise variable string it
+// interpolates -- the record and memory ids, the sentence and the content --
+// goes through proseText, so none of them can add or forge a line.
 func writeRecordProse(b *strings.Builder, rec record.Record, line export.Line, sentence string) {
 	if rec.Subject.MemoryID != "" {
-		fmt.Fprintf(b, "Record %s for memory %s\n", rec.ID, rec.Subject.MemoryID)
+		fmt.Fprintf(b, "Record %s for memory %s\n", proseText(string(rec.ID)), proseText(rec.Subject.MemoryID))
 	} else {
-		fmt.Fprintf(b, "Record %s\n", rec.ID)
+		fmt.Fprintf(b, "Record %s\n", proseText(string(rec.ID)))
 	}
-	fmt.Fprintf(b, "%s\n", sentence)
+	fmt.Fprintf(b, "%s\n", proseText(sentence))
 	fmt.Fprintf(b, "Recorded at %s, tier %s.\n", rec.RecordedAt.UTC().Format(time.RFC3339), line.Tier)
 	writeContent(b, line)
 }
 
 // writeTimelineLine writes one memory-view line: a single line carrying the
 // record's position, id, event, reason kind, tier and sentence, plus the
-// content or the fact that it was withheld.
+// content or the fact that it was withheld. The record id, the sentence and the
+// content go through proseText, so stored text can neither add a line nor forge
+// a timeline entry. The event, reason kind and tier are not escaped: Phrase and
+// Render -- which every record here has already passed -- accept only members of
+// record's closed vocabularies, and none of those names carries a control
+// character.
 func writeTimelineLine(b *strings.Builder, rec record.Record, line export.Line, sentence string) {
-	fmt.Fprintf(b, "%d. %s %s %s %s: %s", rec.Seq, rec.ID, rec.Event, rec.Reason.Kind(), line.Tier, sentence)
+	fmt.Fprintf(b, "%d. %s %s %s %s: %s", rec.Seq, proseText(string(rec.ID)), rec.Event, rec.Reason.Kind(), line.Tier, proseText(sentence))
 	switch {
 	case line.Redacted != "":
 		fmt.Fprintf(b, " [content withheld: %s]\n", line.Redacted)
 	case line.Content != nil:
-		fmt.Fprintf(b, " [content: %s]\n", *line.Content)
+		fmt.Fprintf(b, " [content: %s]\n", proseText(*line.Content))
 	default:
 		b.WriteByte('\n')
 	}
@@ -294,14 +302,56 @@ func writeTimelineLine(b *strings.Builder, rec record.Record, line export.Line, 
 
 // writeContent appends the content line to the single-record prose. A withheld
 // record says so; a record that carried no content adds nothing, so the two
-// states never look alike.
+// states never look alike. Shown content is escaped through proseText, like
+// every other piece of stored text the prose interpolates.
 func writeContent(b *strings.Builder, line export.Line) {
 	switch {
 	case line.Redacted != "":
 		fmt.Fprintf(b, "Content withheld: %s.\n", line.Redacted)
 	case line.Content != nil:
-		fmt.Fprintf(b, "Content: %s\n", *line.Content)
+		fmt.Fprintf(b, "Content: %s\n", proseText(*line.Content))
 	}
+}
+
+// proseText renders stored or otherwise variable text for the prose view, with
+// each control character replaced by its visible Go-style escape: \n, \r and
+// \t, \xNN for the other C0 controls and DEL, and \uNNNN for a control
+// character above ASCII.
+//
+// The prose view's line structure IS its evidence: one line per record, each
+// opening with the record's seq and id. Stored text is agent- and user-written,
+// and a multi-line memory note is ordinary, so a raw newline in it would split
+// one record across two physical lines -- and the second would read exactly
+// like a timeline entry for a record that was never written, in the one view
+// built for a reader who cannot cross-check the JSON. An escaped control
+// character keeps every record on its own line and shows the stored text's own
+// line breaks for what they are: characters inside the text, not structure. A
+// string with no control characters is returned unchanged, so control-free text
+// renders byte-for-byte as it always did. The JSON view needs none of this:
+// encoding/json escapes control characters itself.
+func proseText(s string) string {
+	if strings.IndexFunc(s, unicode.IsControl) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case !unicode.IsControl(r):
+			b.WriteRune(r)
+		case r < 0x80:
+			fmt.Fprintf(&b, `\x%02x`, r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
 }
 
 // writeJSON encodes the view as one JSON object, leaving <, > and & literal
