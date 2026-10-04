@@ -160,11 +160,31 @@ notary explain --memory <mem0-id> [--json] [--include-sensitive]
    (`export.Phrase`), not the exact sentence. Is a small fixed template — subject, then the phrased
    claim, then the timestamp and tier — the right level of specification for the plan, or does this
    spec owe the wording?
+
+   **Resolved (2026-10-03):** the small fixed template is the right level; the wording is the
+   implementation's. `writeRecordProse` in `internal/explain/explain.go` is that template: the
+   subject, then `export.Phrase`'s claim, then the recorded-at instant and the tier. It is
+   deterministic — the claim's wording is §5's one sentence, and no generated text can reach it
+   (D10).
 2. **Where the "exactly one subject" check lives.** Cobra's `Args`/`MarkFlagsMutuallyExclusive` can
    enforce it declaratively, or the command can check it explicitly and control the message. The
    latter is more code and a better error; the former is idiomatic. I lean explicit, for the error
    text.
+
+   **Resolved (2026-10-03):** explicit, in `explainRequest` in `cmd/notary/explain.go`, not Cobra's
+   declarative helper. The message names which of the two subjects was given, which is missing, and
+   what to do; `cobra.MaximumNArgs(1)` still bounds the positional, and an explicitly empty
+   `--memory` is refused as its own case — never as "neither subject given", never reaching the
+   reader — because `cmd.Flags().Changed` distinguishes "absent" from "given as empty", which
+   `GetString` alone cannot.
 3. **Should `--json` be the `export.Line` shape or its own?** Reusing `Line` would let a consumer
    share a parser between the range and single-subject views, at the cost of shipping fields an
    explain consumer may not want. They are different views; I lean toward its own small shape, but
    it is a real fork.
+
+   **Resolved (2026-10-03):** its own small shape, not `export.Line`. They are different views, and
+   an explain consumer should not have to ignore the range view's fields, so `jsonRecord` in
+   `internal/explain/explain.go` carries exactly `seq`, `id`, `memory_id`, `event`, `reason_kind`,
+   `tier`, `at`, `recorded_at` and `sentence`, plus `content` only when content was shown and
+   `redacted` only when content was withheld. The README's `notary explain` bullet documents that
+   same key list for a consumer.

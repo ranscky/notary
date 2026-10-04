@@ -7,7 +7,7 @@
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
 ![Dependencies](https://img.shields.io/badge/direct_dependencies-4-blue)
 ![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
-![Scope](https://img.shields.io/badge/scope-ledger_export_reconciler_(phases_1--6)-orange)
+![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_(phases_1--8)-orange)
 
 **A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
 
@@ -252,9 +252,12 @@ This is the **core ledger, the reconciler, `export`, `replay` and `explain`: pha
   written, or what happened to a single memory over its life. The subject is one `<record-id>`
   argument or `--memory <mem0-id>`, never both, and the memory view renders one line per record in
   Seq order. `--json` prints the same records, in the same order, as one small JSON object instead
-  of prose. Sensitive content is withheld by default and the view says so; `--include-sensitive`
-  prints it and changes no hash. It is a read path that signs and verifies nothing, so it needs
-  neither a signing key nor a trusted-key file.
+  of prose: `{"records": [...]}`, each record carrying `seq`, `id`, `memory_id`, `event`,
+  `reason_kind`, `tier`, `at`, `recorded_at` and `sentence`, plus `content` only when the record
+  carried content that was shown and `redacted` only when content was withheld. Sensitive content is
+  withheld by default and the view says so; `--include-sensitive` prints it and changes no hash. It
+  is a read path that signs and verifies nothing, so it needs neither a signing key nor a trusted-key
+  file.
 
 **Not built yet** — the README will be updated as these land rather than describing intent as fact
 
