@@ -317,6 +317,108 @@ func TestExplainRecordProseEscapesTheSentenceAndContent(t *testing.T) {
 	assert.NotContains(t, out, content, "the raw stored content must not be printed")
 }
 
+// TestExplainTimelineHeaderEscapesTheMemoryID guards the memory view's HEADER,
+// the one place the view prints the memory id the request named rather than a
+// record's fields. A memory id carrying a control character must not be able to
+// end the header early and read as a forged header or timeline entry of its
+// own. The fixture's claim happens not to interpolate the id (MemoryKept +
+// StoredByMem0), and its record id is control-free, so the header is the only
+// site this stored id reaches: the test fails when the header's proseText call
+// goes away, and no other escaping site changes this fixture's output.
+func TestExplainTimelineHeaderEscapesTheMemoryID(t *testing.T) {
+	memID := "mem-A\nRecord rec-forged\nan injected sentence"
+	rec := mkRec(t, "rec-1", 1, record.EventMemoryKept, record.ReasonStoredByMem0, memID, explainAt, nil)
+	r := &fakeReader{byMem: map[string][]record.Record{memID: {rec}}}
+	e := explain.New(r)
+
+	var buf bytes.Buffer
+	res, err := e.Explain(context.Background(), explain.Request{MemoryID: memID}, &buf)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Records)
+
+	out := buf.String()
+	// The invariant: a header line and then exactly one physical line per
+	// record -- the count a raw memory id in the header would break.
+	assert.Equal(t, 1+res.Records, strings.Count(out, "\n"),
+		"stored text must not add a physical line to the header")
+
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	require.Len(t, lines, 1+res.Records, "the view is a header and one line per record")
+	assert.Equal(t, "Memory "+strings.ReplaceAll(memID, "\n", `\n`), lines[0],
+		"the header must stay one physical line, with the stored line break visible as an escape")
+	assert.NotContains(t, out, "Memory "+memID, "the raw memory id must not be printed")
+	assert.True(t, strings.HasPrefix(lines[1], "1. rec-1 "),
+		"the line after the header must be the first record's own")
+}
+
+// TestExplainTimelineEscapesTheRecordID guards the timeline's stored record id,
+// which opens every entry. An id carrying a control character would otherwise
+// end its own entry early and let the rest of the id read as a further entry
+// for a record that was never written. The record's claim is control-free here,
+// so the timeline's proseText(string(rec.ID)) call is the only site under test.
+func TestExplainTimelineEscapesTheRecordID(t *testing.T) {
+	recID := record.RecordID("rec-1\n2. rec-forged add_resolved stored_by_mem0 observed: an injected sentence")
+	rec := mkRec(t, recID, 1, record.EventAddResolved, record.ReasonStoredByMem0, "mem-A", explainAt, nil)
+	r := &fakeReader{byMem: map[string][]record.Record{"mem-A": {rec}}}
+	e := explain.New(r)
+
+	var buf bytes.Buffer
+	res, err := e.Explain(context.Background(), explain.Request{MemoryID: "mem-A"}, &buf)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Records)
+
+	out := buf.String()
+	// The invariant: a header line and then exactly one physical line per
+	// record -- the count a raw stored record id would break.
+	assert.Equal(t, 1+res.Records, strings.Count(out, "\n"),
+		"a stored record id must not add a physical line to the timeline")
+
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	require.Len(t, lines, 1+res.Records, "the view is a header and one line per record")
+	assert.True(t, strings.HasPrefix(lines[1], "1. "+strings.ReplaceAll(string(recID), "\n", `\n`)),
+		"the record id must stay inside its own line, in escaped form")
+	assert.NotContains(t, out, string(recID), "the raw stored record id must not be printed")
+}
+
+// TestExplainTimelineEscapesTheSentence covers the timeline's own copy of the
+// phrased claim. export.Phrase interpolates the record's stored memory id into
+// its sentence ("the add resolved: Mem0 stored memory <id>", the pair
+// TestExplainRecordProseEscapesTheSentenceAndContent also uses), so an id
+// carrying a control character reaches this line through the sentence. It is
+// rendered in the MEMORY view, not the record view, so the timeline's
+// proseText(sentence) call -- not writeRecordProse's -- is the site this test
+// targets; the header names the same stored id, so that site falls to the same
+// assertion here.
+func TestExplainTimelineEscapesTheSentence(t *testing.T) {
+	memID := "mem-A\nRecord rec-forged\nan injected sentence"
+	rec := mkRec(t, "rec-1", 1, record.EventAddResolved, record.ReasonStoredByMem0, memID, explainAt, nil)
+
+	sentence, ok := export.Phrase(rec)
+	require.True(t, ok, "the fixture must be a phraseable record")
+	require.Contains(t, sentence, "\n",
+		"the fixture must carry the control character through the sentence")
+
+	r := &fakeReader{byMem: map[string][]record.Record{memID: {rec}}}
+	e := explain.New(r)
+
+	var buf bytes.Buffer
+	res, err := e.Explain(context.Background(), explain.Request{MemoryID: memID}, &buf)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Records)
+
+	out := buf.String()
+	// The invariant: a header line and then exactly one physical line per
+	// record -- the count a raw stored sentence would break.
+	assert.Equal(t, 1+res.Records, strings.Count(out, "\n"),
+		"a stored sentence must not add a physical line to the timeline")
+
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	require.Len(t, lines, 1+res.Records, "the view is a header and one line per record")
+	assert.Contains(t, lines[1], strings.ReplaceAll(sentence, "\n", `\n`),
+		"the sentence must stay inside the record's own line, in escaped form")
+	assert.NotContains(t, out, sentence, "the raw sentence must not be printed")
+}
+
 // --- subject guard ----------------------------------------------------------
 
 // TestExplainRejectsAnEmptySubjectBeforeReading pins Review Focus 4's guard: an
