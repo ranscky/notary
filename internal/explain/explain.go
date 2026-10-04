@@ -65,14 +65,18 @@ type Request struct {
 // Result reports what an explanation did.
 //
 // It is meaningful in full only on success. Explain fails on two kinds of path,
-// and they differ. A missing subject, a read failure, a render failure and a
-// cancelled context all happen while the whole view is built, BEFORE any byte is
-// written, so on those paths out is untouched and Result is the zero value. A
-// write failure is the other kind: it happens after the build, out may already
-// be partially written, and Result then carries the counts as they stood when
-// the failure occurred -- the records tallied before the write failed, matching
-// export.Result and replay.Result. Either way a caller must check the error
-// beside Result before trusting any field.
+// and they differ. The first kind precedes the build: a missing subject is
+// refused before the reader is consulted, and a read failure happens while the
+// subject's records are fetched -- the read is what produces the records the
+// build then iterates. The second kind happens while the view is built: a
+// render failure and a cancelled context are both observed between records,
+// before the whole view is assembled. All four precede the first write, so on
+// every one of those paths out is untouched and Result is the zero value. A
+// write failure is the remaining kind: it happens after the build, out may
+// already be partially written, and Result then carries the counts as they
+// stood when the failure occurred -- the records tallied before the write
+// failed, matching export.Result and replay.Result. Either way a caller must
+// check the error beside Result before trusting any field.
 type Result struct {
 	// Records is the number of records in the view.
 	Records int
@@ -218,11 +222,18 @@ func (e *Explainer) read(req Request) ([]record.Record, error) {
 }
 
 // jsonRecord is explain's own wire shape for one record: the fields a
-// single-subject reader needs, and none of export.Line's range-view fields.
+// single-subject reader needs, and none of export.Line's range-view fields. It
+// is the documented --json contract rather than an internal detail, and its
+// keys are the ones named for a consumer in README's "notary explain" bullet.
 type jsonRecord struct {
-	Seq        uint64                `json:"seq"`
-	ID         record.RecordID       `json:"id"`
-	MemoryID   string                `json:"memory_id,omitempty"`
+	Seq uint64          `json:"seq"`
+	ID  record.RecordID `json:"id"`
+	// MemoryID carries no omitempty, matching export.Line's memory_id tag
+	// (internal/export/line.go): a consumer sharing one parser across the range
+	// view and this single-subject view must not meet "the key is absent" for a
+	// field that always has a value, and an empty value is a value -- a record
+	// whose subject names no memory, the store's DEFAULT '' for the column.
+	MemoryID   string                `json:"memory_id"`
 	Event      record.EventType      `json:"event"`
 	ReasonKind record.ReasonKind     `json:"reason_kind"`
 	Tier       record.VisibilityTier `json:"tier"`
