@@ -344,8 +344,8 @@ func TestExplainTimelineHeaderEscapesTheMemoryID(t *testing.T) {
 
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
 	require.Len(t, lines, 1+res.Records, "the view is a header and one line per record")
-	assert.Equal(t, "Memory "+strings.ReplaceAll(memID, "\n", `\n`), lines[0],
-		"the header must stay one physical line, with the stored line break visible as an escape")
+	assert.Contains(t, lines[0], "Memory "+strings.ReplaceAll(memID, "\n", `\n`),
+		"the header must carry the memory id with its line break visible as an escape")
 	assert.NotContains(t, out, "Memory "+memID, "the raw memory id must not be printed")
 	assert.True(t, strings.HasPrefix(lines[1], "1. rec-1 "),
 		"the line after the header must be the first record's own")

@@ -64,19 +64,21 @@ type Request struct {
 
 // Result reports what an explanation did.
 //
-// It is meaningful in full only on success. Explain fails on two kinds of path,
-// and they differ. The first kind precedes the build: a missing subject is
-// refused before the reader is consulted, and a read failure happens while the
-// subject's records are fetched -- the read is what produces the records the
-// build then iterates. The second kind happens while the view is built: a
-// render failure and a cancelled context are both observed between records,
-// before the whole view is assembled. All four precede the first write, so on
-// every one of those paths out is untouched and Result is the zero value. A
-// write failure is the remaining kind: it happens after the build, out may
-// already be partially written, and Result then carries the counts as they
-// stood when the failure occurred -- the records tallied before the write
-// failed, matching export.Result and replay.Result. Either way a caller must
-// check the error beside Result before trusting any field.
+// It is meaningful in full only on success. Explain can fail in one of two
+// places relative to its one write, and they differ. Every failure before that
+// write happens while the subject's records are read or while the view is
+// built: a missing subject is refused before the reader is consulted; a read
+// failure happens while the subject's records are fetched, the read being what
+// produces the records the build then iterates; a render failure is observed
+// while rendering the record in hand, before that record's line is appended;
+// and a cancelled context is checked at the top of each iteration, between
+// records. All four precede the first write, so on every one of those paths out
+// is untouched and Result is the zero value. The other place is a write
+// failure: it happens after the build, out may already be partially written,
+// and Result then carries the counts as they stood when the failure occurred --
+// the records tallied before the write failed, matching export.Result and
+// replay.Result. Either way a caller must check the error beside Result before
+// trusting any field.
 type Result struct {
 	// Records is the number of records in the view.
 	Records int
