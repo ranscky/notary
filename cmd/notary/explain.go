@@ -45,7 +45,7 @@ import (
 // help text names none of them.
 func newExplainCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "explain <record-id>",
+		Use:   "explain [<record-id>]",
 		Short: "Explain one record's reason or one memory's lifecycle",
 		Long: "Explain answers one question about the audit ledger as prose: why a\n" +
 			"single record was written, or what happened to a single memory over its\n" +
