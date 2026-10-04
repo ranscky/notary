@@ -291,7 +291,7 @@ gofmt -l .         # no output expected
 go test ./...
 ```
 
-`go test ./...` runs sixteen packages. `internal/ledger` is the slow one (a subprocess crash test
+`go test ./...` runs every package in the module. `internal/ledger` is the slow one (a subprocess crash test
 SIGKILLs a writer mid-transaction, ~30s), so a full run takes a couple of minutes — run packages
 individually if you are on a short timeout.
 

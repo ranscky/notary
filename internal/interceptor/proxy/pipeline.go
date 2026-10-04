@@ -182,8 +182,10 @@ func (p *Pipeline) Write(rec record.Record) error {
 	}
 }
 
-// Drops reports how many records the queue has refused. It is for tests and
-// operators.
+// Drops reports how many records the pipeline has refused: records the queue
+// refused because it was full, and records refused because the pipeline was
+// already closed (Write's closed branch), which the queue never saw. It is for
+// tests and operators.
 func (p *Pipeline) Drops() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()

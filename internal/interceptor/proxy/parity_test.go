@@ -130,6 +130,40 @@ func TestProxyAndLibraryProduceTheSameRecords(t *testing.T) {
 	require.True(t, ok)
 	require.JSONEq(t, `{"score":0.9,"rank":1}`, string(surf1Obs.Payload()))
 
+	// Pin the proxy side's idempotency keys by their DOCUMENTED DERIVATION,
+	// not only by their agreement across the two modes. The cross-mode
+	// comparison cannot constrain the derivation -- both modes delegate to the
+	// same interceptor.Observer, so a shared-builder change to any input moves
+	// both sides together and still compares equal. This mirrors
+	// internal/interceptor/library/mem0_test.go's pin of the library side,
+	// built from the test's own fixture inputs rather than a literal digest.
+	addHash := record.ContentHash(message)
+	require.Equal(t, addHash, addRec.Subject.ContentHash)
+	wantAddKey, err := record.DeriveIdemKey(record.EventAddRequested, record.ReasonAddAcknowledged, scope, "", corrAdd, addHash)
+	require.NoError(t, err)
+	require.Equal(t, wantAddKey, addRec.IdempotencyKey,
+		"the add's key is derived from the correlation ID and the messages' hash")
+
+	performed := proxyByID["parity-search"]
+	performedHash := record.ContentHash(query)
+	require.Equal(t, performedHash, performed.Subject.ContentHash)
+	wantPerformedKey, err := record.DeriveIdemKey(record.EventSearchPerformed, record.ReasonSearchPerformed, scope, "", corrSearch, performedHash)
+	require.NoError(t, err)
+	require.Equal(t, wantPerformedKey, performed.IdempotencyKey,
+		"the search_performed key is derived from the correlation ID and the query's hash")
+
+	// The surfaced record's identifier is its OWN derived ID -- the
+	// correlation ID plus its 1-based "#rank" suffix -- not the correlation ID
+	// alone, which every result of the search shares. Keying on the search
+	// would collapse two results that carry identical text into one record;
+	// the identifier is what the derivation exists to distinguish.
+	surfacedHash := record.ContentHash("alpha") // result 1's memory text, from the fixture above
+	require.Equal(t, surfacedHash, surf1.Subject.ContentHash)
+	wantSurfacedKey, err := record.DeriveIdemKey(record.EventMemorySurfaced, record.ReasonReturnedBySearch, scope, "", corrSearch+"#1", surfacedHash)
+	require.NoError(t, err)
+	require.Equal(t, wantSurfacedKey, surf1.IdempotencyKey,
+		"a surfaced record's key is derived from its own #rank ID, so identical text at different ranks cannot collapse")
+
 	for _, libRec := range libRecs {
 		// The ID-set equality asserted above makes this lookup total: every
 		// library ID is in proxyByID, so a separate "found" assertion here

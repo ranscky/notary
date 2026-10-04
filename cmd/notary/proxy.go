@@ -410,11 +410,13 @@ func runProxy(cmd *cobra.Command, cfg *config.Config) error {
 
 // loadProxyRules loads the sensitivity rules the proxy applies to the records
 // it writes, from the path in NOTARY_SENSITIVITY_RULES, through the same
-// application-facing loader an application uses (spec section 8). An unset
-// variable means no rules: the returned *interceptor.RuleSet is nil, which
-// matches nothing. A set-but-unreadable file is a refusal to start, naming the
-// file, because an operator who configured rules must not silently run without
-// them.
+// write-path loader an application constructing an interceptor uses (spec
+// section 8). Rules mark content sensitive at write time, so they concern the
+// paths whose records CARRY content, and `notary proxy` is the first CLI
+// command whose records do. An unset variable means no rules: the returned
+// *interceptor.RuleSet is nil, which matches nothing. A set-but-unreadable
+// file is a refusal to start, naming the file, because an operator who
+// configured rules must not silently run without them.
 func loadProxyRules() (*interceptor.RuleSet, error) {
 	path := os.Getenv(config.EnvSensitivityRules)
 	if path == "" {

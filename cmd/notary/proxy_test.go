@@ -572,6 +572,14 @@ func TestProxyCmdRefusesAnUnreadableRulesFile(t *testing.T) {
 // with the record written. A shutdown that returned without draining would
 // return before that delay, with the record still blocked, and the ledger
 // assertion would fail.
+//
+// The delay is asserted rather than assumed, and that is what turns the test's
+// only timing assumption into the thing it proves: h.Close waits on the writer
+// goroutine (Pipeline.Close -> wg.Wait()), so runProxy CANNOT return until the
+// write lock is released. An elapsed time at or beyond the delay therefore
+// proves the record really was still queued when shutdown began -- had it
+// already been appended, no drain would be owed, shutdown would return before
+// the release, and the elapsed-time assertion would reject it.
 func TestProxyCmdShutdownDrainsThePipeline(t *testing.T) {
 	sg, _ := newVerifySigner(t)
 	require.NotNil(t, sg)
@@ -601,13 +609,24 @@ func TestProxyCmdShutdownDrainsThePipeline(t *testing.T) {
 	// The record was enqueued before this response reached us and the writer is
 	// blocked on the lock we hold, so nothing has been appended yet. Signal
 	// shutdown; the drain must wait for the writer, which can only proceed once
-	// the lock is released -- so release it shortly after. A shutdown that
-	// returned without draining (no h.Close) returns immediately, before this
-	// release, with the record still queued, which the assertion below catches.
+	// the lock is released -- so record the instant the shutdown began and
+	// release the lock shortly after. A shutdown that returned without draining
+	// (no h.Close) returns immediately, before this release, with the record
+	// still queued, which the elapsed-time assertion below rejects.
+	shutdownAt := time.Now()
 	cancel()
-	time.AfterFunc(300*time.Millisecond, release)
+	const releaseDelay = 300 * time.Millisecond
+	time.AfterFunc(releaseDelay, release)
 
 	awaitProxyStop(t, errCh)
+
+	// runProxy cannot return before the lock is released (see the doc comment),
+	// so returning at or after the delay is the proof that the record was still
+	// queued when the shutdown began -- i.e. that the drain was really
+	// exercised. A shutdown that returned without waiting would return in
+	// milliseconds, well before the release, and fail here.
+	assert.GreaterOrEqual(t, time.Since(shutdownAt), releaseDelay,
+		"runProxy returned before the write lock was released, so the record was not still queued and the drain went unexercised")
 
 	_, ok, rows := ledgerSnapshot(t, dbPath)
 	require.True(t, ok, "the ledger must hold the record accepted before shutdown")

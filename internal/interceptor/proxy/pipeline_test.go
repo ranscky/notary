@@ -23,6 +23,31 @@ import (
 	"notary/internal/store"
 )
 
+// guardedBuffer is a bytes.Buffer safe for concurrent use. The pipeline may
+// write a drop marker from the producer goroutine that calls Write and a
+// writer-side report from its writer goroutine, so a plain bytes.Buffer handed
+// to it as a loud channel would be a data race under -race. It is this
+// package's local, unexported copy of cmd/notary/proxy_test.go's syncBuffer:
+// the two are different packages, so each test package declares its own.
+type guardedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// Write appends p under the lock.
+func (b *guardedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// String returns the buffer's contents under the lock.
+func (b *guardedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // ---------------------------------------------------------------------------
 // shared test fixtures (Task 3 reuses these -- do not redeclare in this package)
 // ---------------------------------------------------------------------------
@@ -303,7 +328,7 @@ func TestPipelineCloseDrainsTheTallyBeforeClosingTheSink(t *testing.T) {
 		readAtClose = true
 	}
 
-	var marks bytes.Buffer
+	var marks guardedBuffer
 	p := proxy.NewPipeline(sink, g, []io.Writer{&marks}, 1)
 
 	scope := record.Scope{UserID: "u1"}
@@ -514,7 +539,11 @@ func TestPipelineConcurrentWritesDuringCloseAreSafe(t *testing.T) {
 	sink.Release() // non-blocking sink: the writer always drains
 
 	const depth = 2048 // larger than the workload below, so nothing drops
-	p := proxy.NewPipeline(sink, nil, nil, depth)
+	// The markers are captured so the test can assert WHICH refusal kind was
+	// counted -- see the attribution assertions below. Writers and the writer
+	// goroutine reach the channel concurrently, so the buffer is guarded.
+	var marks guardedBuffer
+	p := proxy.NewPipeline(sink, nil, []io.Writer{&marks}, depth)
 
 	const writers, perWriter = 8, 128
 	const total = writers * perWriter
@@ -561,6 +590,24 @@ func TestPipelineConcurrentWritesDuringCloseAreSafe(t *testing.T) {
 	received := sink.received()
 	assert.Equal(t, uint64(total), uint64(len(received))+p.Drops(),
 		"every write was either accepted and drained to the sink or refused after Close")
+
+	// The sum above cannot tell WHICH kind of refusal it balanced against: a
+	// queue-full drop would satisfy it identically, and a queue-full drop here
+	// would be a record refused for a reason that cannot occur -- the queue is
+	// larger than the whole workload. The two refusals carry different marker
+	// text, so the markers decide which kind was counted.
+	//
+	// The after-close half is made unconditional by one probe write of our own,
+	// after Close and after every writer has returned: the closed branch refuses
+	// it deterministically, so the assertion cannot depend on the scheduling
+	// question of whether any concurrent write outlived Close. Every refusal
+	// the concurrent phase counted, if any, is held to the same test by the
+	// second assertion: the queue-full marker must not appear.
+	_ = p.Write(proxyTestRecord(t, "probe-after-close", record.EventMemorySurfaced, record.Scope{UserID: "u1"}))
+	assert.Contains(t, marks.String(), "write after close",
+		"the counted refusals must be attributed to Close, not to the queue being full")
+	assert.NotContains(t, marks.String(), "queue full",
+		"the queue is larger than the whole workload, so no refusal may be a queue-full drop")
 
 	inPool := make(map[string]bool, total)
 	for _, r := range records {

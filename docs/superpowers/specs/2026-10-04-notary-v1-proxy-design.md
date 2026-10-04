@@ -409,7 +409,7 @@ written — either could be swapped or even run in parallel behind the `Sink` se
 - **Classification can diverge between the modes through no fault of the code.** A metadata-only rule can
   mark a PROXIED add, because the proxy decodes the add's metadata from the request body, while
   `library.Add`'s signature carries no metadata at all; and `library`'s per-call `Sensitive()` option has no
-  proxy equivalent, so a library caller can mark content the proxy cannot. §9's isolation is therefore about
+  proxy equivalent, so a library caller can mark content the proxy cannot. §9's parity claim is therefore about
   what the two modes RECORD, not about the classification a rules file can produce; the parity test's fixture
   exercises neither case, which is why it passes.
 - **Proxy mode has no per-call sensitivity marking.** Only the rules file can mark proxied content: the proxy
