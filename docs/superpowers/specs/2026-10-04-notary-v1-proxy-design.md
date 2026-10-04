@@ -193,12 +193,18 @@ responsibilities, and the tree's line names the package's entry point rather tha
    same depth: an add carries `user_id`/`agent_id`/`app_id`/`run_id` at the top level of its request
    (`internal/mem0/types.go:99-110`), while a search carries them inside `filters` and nowhere else
    (`:127-133`, and `:140-141` states the rule beside `GetAllRequest`).
-4. **Forward.** The response is streamed back to the caller exactly as Mem0 sent it, and the response status,
-   headers and body are untouched — `httputil.ReverseProxy` handles the hop-by-hop rules that a hand-rolled
-   forwarder gets wrong.
+4. **Forward.** The response status, headers and body reach the caller exactly as Mem0 sent them —
+   `httputil.ReverseProxy` handles the hop-by-hop rules that a hand-rolled forwarder gets wrong. On an
+   observed path the first `--max-body` bytes of the response are held back for the observation, so the
+   caller's *bytes* are identical but an observed response is delivered once that prefix is buffered or the
+   response ends (step 5). An unobserved path streams as it always would. The earlier draft of this sentence
+   said the response was "streamed back", which the implementation does not do on the paths it observes.
 5. **Tee the response body** under the same cap, for the observation only. A response larger than the cap is
    forwarded to the caller in full but not observed, for the same reason as step 1 and with the same
-   consequence: no record.
+   consequence: no record. Because a client may negotiate a compressed response, the observation decodes a
+   **copy** (`Content-Encoding: gzip` included) and the caller's bytes are never touched; an encoding the
+   proxy will not decode is marked loudly rather than skipped in silence, because "we could not read this"
+   must never look the same as "there was nothing to record".
 6. **After the response is complete**, hand the request/response pair to the `Observer`, which builds 0..n
    records and hands each to the sink. Nothing in steps 1–6 touches the ledger.
 
