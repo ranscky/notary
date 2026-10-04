@@ -63,10 +63,15 @@ type Request struct {
 
 // Result reports what an explanation did.
 //
-// It is meaningful in full only on success. On the error path nothing has been
-// written to out and Result is the zero value -- explain builds the whole view
-// before writing any of it -- so a caller must check the error before trusting
-// Result.
+// It is meaningful in full only on success. Explain fails on two kinds of path,
+// and they differ. A missing subject, a read failure, a render failure and a
+// cancelled context all happen while the whole view is built, BEFORE any byte is
+// written, so on those paths out is untouched and Result is the zero value. A
+// write failure is the other kind: it happens after the build, out may already
+// be partially written, and Result then carries the counts as they stood when
+// the failure occurred -- the records tallied before the write failed, matching
+// export.Result and replay.Result. Either way a caller must check the error
+// beside Result before trusting any field.
 type Result struct {
 	// Records is the number of records in the view.
 	Records int
@@ -119,8 +124,8 @@ func (e *Explainer) Explain(ctx context.Context, req Request, out io.Writer) (Re
 		return Result{}, err
 	}
 
-	// The whole view is built before a byte is written, so a failure partway
-	// through leaves out untouched rather than half-written.
+	// The whole view is built before a byte is written, so any failure while it
+	// is built leaves out untouched rather than half-written.
 	var res Result
 	var prose strings.Builder
 	jsonRecords := make([]jsonRecord, 0, len(records))
