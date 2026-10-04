@@ -8,17 +8,16 @@
 // error even when the record cannot be written, so an audit problem can never
 // become a caller's problem. A failure of the Mem0 call itself is a real error
 // and is returned unchanged, writing no record.
+//
+// The records themselves are built by the shared interceptor.Observer, which
+// the proxy (Phase 9) uses too, so the two deployment modes cannot drift. This
+// package owns the Mem0 call, the correlation-ID and client validation, and the
+// mapping of a call onto the Observer's per-call inputs.
 package library
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"notary/internal/interceptor"
@@ -31,11 +30,6 @@ import (
 // clock -- so an empty one is rejected before any Mem0 call is made. Callers
 // with no natural identifier should derive one with DeriveCorrelationID.
 var ErrMissingCorrelationID = errors.New("library: missing correlation ID")
-
-// correlationDomain domain-separates DeriveCorrelationID's digest from every
-// other use of SHA-256, so its output can never be confused with a bare hash of
-// the same concatenated fields.
-const correlationDomain = "notary/corr/v1"
 
 // defaultMessageRole is the role Notary stamps on each message string it sends
 // to Mem0's Add endpoint. Add's signature carries only content strings, so all
@@ -55,7 +49,8 @@ type Mem0Interceptor struct {
 	// Search rather than dereferenced, so a misconfiguration cannot panic.
 	mc *mem0.Client
 	// aw is the fail-open-loud write path. It is borrowed: Close closes it (the
-	// AuditWriter owns the gap log) but never the ledger.
+	// AuditWriter owns the gap log) but never the ledger. It is also the
+	// Observer's Sink, so a nil aw means there is no ledger to write to.
 	aw *interceptor.AuditWriter
 	// scope is the caller context stamped on every record this interceptor
 	// writes.
@@ -63,11 +58,15 @@ type Mem0Interceptor struct {
 	// now supplies the clock used to stamp a record's At and RecordedAt. It is
 	// never time.Now in the write path unless the caller supplied nil.
 	now func() time.Time
-	// rules is the sensitivity rule set consulted for every record this
-	// interceptor writes, or nil for none. It is set once, by New, and never
-	// mutated afterwards, so the interceptor stays safe for concurrent use
-	// (see the type comment). A nil rule set matches nothing.
+	// rules is the sensitivity rule set the construction options set, or nil
+	// for none. It is read once, by New, to build observer, and never mutated
+	// afterwards, so the interceptor stays safe for concurrent use (see the
+	// type comment). A nil rule set matches nothing.
 	rules *interceptor.RuleSet
+	// observer builds every record this interceptor writes. It is built in New
+	// from aw and rules and holds no mutable state, so Add and Search stay safe
+	// for concurrent use (see the type comment).
+	observer *interceptor.Observer
 }
 
 // New returns a Mem0Interceptor that calls mc, writes through aw, stamps its
@@ -99,6 +98,13 @@ func New(mc *mem0.Client, aw *interceptor.AuditWriter, scope record.Scope, now f
 			opt(m)
 		}
 	}
+	// The Observer shares this interceptor's writer and rule set. Its records
+	// are byte-identical to what this package built inline before the
+	// extraction. The nil-aw guard lives at the call sites (Add and Search):
+	// a nil *interceptor.AuditWriter stored in the Sink interface is not a nil
+	// interface, so handing it the Observer to write would call Write on a nil
+	// pointer and panic.
+	m.observer = interceptor.NewObserver(aw, interceptor.WithRules(m.rules))
 	return m
 }
 
@@ -142,35 +148,6 @@ func resolveCallOptions(opts []CallOption) callConfig {
 		}
 	}
 	return cfg
-}
-
-// marking is one record's resolved content sensitivity, computed where the
-// record's Content is built and before the record is hashed. sensitive is the
-// OR of the caller's per-call option and the interceptor's rule set.
-//
-// It carries only the boolean. Which rule matched -- if any -- cannot be
-// persisted: record.Content is {Text, Sensitive} and both are covered by the
-// record hash, so recording the rule's name would change the digest of every
-// existing record. The flag is the evidentiary fact; which rule produced it is
-// declarative configuration, reproducible from the rules file.
-type marking struct {
-	sensitive bool
-}
-
-// classify resolves the sensitivity of one record's content. The caller's
-// per-call option and the interceptor's rule set are an OR: either marks the
-// content sensitive, and there is deliberately no way for a call option to
-// un-mark content a rule matched, because the safe direction is the only one
-// worth having.
-//
-// metadata is the Mem0 metadata available where the record is built: the add
-// request's metadata for the add path, and the per-result metadata Mem0
-// returned for the search-surfaced path. A nil rule set matches nothing, so an
-// interceptor built without WithSensitivityRules matches nothing (RuleSet.Match
-// is nil-safe).
-func (m *Mem0Interceptor) classify(callSensitive bool, metadata map[string]any) marking {
-	_, matched := m.rules.Match(m.scope, metadata)
-	return marking{sensitive: callSensitive || matched}
 }
 
 // FailMode reports the mode this interceptor runs under: always FailOpenLoud.
@@ -224,7 +201,7 @@ func (m *Mem0Interceptor) Close() error {
 // On a Mem0 error, Add returns that error and writes no record -- a Mem0
 // failure is a real error, not an audit gap. When Mem0 succeeds, Add returns
 // the response with a nil error unconditionally, even when the record cannot be
-// written (see write).
+// written (see interceptor.Observer).
 func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, messages []string, opts ...CallOption) (mem0.AddResponse, error) {
 	if correlationID == "" {
 		return mem0.AddResponse{}, ErrMissingCorrelationID
@@ -245,7 +222,24 @@ func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, message
 		return mem0.AddResponse{}, err
 	}
 
-	m.observeAdd(correlationID, messages, req.Metadata, resp, resolveCallOptions(opts).sensitive)
+	// Keep library's tolerance of a nil AuditWriter. A nil *AuditWriter stored
+	// in the Observer's Sink interface is a non-nil interface, so it would call
+	// Write on a nil pointer and panic; the guard must live here, before the
+	// Observer call, rather than behind the interface.
+	if m.aw == nil {
+		return resp, nil
+	}
+	at := m.now().UTC()
+	m.observer.Add(interceptor.AddObservation{
+		Scope:         m.scope,
+		CorrelationID: correlationID,
+		Messages:      messages,
+		Metadata:      req.Metadata,
+		Response:      resp,
+		At:            at,
+		RecordedAt:    at,
+		Sensitive:     resolveCallOptions(opts).sensitive,
+	})
 	return resp, nil
 }
 
@@ -267,7 +261,7 @@ func (m *Mem0Interceptor) Add(ctx context.Context, correlationID string, message
 //
 // On a Mem0 error, Search returns that error and writes no record. When Mem0
 // succeeds, Search returns the response with a nil error unconditionally, even
-// when the records cannot be written (see write).
+// when the records cannot be written (see interceptor.Observer).
 func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q mem0.SearchRequest, opts ...CallOption) (mem0.SearchResponse, error) {
 	if correlationID == "" {
 		return mem0.SearchResponse{}, ErrMissingCorrelationID
@@ -281,244 +275,22 @@ func (m *Mem0Interceptor) Search(ctx context.Context, correlationID string, q me
 		return mem0.SearchResponse{}, err
 	}
 
-	m.observeSearch(correlationID, q, resp, resolveCallOptions(opts).sensitive)
-	return resp, nil
-}
-
-// observeAdd builds and writes the single add_requested record. It is
-// best-effort by construction: every step is total for the inputs Add can
-// produce, and a step that cannot build a record simply skips the write rather
-// than failing the caller's already-successful Add.
-//
-// metadata is the Mem0 metadata the add carried, which is what a sensitivity
-// rule's metadata clause matches against. Add's signature has no metadata
-// parameter, so today it is always nil and only a scope clause can match an
-// add; the metadata is threaded anyway so a future metadata-bearing add needs
-// no change here.
-func (m *Mem0Interceptor) observeAdd(correlationID string, messages []string, metadata map[string]any, resp mem0.AddResponse, callSensitive bool) {
-	at := m.now().UTC()
-
-	payload, err := json.Marshal(mem0.AddPayload{EventID: resp.EventID, Status: resp.Status})
-	if err != nil {
-		return
-	}
-	reason, ok := observedReason(record.ReasonAddAcknowledged, payload)
-	if !ok {
-		return
-	}
-
-	contentHash := record.ContentHash(messages...)
-	mark := m.classify(callSensitive, metadata)
-	rec := record.Record{
-		ID:         record.RecordID(correlationID),
-		At:         at,
-		RecordedAt: at,
-		Event:      record.EventAddRequested,
-		Reason:     reason,
-		Subject: record.Subject{
-			Scope:       m.scope,
-			ContentHash: contentHash,
-		},
-		Content: &record.Content{Text: strings.Join(messages, "\n"), Sensitive: mark.sensitive},
-	}
-	// The identifier is the caller's correlation ID (the record's own
-	// identity), NOT resp.EventID. resp.EventID is Mem0's answer, and keying
-	// on it would (a) make deduplication depend on the response, so a retry
-	// Mem0 assigns a fresh event id to would not dedupe, and (b) collide two
-	// genuinely distinct operations that happen to share a response id -- the
-	// exact silent loss the key exists to prevent (see
-	// TestAddContentHashCollisionResistance). The correlation ID identifies the
-	// logical operation; Mem0's event id travels in the evidence payload.
-	rec.IdempotencyKey = idemKey(record.EventAddRequested, record.ReasonAddAcknowledged, m.scope, "", correlationID, contentHash)
-	m.write(rec)
-}
-
-// observeSearch builds and writes the search_performed record and then one
-// memory_surfaced record per result, in rank order. Like observeAdd it is
-// best-effort. callSensitive is the caller's per-call option; each surfaced
-// record's classification is that ORed with any matching rule, resolved inside
-// writeSurfaced where its Content is built.
-func (m *Mem0Interceptor) observeSearch(correlationID string, q mem0.SearchRequest, resp mem0.SearchResponse, callSensitive bool) {
-	at := m.now().UTC()
-
-	m.writeSearchPerformed(correlationID, q, len(resp.Results), at)
-	for i, res := range resp.Results {
-		m.writeSurfaced(correlationID, i+1, res, at, callSensitive)
-	}
-}
-
-// writeSearchPerformed builds and writes the search_performed record. Its
-// Content is deliberately nil: the query is already captured (canonically) in
-// the Observed evidence payload, and the ledger should not carry a second,
-// unsigned copy of caller-supplied query text as if it were memory content. The
-// Subject.ContentHash still hashes the query, so the record's Subject is never
-// the zero hash.
-func (m *Mem0Interceptor) writeSearchPerformed(correlationID string, q mem0.SearchRequest, count int, at time.Time) {
-	payload, err := json.Marshal(mem0.SearchPerformedPayload{
-		Query:     q.Query,
-		Filters:   q.Filters,
-		TopK:      q.TopK,
-		Threshold: q.Threshold,
-		Rerank:    q.Rerank,
-		Count:     count,
-	})
-	if err != nil {
-		return
-	}
-	reason, ok := observedReason(record.ReasonSearchPerformed, payload)
-	if !ok {
-		return
-	}
-
-	contentHash := record.ContentHash(q.Query)
-	rec := record.Record{
-		ID:         record.RecordID(correlationID),
-		At:         at,
-		RecordedAt: at,
-		Event:      record.EventSearchPerformed,
-		Reason:     reason,
-		Subject: record.Subject{
-			Scope:       m.scope,
-			ContentHash: contentHash,
-		},
-	}
-	// A search_performed record has no Mem0 event id, so the correlation ID
-	// carries the identifier for the key.
-	rec.IdempotencyKey = idemKey(record.EventSearchPerformed, record.ReasonSearchPerformed, m.scope, "", correlationID, contentHash)
-	m.write(rec)
-}
-
-// writeSurfaced builds and writes one memory_surfaced record for a single
-// search result. rank is 1-based and supplies both the record ID's "#rank"
-// suffix and the rank carried in the evidence payload. callSensitive is the
-// caller's per-call option; the record's content is marked sensitive when that
-// option was passed OR a rule matches the record's scope and the per-result
-// metadata Mem0 returned (res.Memory.Metadata), resolved here before the record
-// is hashed.
-func (m *Mem0Interceptor) writeSurfaced(correlationID string, rank int, res mem0.SearchResult, at time.Time, callSensitive bool) {
-	payload, err := json.Marshal(mem0.MemorySurfacedPayload{Score: res.Score, Rank: rank})
-	if err != nil {
-		return
-	}
-	reason, ok := observedReason(record.ReasonReturnedBySearch, payload)
-	if !ok {
-		return
-	}
-
-	contentHash := record.ContentHash(res.Memory.Memory)
-	derivedID := derivedRecordID(correlationID, rank)
-	mark := m.classify(callSensitive, res.Memory.Metadata)
-	rec := record.Record{
-		ID:         derivedID,
-		At:         at,
-		RecordedAt: at,
-		Event:      record.EventMemorySurfaced,
-		Reason:     reason,
-		Subject: record.Subject{
-			MemoryID:    res.ID,
-			Scope:       m.scope,
-			ContentHash: contentHash,
-		},
-		Content: &record.Content{Text: res.Memory.Memory, Sensitive: mark.sensitive},
-	}
-	// The key must identify THIS record, not merely the search it belongs to.
-	// Every result of one search shares the correlation ID, and two results may
-	// carry identical memory text -- hence an identical content hash -- so
-	// keying on (correlationID, contentHash) would collapse them: Append would
-	// treat the second as a duplicate, return the first record's ID with a nil
-	// error, and write nothing -- the exact silent loss Task 18's Ruling R41
-	// exists to prevent. The record's derived ID (correlationID plus its 1-based
-	// "#rank" suffix) IS its identity and varies with rank even when the text
-	// does not, so it is the identifier the key is built from: identical text at
-	// different ranks derives different keys.
-	//
-	// The Mem0 memory ID (res.ID) travels on the record's Subject and is
-	// deliberately NOT folded into the key: like an add's response event id, it
-	// is response data, and keying on it would make deduplication depend on the
-	// response (see the add_recorded reasoning in observeAdd) rather than on the
-	// logical operation. The derived ID already distinguishes every record of a
-	// single search, so it is sufficient and stable across a retry.
-	rec.IdempotencyKey = idemKey(record.EventMemorySurfaced, record.ReasonReturnedBySearch, m.scope, "", string(derivedID), contentHash)
-	m.write(rec)
-}
-
-// write hands rec to the audit writer. It is the fail-open boundary: the
-// AuditWriter has already absorbed a ledger failure by recording a durable gap,
-// so the only error it can return is the doubly-failed case (the ledger AND the
-// gap log both refused the record).
-//
-// That error is deliberately discarded. When Mem0 has succeeded, the caller
-// must get a nil error: turning a doubly-failed audit into a caller failure
-// would be exactly the audit-problem-as-caller-problem that fail-open-loud
-// exists to prevent. The loud channel (os.Stderr, by default) is the operator's
-// signal, and the AuditWriter writes its marker to every channel before it
-// returns that error, so the loud signal survives the discard.
-//
-// The discarded error is not lost in the sense that matters: a record that
-// failed both the ledger and the gap log is reconciled on the Task 19
-// background path, which reads the ledger directly and has no Mem0 call whose
-// success a returned error could otherwise misreport. There, and only there,
-// the error is actionable. This is the one place the error is intentionally
-// dropped, so it is written as an explicit discard with this comment rather
-// than an ignored return.
-func (m *Mem0Interceptor) write(rec record.Record) {
+	// The same nil-AuditWriter guard as Add, for the same reason: a nil
+	// *AuditWriter in the Sink interface is not a nil interface.
 	if m.aw == nil {
-		return
+		return resp, nil
 	}
-	_ = m.aw.Write(rec)
-}
-
-// idemKey derives the idempotency key for a record this interceptor writes,
-// from the record's event, its reason kind (the tier distinguisher), the scope,
-// the caller's correlation ID as the identifier, and the request digest.
-//
-// The identifier is the caller's correlation ID (eventID is empty): it
-// identifies the logical operation and is stable across a retry, whereas the
-// identifiers Mem0 returns are response data and would make deduplication
-// depend on the response. A memory_surfaced record has no event id of its own,
-// so it carries its DERIVED record ID (correlationID + "#" + rank) as the
-// identifier instead -- the record's own identity, which distinguishes
-// records even when two results of one search share identical text and so an
-// identical digest.
-//
-// It is deliberately total. The caller's correlation ID is validated
-// non-empty before any Mem0 call (ErrMissingCorrelationID), and DeriveIdemKey
-// only fails when both the event id and the correlation id are empty, so for
-// every call that reaches a builder DeriveIdemKey cannot fail. This branch is
-// therefore unreachable in practice; it exists so that if it ever were
-// reached, the record is still written -- keyless rather than dropped -- and
-// the caller is never failed (Ruling A: a Mem0 success must return (resp,
-// nil)). A keyless write appends normally; it simply is not deduplicatable.
-func idemKey(event record.EventType, kind record.ReasonKind, scope record.Scope, eventID, correlationID string, digest record.Hash) record.IdemKey {
-	key, err := record.DeriveIdemKey(event, kind, scope, eventID, correlationID, digest)
-	if err != nil {
-		return ""
-	}
-	return key
-}
-
-// observedReason builds an Observed reason of kind over raw JSON payload,
-// reporting false when the payload or reason cannot be formed. Neither failure
-// is reachable for the payloads this file builds, but the error is handled
-// rather than panicked so no audit problem can crash a caller.
-func observedReason(kind record.ReasonKind, payload []byte) (record.Reason, bool) {
-	ev, err := record.NewObservedEvidence(record.SourceMem0Response, payload)
-	if err != nil {
-		return record.Reason{}, false
-	}
-	reason, err := record.NewObservedReason(kind, ev)
-	if err != nil {
-		return record.Reason{}, false
-	}
-	return reason, true
-}
-
-// derivedRecordID returns the record ID for the rank-th derived record of a
-// call: the correlation ID with a 1-based "#rank" suffix. The "#" separator
-// cannot occur in a base64 correlation ID (see DeriveCorrelationID), so a
-// derived ID can never be mistaken for a primary one.
-func derivedRecordID(correlationID string, rank int) record.RecordID {
-	return record.RecordID(fmt.Sprintf("%s#%d", correlationID, rank))
+	at := m.now().UTC()
+	m.observer.Search(interceptor.SearchObservation{
+		Scope:         m.scope,
+		CorrelationID: correlationID,
+		Request:       q,
+		Response:      resp,
+		At:            at,
+		RecordedAt:    at,
+		Sensitive:     resolveCallOptions(opts).sensitive,
+	})
+	return resp, nil
 }
 
 // messagesToWire maps Add's content strings onto Mem0 wire messages. Add's
@@ -554,25 +326,21 @@ func messagesToWire(messages []string) []mem0.Message {
 // seed is an explicit argument and is never a timestamp: the scheme is
 // deterministic in its inputs by construction, so it cannot silently become the
 // clock-derived key the spec forbids.
+//
+// The definition lives in internal/interceptor, where the shared Observer is,
+// so the library interceptor and the proxy derive identical IDs from one
+// implementation. This is a one-line delegator that keeps this package's
+// exported surface intact.
 func DeriveCorrelationID(scope record.Scope, seed string) string {
-	h := sha256.New()
-	h.Write([]byte(correlationDomain))
-	var n [4]byte
-	for _, f := range []string{scope.UserID, scope.AgentID, scope.AppID, scope.RunID, seed} {
-		binary.BigEndian.PutUint32(n[:], uint32(len(f)))
-		h.Write(n[:])
-		h.Write([]byte(f))
-	}
-	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+	return interceptor.DeriveCorrelationID(scope, seed)
 }
 
-// The Observed evidence payloads that observeAdd, writeSearchPerformed and
-// writeSurfaced marshal -- mem0.AddPayload, mem0.SearchPerformedPayload and
-// mem0.MemorySurfacedPayload -- live in internal/mem0, beside the response
-// types they project. They are shared with the Phase 5 reconciler, which reads
-// the same payloads back and must not import its sibling interceptor. Their
-// bytes are inside the canonical record hash, so their field NAMES and JSON
-// TAGS are frozen; declaration order is not hashed (NewObservedEvidence
-// canonicalises to sorted-key JSON), but mem0/evidence_test.go still pins it.
-// internal/ledger's real-record fixtures are what guard this package's actual
-// emitted bytes end to end.
+// The Observed evidence payloads the Observer marshals -- mem0.AddPayload,
+// mem0.SearchPerformedPayload and mem0.MemorySurfacedPayload -- live in
+// internal/mem0, beside the response types they project. They are shared with
+// the Phase 5 reconciler, which reads the same payloads back and must not
+// import its sibling interceptor. Their bytes are inside the canonical record
+// hash, so their field NAMES and JSON TAGS are frozen; declaration order is not
+// hashed (NewObservedEvidence canonicalises to sorted-key JSON), but
+// mem0/evidence_test.go still pins it. internal/ledger's real-record fixtures
+// are what guard this package's actual emitted bytes end to end.

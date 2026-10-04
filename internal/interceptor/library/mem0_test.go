@@ -291,7 +291,16 @@ func TestAddWritesOneObservedRecord(t *testing.T) {
 	assert.Equal(t, uint64(0), rec.Seq, "the ledger, not the interceptor, assigns Seq")
 	assert.Equal(t, at, rec.At.UTC())
 	assert.Equal(t, at, rec.RecordedAt.UTC())
-	assert.NotEmpty(t, rec.IdempotencyKey, "Phase 4 writes records with a derived idempotency key")
+
+	// Pin the content hash and the idempotency key by their DOCUMENTED
+	// DERIVATION rather than a literal digest. The refactor must not move
+	// either -- idemKey's identifier argument in particular -- so this asserts
+	// the derivation from the exact inputs the record was built from.
+	wantHash := record.ContentHash("hello", "world")
+	assert.Equal(t, wantHash, rec.Subject.ContentHash)
+	wantKey, err := record.DeriveIdemKey(record.EventAddRequested, record.ReasonAddAcknowledged, scope, "", "corr-add-1", wantHash)
+	require.NoError(t, err)
+	assert.Equal(t, wantKey, rec.IdempotencyKey)
 
 	require.NotNil(t, rec.Content)
 	assert.Equal(t, "hello\nworld", rec.Content.Text)
@@ -369,6 +378,16 @@ func TestSearchWritesPerformedAndSurfacedRecords(t *testing.T) {
 	assert.Equal(t, record.Observed, performed.Reason.Tier())
 	assert.Equal(t, record.ReasonSearchPerformed, performed.Reason.Kind())
 	assert.Equal(t, scope, performed.Subject.Scope)
+
+	// Pin the search_performed content hash and idempotency key by their
+	// documented derivation: a search_performed record keyed on the caller's
+	// correlation ID and the query's content hash.
+	wantPerformedHash := record.ContentHash("office printer")
+	assert.Equal(t, wantPerformedHash, performed.Subject.ContentHash)
+	wantPerformedKey, err := record.DeriveIdemKey(record.EventSearchPerformed, record.ReasonSearchPerformed, scope, "", "corr-search-1", wantPerformedHash)
+	require.NoError(t, err)
+	assert.Equal(t, wantPerformedKey, performed.IdempotencyKey)
+
 	env := decodeReason(t, performed)
 	payload := payloadMap(t, env)
 	assert.Equal(t, "office printer", payload["query"])
@@ -385,6 +404,17 @@ func TestSearchWritesPerformedAndSurfacedRecords(t *testing.T) {
 	assert.Equal(t, "ca4535c6-4847-4a43-8d65-f4871b7f5d99", surfaced.Subject.MemoryID)
 	require.NotNil(t, surfaced.Content)
 	assert.Equal(t, "User's shared office printer is located on floor 3", surfaced.Content.Text)
+
+	// Pin the memory_surfaced content hash and idempotency key by their
+	// documented derivation. The key is built from the record's own DERIVED
+	// ID (correlationID + "#" + rank), not the search's -- the ruling at
+	// mem0.go:424-441, which the refactor must not move.
+	wantSurfacedHash := record.ContentHash("User's shared office printer is located on floor 3")
+	assert.Equal(t, wantSurfacedHash, surfaced.Subject.ContentHash)
+	wantSurfacedKey, err := record.DeriveIdemKey(record.EventMemorySurfaced, record.ReasonReturnedBySearch, scope, "", "corr-search-1#1", wantSurfacedHash)
+	require.NoError(t, err)
+	assert.Equal(t, wantSurfacedKey, surfaced.IdempotencyKey)
+
 	senv := decodeReason(t, surfaced)
 	assert.Equal(t, "mem0_response", senv.Observed.Source)
 	sp := payloadMap(t, senv)
@@ -651,6 +681,48 @@ func TestFailModeAndClose(t *testing.T) {
 		require.NoError(t, ic.Close())
 		require.Error(t, g.Record(gap.Entry{Kind: record.EventAuditGap, CorrelationID: "x", Detail: "y"}),
 			"Close must have closed the underlying gap log")
+	})
+}
+
+// TestNilAuditWriterWritesNoRecordButReturnsResponse pins library's tolerance
+// of a nil AuditWriter THROUGH the refactor. A constructed interceptor with a
+// nil writer stores a nil *interceptor.AuditWriter in the Observer's Sink
+// interface, which is NOT a nil interface; the call-site guard must stop it
+// before the Observer would call Write on a nil pointer and panic. Add and
+// Search must still return Mem0's response and write nothing.
+func TestNilAuditWriterWritesNoRecordButReturnsResponse(t *testing.T) {
+	at := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	scope := record.Scope{UserID: "u1"}
+
+	t.Run("Add", func(t *testing.T) {
+		l, _, _, _ := newHarness(t)
+		srv := serve(t, &capture{}, http.StatusOK, fixture(t, "add_response.json"))
+		ic := library.New(mem0.NewClient(srv.URL, "k", nil), nil, scope, fixedNow(at))
+
+		var resp mem0.AddResponse
+		var err error
+		require.NotPanics(t, func() {
+			resp, err = ic.Add(context.Background(), "corr-nilaw-add", []string{"x"})
+		}, "a nil AuditWriter must not panic the write path")
+		require.NoError(t, err)
+		assert.Equal(t, "6e2b49d1-7c73-4947-bc9b-675224e43ddb", resp.EventID,
+			"Mem0's response is still returned")
+		assert.Empty(t, listAll(t, l, at), "a nil writer writes no record")
+	})
+
+	t.Run("Search", func(t *testing.T) {
+		l, _, _, _ := newHarness(t)
+		srv := serve(t, &capture{}, http.StatusOK, fixture(t, "search_response.json"))
+		ic := library.New(mem0.NewClient(srv.URL, "k", nil), nil, scope, fixedNow(at))
+
+		var resp mem0.SearchResponse
+		var err error
+		require.NotPanics(t, func() {
+			resp, err = ic.Search(context.Background(), "corr-nilaw-search", mem0.SearchRequest{Query: "q"})
+		}, "a nil AuditWriter must not panic the write path")
+		require.NoError(t, err)
+		require.Len(t, resp.Results, 1, "Mem0's results are still returned")
+		assert.Empty(t, listAll(t, l, at), "a nil writer writes no record")
 	})
 }
 
