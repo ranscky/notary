@@ -108,6 +108,14 @@ func New(r Reader) *Explainer {
 // record and owns the canonical wording of the fault, so explain surfaces
 // Render's error.
 //
+// An empty view writes nothing to out: a --memory request whose memory has no
+// records produces no header and no empty JSON document, and Result.Records is
+// zero. The package does not turn that into an error -- the CLI owns the
+// no-records failure -- but it also puts no success-shaped document on stdout
+// for the CLI's non-zero exit to contradict: a --json consumer would otherwise
+// read a valid empty document as a successful answer, the gap-shaped success
+// design §5 exists to eliminate.
+//
 // Explain fails only on a missing subject, a read error, a render error (an
 // invalid tier or an unphrased claim), a write error, or a cancelled context.
 // It does not paraphrase, does not sign, and writes to no file but out.
@@ -130,7 +138,9 @@ func (e *Explainer) Explain(ctx context.Context, req Request, out io.Writer) (Re
 	var prose strings.Builder
 	jsonRecords := make([]jsonRecord, 0, len(records))
 
-	if !req.JSON && req.RecordID == "" {
+	// The header names the subject only when there is a timeline beneath it, so
+	// an empty view leaves the builder empty rather than carrying a lone header.
+	if !req.JSON && req.RecordID == "" && len(records) > 0 {
 		fmt.Fprintf(&prose, "Memory %s\n", req.MemoryID)
 	}
 
@@ -171,6 +181,15 @@ func (e *Explainer) Explain(ctx context.Context, req Request, out io.Writer) (Re
 		if line.Redacted != "" {
 			res.Redacted++
 		}
+	}
+
+	// An empty view writes nothing. explain emits no header and no empty JSON
+	// document for a subject with no records: the CLI fails loudly on
+	// Records == 0, and a --json consumer must not receive a valid empty
+	// document beside that non-zero exit -- a gap-shaped success. The CLI stays
+	// the single owner of the no-records error.
+	if res.Records == 0 {
+		return res, nil
 	}
 
 	if req.JSON {

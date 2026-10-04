@@ -198,17 +198,28 @@ func TestExplainMemoryRendersATimelineInSeqOrder(t *testing.T) {
 	assert.Equal(t, 0, r.getCalls)
 }
 
-// TestExplainEmptyMemoryNamesTheSubjectAndWritesNoRecords pins the empty-memory
-// view: the subject is named, no record line is written, and the result is zero.
-// A memory with no recorded lifecycle is a real answer, not an error.
-func TestExplainEmptyMemoryNamesTheSubjectAndWritesNoRecords(t *testing.T) {
-	e := explain.New(&fakeReader{byMem: map[string][]record.Record{}})
+// TestExplainEmptyMemoryViewWritesNothingAndDoesNotError pins the empty-memory
+// view in both shapes: a memory with no records produces NO output at all -- no
+// header, and, in JSON, no empty document -- and Result is the zero value with a
+// nil error. The package does not own the no-records failure (the CLI does), but
+// it must not put a success-shaped document on stdout for the CLI's non-zero
+// exit to contradict.
+func TestExplainEmptyMemoryViewWritesNothingAndDoesNotError(t *testing.T) {
+	for _, jsonMode := range []bool{false, true} {
+		name := "prose"
+		if jsonMode {
+			name = "json"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := explain.New(&fakeReader{byMem: map[string][]record.Record{}})
 
-	var buf bytes.Buffer
-	res, err := e.Explain(context.Background(), explain.Request{MemoryID: "mem-none"}, &buf)
-	require.NoError(t, err)
-	assert.Equal(t, explain.Result{}, res)
-	assert.Equal(t, "Memory mem-none\n", buf.String(), "the subject is named; no record lines are written")
+			var buf bytes.Buffer
+			res, err := e.Explain(context.Background(), explain.Request{MemoryID: "mem-none", JSON: jsonMode}, &buf)
+			require.NoError(t, err, "an empty view is not a package error; the CLI owns that")
+			assert.Equal(t, explain.Result{}, res)
+			assert.Empty(t, buf.String(), "an empty view must write nothing, in prose or JSON")
+		})
+	}
 }
 
 // --- subject guard ----------------------------------------------------------
