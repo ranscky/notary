@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notary setup</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; line-height: 1.5; margin: 2rem auto; max-width: 64rem; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { text-align: left; vertical-align: top; padding: 0.4rem 0.6rem; border-bottom: 1px solid #999; }
+  td.severity { font-weight: 600; white-space: nowrap; }
+  td.severity.ok { color: #1a7f37; }
+  td.severity.warn { color: #9a6700; }
+  td.severity.error { color: #b42318; }
+  code { font-size: 0.9em; }
+  footer { margin-top: 2rem; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<main>
+<h1>Notary setup</h1>
+<p>
+Written by <code>notary doctor</code>: {{.OKs}} ok, {{.Warns}} warning(s), {{.Errs}} error(s).
+Errors make <code>notary doctor</code> exit non-zero; warnings do not.
+</p>
+<table>
+<thead>
+<tr><th>Check</th><th>Result</th><th>What was found</th><th>Fix</th></tr>
+</thead>
+<tbody>
+{{range .Findings -}}
+<tr>
+<td>{{.Check}}</td>
+<td class="severity {{.Severity}}">{{.Severity}}</td>
+<td>{{.Message}}</td>
+<td>{{if .Fix}}<code>{{.Fix}}</code>{{end}}</td>
+</tr>
+{{end -}}
+</tbody>
+</table>
+<footer>
+This page reports how this machine is configured; it is not part of the evidence report.
+It never contains key material: keys are named by the variable or file they live in.
+</footer>
+</main>
+</body>
+</html>

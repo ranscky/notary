@@ -22,6 +22,7 @@ var rootSubcommands = []string{
 	"replay",
 	"explain",
 	"proxy",
+	"doctor",
 }
 
 // TestNewRootCmdRegistersExactlyTheExpectedSubcommands pins the root command's
