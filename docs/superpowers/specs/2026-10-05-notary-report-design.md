@@ -1,7 +1,9 @@
 # Notary — `report` and `doctor`: Design (the first post-v1 phase)
 
-**Status:** draft for review. The decisions in §3 were taken with the operator during brainstorming, including
-the three answered by multiple choice and the three proposed in the design sections and approved as presented.
+**Status:** draft for review. The decisions in §3 were taken with the operator during brainstorming: five
+answered during the dialogue (four by multiple choice, one chosen from three proposed shapes) and two proposed
+in the design sections and approved as presented. The three questions §12 records were put to the operator,
+who delegated them ("choose what works best") and they were decided on merit, with the reasoning kept there.
 Per the brainstorming gate, no implementation starts until this spec is reviewed and a plan is written.
 
 **Date:** 2026-10-05
@@ -57,23 +59,26 @@ so nothing that persists holds a credential.
 
 **Answered during brainstorming:**
 
-1. **Static HTML files, no framework — not a localhost GUI.** *Cost:* no live querying and no interactivity
-   beyond what static files can do; the console shape (a server that browses a live ledger) is not available,
-   and adding it later is a new phase, not a flag.
-2. **A little vanilla JavaScript, no framework.** Enough for a filter box; nothing else. *Cost:* the pages
-   execute code when opened, so the report cannot claim to be inert — see §8's "no claim it cannot back".
-3. **Bounded by construction: a subject, a scope or a range — no `--all`.** *Cost:* producing "everything"
-   takes an explicit wide range, and there is no one-command full-ledger export of the report shape. That is
-   the point: a full render of a production ledger would write thousands of pages holding memory text.
-4. **Both halves of setup: a `doctor` command and a setup page.** *Cost:* two artefacts to keep in step; the
-   page and the command render the same checks, so the checks live in one place (§4) rather than two.
+1. **Static HTML files, no framework — not a localhost GUI.** *Cost:* no live querying, and the console shape
+   (a server over a live ledger) is unavailable; adding it later is a new phase, not a flag.
+2. **A multi-page site in a directory, not one self-contained document.** §6's pages, linked relatively, with
+   `index.html` as the entry point. *Cost:* the folder has to travel as a whole — a single page copied out
+   renders unstyled and its links dangle — and the one-file-to-attach form is deferred (§9).
+3. **A little vanilla JavaScript, no framework.** Enough for a filter box; nothing else. *Cost:* the pages
+   execute code when opened, so the artefact cannot honestly be described as inert — §7 says what it *can* be
+   described as.
+4. **Bounded by construction: a subject, a scope or a range — no `--all`.** *Cost:* producing "everything"
+   takes an explicit wide range. That is the point: a full render of a production ledger would write
+   thousands of pages holding memory text.
+5. **Both halves of setup: a `doctor` command and a setup page.** *Cost:* two artefacts to keep in step; the
+   page and the command render the same checks, which live in one place (§4) so there is one source.
 
 **Proposed in the design sections and approved:**
 
-5. **The setup page is not part of the evidence report.** `doctor --out DIR` writes `setup.html`; `report`
+6. **The setup page is not part of the evidence report.** `doctor --out DIR` writes `setup.html`; `report`
    never does. *Cost:* a reader who wants both runs two commands, in exchange for a shared report never
    carrying the operator's paths, config state and key status alongside the audit trail.
-6. **A verification section, on by default, with `--no-verify`.** `verify` reads the ledger and the trusted
+7. **A verification section, on by default, with `--no-verify`.** `verify` reads the ledger and the trusted
    public keys and needs no private key (`ledger.Verify`, `verify.go:74`), so the generator can check the
    chain and report what it found. *Cost:* this is the piece to cut first if the phase needs to shrink — and
    it carries the honest wrinkle in §9, that a chain's integrity is a whole-ledger property, so a report of
@@ -133,17 +138,19 @@ notary report --out DIR (--memory <mem0-id> | --from <RFC3339> [--to <RFC3339>])
 - **`--include-sensitive`** matches `export` and `explain`: off by default, and it changes only what is
   printed, never a hash.
 - **`--no-verify`** skips §6's chain-state page. It exists for a ledger large enough that a full walk is slow.
+- **`report`'s help text names where the setup page lives** (`notary doctor --out`), which is the whole
+  discoverability cost of §3 decision 6 and cheaper than giving `report` a second, non-evidence product.
 
 ## 6. The pages, and what each one claims
 
 | File | Carries |
 |---|---|
-| `index.html` | The slice: the exact command that produced it, the instant, the memory and record counts, the chain state (below), a filter box, and a table of memories with their record counts and highest tier — each row linking to its page |
+| `index.html` | The slice: the exact command that produced it, the instant, the memory and record counts, the chain state (below), a filter box, and a table of memories with their record counts **and a per-tier count breakdown** — each row linking to its page |
 | `memory/<n>.html` | One memory's lifecycle: the same timeline the CLI's `explain --memory` renders — event, reason kind, tier, both instants, and content — with each line linking to its record |
-| `record/<n>.html` | One record's story: the phrased sentence from `export.Phrase`, the event, the reason kind, the tier, the evidence payload, the subject (memory id, scope, content hash), and the chain fields — `prev_hash`, `hash`, `signer_key_id` — with the long hex in a collapsed `<details>` |
+| `record/<n>.html` | One record's story: the phrased sentence from `export.Phrase`, the event, the reason kind, the tier, the evidence payload, the subject (memory id, scope, content hash), and the chain fields — `prev_hash`, `hash`, `signature`, `signer_key_id` — with the long hex in a collapsed `<details>` |
 | `verify.html` | The chain state in full: clean, or every break with the record id and the field that failed |
 | `assets/report.css`, `assets/report.js` | §7 |
-| `setup.html` | Only from `doctor --out`, never from `report`: §4's findings (§3 decision 5) |
+| `setup.html` | Only from `doctor --out`, never from `report`: §4's findings (§3 decision 6) |
 
 **Page filenames are derived, never taken from an id.** A record id can carry `#`, `:`, `/` and non-ASCII —
 `corr-search-1#1` and `add_resolved:stored_by_mem0:<event-id>` both exist in this codebase — so a filename
@@ -200,8 +207,8 @@ character) and asserts nothing is written outside `--out`.
   the page says so rather than implying the slice was checked.
 - **The pages need their siblings.** `assets/` and the relative links are why the folder travels as a whole;
   a single page copied out on its own renders unstyled and its links dangle. That is the cost of choosing
-  static files over one self-contained document (§3 decision 1, option C, deferred).
-- **The index is not paginated.** It is bounded by the slice, which is a deliberate choice (§3 decision 3);
+  static files over one self-contained document (§3 decision 2's deferred alternative).
+- **The index is not paginated.** It is bounded by the slice, which is a deliberate choice (§3 decision 4);
   a range wide enough to produce a very long index is a range the reader asked for.
 - **Rendering is not streaming.** A large slice builds in memory before it is written. The bound is what keeps
   that acceptable, and it is the bound that would have to change first if it stopped being true.
@@ -234,14 +241,20 @@ character) and asserts nothing is written outside `--out`.
 4. **Docs** — the architecture spec's §9 read-path table gains a row, §13's table gains row 11, §14's delta
    table gains `internal/report`; the README gains both commands; `.clinerules`' folder tree gains the package.
 
-## 12. Open questions for the reviewer
+## 12. Questions that were open, and how they resolved
 
 1. **Whether `doctor --out` should exist at all**, or whether the setup page belongs to `report --setup`.
-   This spec puts it on `doctor` because the checks live there and the page is a rendering of them; the
-   counter-argument is that a reader looking for "show me a page" will look under `report`.
-2. **Whether the record page should carry the signature bytes.** This spec shows `prev_hash`, `hash` and
-   `signer_key_id` and hides the signature in a collapsed block. The alternative — omit it — keeps the page
-   short but means the one field a verifier actually checks is the one a reader cannot see.
-3. **Whether the index's "highest tier" column is the right summary.** A memory can carry several tiers; this
-   spec shows the most defensible-sounding one, which is arguably the wrong bias for an audit view — the
-   least defensible is the one a reader should notice.
+   **Resolved: it stays on `doctor`.** The page is a rendering of `doctor`'s findings, so the command that
+   produces the findings produces its rendering — one concept, one owner. `report`'s identity is "a shareable
+   evidence artefact", and a config page is neither evidence nor shareable, so a `--setup` mode would muddy
+   the one thing `report` has to be crisp about. The discoverability cost is paid by §5's help-text pointer.
+2. **Whether the record page should carry the signature bytes.** **Resolved: yes, collapsed beside the
+   hashes.** The report may be the only artefact that survives a deployment, and a record representation that
+   omits the one field a verifier actually checks is a partial one. It is public data, it costs a collapsed
+   block, and §6's "this file verifies nothing by itself" note already stops a reader from thinking they can
+   check it by eye.
+3. **Whether the index's "highest tier" column was the right summary.** **Resolved: the column was a
+   category error and is replaced by a per-tier count breakdown.** The architecture spec's §3 is explicit that
+   a tier *"is not a confidence score and not a severity"* — so ranking them into a "highest" was wrong on the
+   project's own terms, and whichever end one picked would bias the view. Counts per tier assert nothing the
+   record does not: a memory with three `Observed` claims and one `Reconstructed` one says exactly that.
