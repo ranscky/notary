@@ -160,7 +160,8 @@ func TestExplainSingleRecordRejectsAnUnphraseableRecord(t *testing.T) {
 
 // TestExplainMemoryRendersATimelineInSeqOrder pins Review Focus 3 for prose: a
 // memory's records render one line each, in the Seq order the reader returned
-// them, and each line carries its event, reason and tier.
+// them, and each line carries its event, reason, tier and BOTH of the record's
+// instants -- the event's (At) and the write's (RecordedAt).
 func TestExplainMemoryRendersATimelineInSeqOrder(t *testing.T) {
 	r1 := mkRec(t, "rec-1", 1, record.EventAddResolved, record.ReasonStoredByMem0, "mem-A", explainAt, nil)
 	r2 := mkRec(t, "rec-2", 2, record.EventMemorySurfaced, record.ReasonReturnedBySearch, "mem-A", explainAt.Add(time.Hour), nil)
@@ -194,8 +195,64 @@ func TestExplainMemoryRendersATimelineInSeqOrder(t *testing.T) {
 	assert.Contains(t, out, string(record.EventAddResolved))
 	assert.Contains(t, out, string(record.ReasonStoredByMem0))
 	assert.Contains(t, out, record.Observed.String(), "the tier must be stated")
+
+	// The line's exact shape is pinned, both instants included: seq, id, event,
+	// reason kind, tier, the event time (At), the write time (RecordedAt), then
+	// the sentence. A line that dropped either instant -- or that reordered
+	// them -- fails here rather than merely reading differently.
+	sentence1, ok := export.Phrase(r1)
+	require.True(t, ok, "the fixture must be a phraseable record")
+	wantLine1 := fmt.Sprintf("1. rec-1 %s %s %s at %s, recorded at %s: %s",
+		r1.Event, r1.Reason.Kind(), record.Observed,
+		r1.At.UTC().Format(time.RFC3339), r1.RecordedAt.UTC().Format(time.RFC3339), sentence1)
+	var line1 string
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if strings.HasPrefix(line, "1. rec-1 ") {
+			line1 = line
+		}
+	}
+	require.NotEmpty(t, line1, "the first record's line must be in the timeline")
+	assert.Equal(t, wantLine1, line1, "the timeline line's shape is pinned, instants and all")
+
+	// Both instants appear on EVERY record's line, not only on the pinned one.
+	for _, rec := range []record.Record{r1, r2, r3} {
+		assert.Contains(t, out,
+			"at "+rec.At.UTC().Format(time.RFC3339)+", recorded at "+rec.RecordedAt.UTC().Format(time.RFC3339)+": ",
+			"record %s's line must carry its event time and its write time", rec.ID)
+	}
+
 	assert.Equal(t, 1, r.listCalls, "a memory view reads through ListRecordsByMemory")
 	assert.Equal(t, 0, r.getCalls)
+}
+
+// TestExplainTimelineLineShowsTheGapBetweenEventAndWriteTime is the reason the
+// timeline carries two instants rather than one. Design §6 requires a
+// Reconstructed claim to stay legible as *a claim written long after the event
+// it describes*; the fixture's claim is written a month after the event, and the
+// assertion below is on the line's EXACT text, so a line carrying only the
+// event time, only the write time, or neither cannot pass it. The two instants
+// are written out as literals rather than formatted from the fixture, so the
+// rendering itself -- UTC, RFC3339, second resolution -- is pinned too.
+func TestExplainTimelineLineShowsTheGapBetweenEventAndWriteTime(t *testing.T) {
+	at := time.Date(2026, 9, 1, 9, 30, 0, 0, time.UTC)
+	rec := mkRec(t, "rec-late", 1, record.EventMemoryKept, record.ReasonKeptByContentMatch, "mem-A", at, nil)
+	rec.At = at
+	rec.RecordedAt = at.Add(30 * 24 * time.Hour) // the claim is written a month later
+
+	sentence, ok := export.Phrase(rec)
+	require.True(t, ok, "the fixture must be a phraseable record")
+
+	r := &fakeReader{byMem: map[string][]record.Record{"mem-A": {rec}}}
+	var buf bytes.Buffer
+	res, err := explain.New(r).Explain(context.Background(), explain.Request{MemoryID: "mem-A"}, &buf)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Records)
+
+	want := fmt.Sprintf("Memory mem-A\n1. rec-late %s %s %s at 2026-09-01T09:30:00Z, recorded at 2026-10-01T09:30:00Z: %s\n",
+		rec.Event, rec.Reason.Kind(), record.Reconstructed, sentence)
+	assert.Equal(t, want, buf.String(),
+		"a claim written a month after the event must not read like one written with it: "+
+			"the line carries the event instant and the write instant, and the gap between them")
 }
 
 // TestExplainEmptyMemoryViewWritesNothingAndDoesNotError pins the empty-memory
@@ -233,7 +290,7 @@ func TestExplainEmptyMemoryViewWritesNothingAndDoesNotError(t *testing.T) {
 func TestExplainTimelineKeepsOneLinePerRecordWhenContentCarriesNewlines(t *testing.T) {
 	// The stored text is shaped like the forgery the fix exists to stop: its
 	// second line is format-identical to a real timeline entry.
-	injected := "first line\n2. rec-fake add_resolved stored_by_mem0 observed: an injected sentence"
+	injected := "first line\n2. rec-fake add_resolved stored_by_mem0 observed at 2026-09-01T09:00:00Z, recorded at 2026-09-01T09:00:00Z: an injected sentence"
 	r1 := mkRec(t, "rec-1", 1, record.EventAddResolved, record.ReasonStoredByMem0, "mem-A", explainAt,
 		&record.Content{Text: injected})
 	r2 := mkRec(t, "rec-2", 2, record.EventMemorySurfaced, record.ReasonReturnedBySearch, "mem-A", explainAt.Add(time.Hour),
@@ -282,7 +339,7 @@ func TestExplainTimelineKeepsOneLinePerRecordWhenContentCarriesNewlines(t *testi
 // view.
 func TestExplainRecordProseEscapesTheSentenceAndContent(t *testing.T) {
 	memID := "mem-1\nRecord rec-forged\nan injected sentence"
-	content := "a note\n2. rec-fake add_resolved stored_by_mem0 observed: an injected sentence"
+	content := "a note\n2. rec-fake add_resolved stored_by_mem0 observed at 2026-09-01T09:00:00Z, recorded at 2026-09-01T09:00:00Z: an injected sentence"
 	rec := mkRec(t, "rec-1", 1, record.EventAddResolved, record.ReasonStoredByMem0, memID, explainAt,
 		&record.Content{Text: content})
 
@@ -357,7 +414,7 @@ func TestExplainTimelineHeaderEscapesTheMemoryID(t *testing.T) {
 // for a record that was never written. The record's claim is control-free here,
 // so the timeline's proseText(string(rec.ID)) call is the only site under test.
 func TestExplainTimelineEscapesTheRecordID(t *testing.T) {
-	recID := record.RecordID("rec-1\n2. rec-forged add_resolved stored_by_mem0 observed: an injected sentence")
+	recID := record.RecordID("rec-1\n2. rec-forged add_resolved stored_by_mem0 observed at 2026-09-01T09:00:00Z, recorded at 2026-09-01T09:00:00Z: an injected sentence")
 	rec := mkRec(t, recID, 1, record.EventAddResolved, record.ReasonStoredByMem0, "mem-A", explainAt, nil)
 	r := &fakeReader{byMem: map[string][]record.Record{"mem-A": {rec}}}
 	e := explain.New(r)

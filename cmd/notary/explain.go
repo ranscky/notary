@@ -53,6 +53,11 @@ func newExplainCmd() *cobra.Command {
 			"--memory <mem0-id>; exactly one is required, and both together is an\n" +
 			"error. A --memory given as the empty string is refused rather than read.\n" +
 			"\n" +
+			"The memory view prints one line per record, in chain order, each line\n" +
+			"carrying the record's event, reason, tier and both of its instants --\n" +
+			"when the event happened and when Notary wrote the claim -- then the\n" +
+			"claim's sentence and the content, or the fact that it was withheld.\n" +
+			"\n" +
 			"The view is prose by default. --json prints the same records, in the same\n" +
 			"order, as one small JSON object instead -- explain's own shape, not the\n" +
 			"range view's export line.\n" +

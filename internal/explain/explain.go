@@ -294,15 +294,31 @@ func writeRecordProse(b *strings.Builder, rec record.Record, line export.Line, s
 }
 
 // writeTimelineLine writes one memory-view line: a single line carrying the
-// record's position, id, event, reason kind, tier and sentence, plus the
-// content or the fact that it was withheld. The record id, the sentence and the
-// content go through proseText, so stored text can neither add a line nor forge
-// a timeline entry. The event, reason kind and tier are not escaped: Phrase and
-// Render -- which every record here has already passed -- accept only members of
-// record's closed vocabularies, and none of those names carries a control
-// character.
+// record's position, id, event, reason kind, tier, its two instants and the
+// sentence, plus the content or the fact that it was withheld. The record id,
+// the sentence and the content go through proseText, so stored text can neither
+// add a line nor forge a timeline entry. The event, reason kind, tier and the
+// two instants are not escaped: Phrase and Render -- which every record here has
+// already passed -- accept only members of record's closed vocabularies, none of
+// those names carries a control character, and the instants are Notary's own
+// RFC3339 rendering of its own clock fields, never stored text.
+//
+// Both instants are on the line -- the event's (At) and the write's
+// (RecordedAt), rendered with the same RFC3339 rendering and the same wording
+// writeRecordProse already uses for its recorded-at ("recorded at <instant>",
+// lowercase here only because it sits mid-line instead of opening one) --
+// because the GAP BETWEEN THEM is the fact the memory view exists to make
+// legible: a Reconstructed claim is a claim written long after the event it
+// describes (design §6, corrected after implementation), and with no instant on
+// the line the prose view showed a claim written a month later and one written
+// seconds later as indistinguishable. Either instant alone does not show that
+// gap, which is why the line carries both rather than the more familiar write
+// time alone.
 func writeTimelineLine(b *strings.Builder, rec record.Record, line export.Line, sentence string) {
-	fmt.Fprintf(b, "%d. %s %s %s %s: %s", rec.Seq, proseText(string(rec.ID)), rec.Event, rec.Reason.Kind(), line.Tier, proseText(sentence))
+	fmt.Fprintf(b, "%d. %s %s %s %s at %s, recorded at %s: %s",
+		rec.Seq, proseText(string(rec.ID)), rec.Event, rec.Reason.Kind(), line.Tier,
+		rec.At.UTC().Format(time.RFC3339), rec.RecordedAt.UTC().Format(time.RFC3339),
+		proseText(sentence))
 	switch {
 	case line.Redacted != "":
 		fmt.Fprintf(b, " [content withheld: %s]\n", line.Redacted)

@@ -104,6 +104,17 @@ someone wanted it to.
 event, reason and tier — the lifecycle as the ledger holds it, including a `Reconstructed` claim
 written long after the event it describes.
 
+(Corrected after implementation: each line also carries BOTH of the record's instants, the event's
+(`At`) and the write's (`RecordedAt`), rendered RFC3339 — so the line reads seq, id, event, reason
+kind, tier, `at <instant>, recorded at <instant>: <the claim's sentence>`. That is what makes the
+sentence above true on the page rather than only in the schema: a `Reconstructed` claim written long
+after the event it describes is legible AS that only if the gap between the two instants is on the
+line, and with no instant there the prose view — the one built for a reader who cannot cross-check
+the JSON — showed a late claim and an immediate one as identical. Either instant alone does not show
+the gap, which is why both are there. See `writeTimelineLine` in `internal/explain/explain.go`; it is
+pinned by `TestExplainMemoryRendersATimelineInSeqOrder` and
+`TestExplainTimelineLineShowsTheGapBetweenEventAndWriteTime` in `internal/explain/explain_test.go`.)
+
 It is deliberately **not** a summary of current state, which hides how the memory got there, and
 **not** a generated narrative: this tool's value is that its claims are recorded rather than
 generated, and a synthesized paragraph about a memory would be the one thing in the output that no
@@ -166,6 +177,13 @@ notary explain --memory <mem0-id> [--json] [--include-sensitive]
    subject, then `export.Phrase`'s claim, then the recorded-at instant and the tier. It is
    deterministic — the claim's wording is §5's one sentence, and no generated text can reach it
    (D10).
+
+   (Corrected after implementation: the memory view's line is a second, sibling template,
+   `writeTimelineLine` in the same file, not `writeRecordProse`. It carries the seq, the id, the
+   event, the reason kind, the tier, BOTH instants and the sentence, and it spells the write instant
+   as `writeRecordProse` does — `recorded at <RFC3339>`, lowercase only because it sits mid-line — so
+   the two views read alike. The event instant (`At`) is on it because the gap between the two is
+   what §6's late `Reconstructed` claim is legible by.)
 2. **Where the "exactly one subject" check lives.** Cobra's `Args`/`MarkFlagsMutuallyExclusive` can
    enforce it declaratively, or the command can check it explicitly and control the message. The
    latter is more code and a better error; the former is idiomatic. I lean explicit, for the error

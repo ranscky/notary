@@ -70,6 +70,8 @@ The layering is deliberate: the rule type and its matching live in `internal/int
 
 The loader is the **application-facing** path, reached by `NOTARY_SENSITIVITY_RULES` at the point the interceptor is constructed. It is not wired into any CLI command, because no command writes records; Task 3's test pairs the loader with `NewRuleSet` so the two halves are exercised together, and Task 11 documents the path for operators.
 
+> **Corrected (2026-10-04):** the loader is a **write-path** loader, not an application-facing one, and it is reached by the CLI as well as by an application: `notary proxy` — added in Phase 9, after this plan ran — **is a CLI command that writes records, and its records carry content**, so it reads `NOTARY_SENSITIVITY_RULES` through this same loader. “no command writes records” was true of the phases that existed when this plan was written; it is not true of the shipped v1. The load-bearing half survives: there is deliberately still **no CLI flag** for the path, and `config.LoadSensitivityRules` is still paired with `NewRuleSet` by the tests below.
+
 - [ ] **Step 1: Write the failing tests.** `config/sensitivity_test.go`: `TestLoadSensitivityRules` parses a YAML document with two rules; `TestRuleWithNoClausesIsRejected` asserts a rule specifying neither a scope nor a metadata key fails to load with an error naming the rule, because it would mark an entire ledger sensitive; `TestMalformedYAMLNamesTheFile`.
 - [ ] **Step 2: Run and watch them fail.**
 - [ ] **Step 3: Implement `config.LoadSensitivityRules`** over `go.yaml.in/yaml/v3`. Promote the module to direct with `go mod tidy` and confirm it is the only `go.mod` change.
@@ -201,6 +203,8 @@ The checkpoint attests the **ledger head**, not the last record in the range (sp
 **Produces:** the `export` subcommand with `--from`, `--to`, `--include-sensitive`, `--checkpoint-out`, `--max-span`, `--user-id`, `--agent-id`, `--app-id`, `--run-id`.
 
 **`--phrase` is deliberately not here** — Task 10 adds it, which is what makes Tasks 9–10 revertable as a unit (see Sequencing). There is also **no `--sensitivity-rules` flag**: rules mark content at *write* time, no CLI command writes records, so the rules are an application-facing path configured by `NOTARY_SENSITIVITY_RULES` (Task 2). Spec §4.3's "or `--sensitivity-rules`" has no command to live on and is dropped, recorded in Task 11's documents.
+
+> **Corrected (2026-10-04):** the drop stands, but its stated reason does not. “no CLI command writes records” was true of the phases that existed when this plan ran; **`notary proxy` (Phase 9) is a CLI command that writes records, and its records carry content**, which is exactly the kind of writing these rules mark. So `config.LoadSensitivityRules` is a **write-path** loader that `notary proxy` reads through `NOTARY_SENSITIVITY_RULES`. The load-bearing half survives: the rules are still configured by that variable and there is deliberately no `--sensitivity-rules` flag on any command, `notary proxy` included.
 
 - [ ] **Step 1: Write the failing tests**, mirroring `cmd/notary/reconcile_test.go`'s harness: `TestExportRequiresFrom`; `TestExportRejectsMalformedFromNamingRFC3339`; `TestExportRejectsToBeforeFrom`; `TestExportEmptyRangeSucceedsAndSaysSo` (exit 0, stderr says no records — Review Focus 2); `TestExportWritesJSONLToStdout`; `TestExportScopeFlagsNarrowTheRange`; `TestExportHelpListsItsFlags`.
 - [ ] **Step 2: Run and watch them fail.**

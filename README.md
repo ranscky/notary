@@ -252,13 +252,15 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `pr
 - **`notary explain`** — answers one question about the ledger as prose: why a single record was
   written, or what happened to a single memory over its life. The subject is one `<record-id>`
   argument or `--memory <mem0-id>`, never both, and the memory view renders one line per record in
-  Seq order. `--json` prints the same records, in the same order, as one small JSON object instead
-  of prose: `{"records": [...]}`, each record carrying `seq`, `id`, `memory_id`, `event`,
-  `reason_kind`, `tier`, `at`, `recorded_at` and `sentence`, plus `content` only when the record
-  carried content that was shown and `redacted` only when content was withheld. Sensitive content is
-  withheld by default and the view says so; `--include-sensitive` prints it and changes no hash. It
-  is a read path that signs and verifies nothing, so it needs neither a signing key nor a trusted-key
-  file.
+  Seq order, each line carrying the record's event, reason kind, tier and **both of its instants** —
+  when the event happened (`At`) and when Notary wrote the claim (`RecordedAt`) — so a claim written
+  long after the event it describes can be seen as that. `--json` prints the same records, in the
+  same order, as one small JSON object instead of prose: `{"records": [...]}`, each record carrying
+  `seq`, `id`, `memory_id`, `event`, `reason_kind`, `tier`, `at`, `recorded_at` and `sentence`, plus
+  `content` only when the record carried content that was shown and `redacted` only when content was
+  withheld. Sensitive content is withheld by default and the view says so; `--include-sensitive`
+  prints it and changes no hash. It is a read path that signs and verifies nothing, so it needs
+  neither a signing key nor a trusted-key file.
 - **`notary proxy`** — serves Mem0 traffic and records the `add` and `search` requests that pass through
   it. The application re-points its Mem0 base URL at Notary, which forwards every request to the real
   Mem0 and returns the response untouched, recording the same records library mode records for those two
@@ -314,6 +316,18 @@ It writes only to a scope it mints itself from a random suffix, and that generat
 one it ever hands to Mem0; each deletion is re-checked against it locally rather than trusting the
 service to honour a filter. It wipes the scope afterwards when it passed or failed — barring a kill,
 or a listing it could not read.
+
+### See the whole surface work, offline
+
+`bash scripts/demo.sh` builds the CLI into a throwaway temp directory, generates its own signing key
+there (a fresh throwaway key every run — no key material is committed, and the directory is deleted on
+exit), seeds a small fixture ledger through the real write paths, and walks the whole surface in one
+run: `verify` → `gaps` → `export` → `replay` → `explain <record-id>` → `explain --memory <mem0-id>`.
+It then demonstrates the two properties the project exists for: an edit to a stored record caught by
+`verify`, which names the exact record and field, and an unaudited operation reported by `gaps`. It
+needs a Go toolchain and nothing else — no network, no Mem0, no LLM key, no configuration — and it
+exits non-zero if any step fails, including a step that was supposed to fail and did not.
+`cmd/notary/demo_test.go` runs it, so the demo cannot rot silently.
 
 ### The README banner
 
