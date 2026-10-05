@@ -7,7 +7,7 @@
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
 ![Dependencies](https://img.shields.io/badge/direct_dependencies-4-blue)
 ![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
-![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_proxy_(phases_1--9)-orange)
+![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_proxy_(phases_1--10)-orange)
 
 **A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
 
@@ -212,7 +212,7 @@ All configuration is environment-only:
 
 ## Status
 
-This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `proxy`: phases 1–9** of the design, complete and tested.
+This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `proxy`: phases 1–10** of the design, complete and tested.
 
 **Working today**
 

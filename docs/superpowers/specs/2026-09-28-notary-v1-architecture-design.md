@@ -366,12 +366,15 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 7 | `replay` | ✅ complete |
 | 8 | **`explain`** (new) | ✅ complete |
 | 9 | Proxy mode | ✅ complete |
-| 10 | Polish, README, demo fixtures | ⬜ not started |
+| 10 | Polish, README, demo fixtures | ✅ complete |
 
-Phases 0–9 are implemented and merged to `master`. Each phase that needs design work of its own gets a
+Phases 0–10 are implemented and merged to `master`. Each phase that needs design work of its own gets a
 dated design spec and implementation plan under `docs/superpowers/`; the reconciler's are
 `specs/2026-09-30-notary-v1-reconciler-design.md` and `plans/2026-09-30-notary-v1-reconciler.md`. This
 table is updated as each phase lands, so a ⬜ here means genuinely not built — not merely undocumented.
+Phase 10 was a polish pass over existing documents, tests and fixtures rather than new code, so it was run as
+a bounded batch with a short in-chat design instead of a dated plan; its record is the ledger under
+`.superpowers/sdd/2026-10-04-notary-v1-proxy/`.
 
 The reconciler precedes `export` because otherwise the export phase has nothing but `Observed` records to display.
 
