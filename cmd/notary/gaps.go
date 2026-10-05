@@ -7,9 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"notary/config"
-	"notary/internal/gap"
 	"notary/internal/ledger"
-	"notary/internal/record"
 	"notary/internal/store"
 )
 
@@ -61,12 +59,14 @@ func newGapsCmd() *cobra.Command {
 // error too.
 //
 // It requires no signing key and no keyring: it is a read-only statement about
-// the gap log and the store, so no sign.NewSigner or sign.NewVerifier is on
-// the path. The gap log is read through the package-level gap.Read and
-// gap.Verify, which take a path and never open the file for append -- gap.Open
-// would, and it would additionally heal a torn tail by writing a newline. An
-// inspection command that mutated the file it inspects would corrupt the
-// evidence it exists to show.
+// the gap log and the store, so no sign.NewSigner or sign.NewVerifier is on the
+// path. The work of deciding what is outstanding lives in
+// ledger.OutstandingGaps, the one definition shared with the serve console; it
+// reads the log through the package-level gap.Read and gap.Verify, which take a
+// path and never open the file for append -- gap.Open would, and it would
+// additionally heal a torn tail by writing a newline. An inspection command
+// that mutated the file it inspects would corrupt the evidence it exists to
+// show.
 func runGaps(cmd *cobra.Command, cfg *config.Config) error {
 	out := cmd.OutOrStdout()
 
@@ -76,72 +76,26 @@ func runGaps(cmd *cobra.Command, cfg *config.Config) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	// Read the gap log read-only. A missing file is an empty log, not an error:
-	// no gap log ever written means no gap ever occurred.
-	gapEntries, err := gap.Read(cfg.GapLogPath)
+	// One definition of "outstanding", shared with the serve console:
+	// ledger.OutstandingGaps decides it -- and wraps each stage's failure with
+	// the text `notary gaps` has always reported -- so the command and the
+	// console cannot disagree about the same log.
+	report, err := ledger.OutstandingGaps(st, cfg.GapLogPath)
 	if err != nil {
-		return fmt.Errorf("reading gap log %s: %w", cfg.GapLogPath, err)
+		return err
 	}
 
-	// Load the stored records the cross-check needs, the same way `notary
-	// verify` does: only the rows that decode, since a row that cannot decode
-	// has no identity to match a gap against.
-	var records []record.Record
-	if len(gapEntries) > 0 {
-		seqEntries, serr := st.SeqEntries()
-		if serr != nil {
-			return fmt.Errorf("reading ledger records for gap check: %w", serr)
-		}
-		records = make([]record.Record, 0, len(seqEntries))
-		for _, se := range seqEntries {
-			if se.DecodeErr == nil {
-				records = append(records, se.Rec)
-			}
-		}
-	}
+	unreconciled := report.Unreconciled
+	integrityBreaks := report.Integrity
 
-	// "Unreconciled" is decided by ledger.GapBreaks -- the SAME function
-	// `notary verify` uses, never a re-derived match. A second, independent
-	// notion of "unreconciled" could drift and leave the two commands
-	// disagreeing about the same log.
-	breaks := ledger.GapBreaks(gapEntries, records)
-
-	// Surface the gap log's own integrity breaks. gap.Read above silently skips
-	// a line that fails to decode (and checks no hashes), so a corrupt log
-	// would produce an incomplete list that still looked healthy; gap.Verify
-	// reports exactly those breaks. A missing or empty log yields none, so a
-	// system that never logged a gap behaves as before.
-	integrityBreaks, verr := gap.Verify(cfg.GapLogPath)
-	if verr != nil {
-		return fmt.Errorf("verifying gap log %s: %w", cfg.GapLogPath, verr)
-	}
-
-	if len(breaks) == 0 && len(integrityBreaks) == 0 {
+	if len(unreconciled) == 0 && len(integrityBreaks) == 0 {
 		fmt.Fprintln(out, "no outstanding gaps")
 		return nil
 	}
 
-	// Index the gap entries by Counter so the report can print each
-	// unreconciled entry's own fields -- its kind, scope, correlation ID, time,
-	// and the detail explaining why the gap occurred. This join only reads the
-	// entry back for printing; which entries are unreconciled is still decided
-	// by GapBreaks, which carries the entry's Counter in Break.Seq.
-	byCounter := make(map[uint64]gap.Entry, len(gapEntries))
-	for _, e := range gapEntries {
-		byCounter[e.Counter] = e
-	}
-
-	if len(breaks) > 0 {
-		fmt.Fprintf(out, "%d unreconciled gap(s):\n", len(breaks))
-		for _, b := range breaks {
-			e, ok := byCounter[b.Seq]
-			if !ok {
-				// Unreachable in practice: GapBreaks emits one break per gap
-				// entry, keyed by that entry's Counter. Fall back to the break
-				// itself so a gap is never silently dropped from the report.
-				fmt.Fprintf(out, "  gap entry %d: correlation=%s — %s\n", b.Seq, b.RecordID, b.Detail)
-				continue
-			}
+	if len(unreconciled) > 0 {
+		fmt.Fprintf(out, "%d unreconciled gap(s):\n", len(unreconciled))
+		for _, e := range unreconciled {
 			fmt.Fprintf(out, "  gap entry %d: kind=%s scope={user=%s agent=%s app=%s run=%s} correlation=%s at=%s\n",
 				e.Counter, e.Kind, e.Scope.UserID, e.Scope.AgentID, e.Scope.AppID, e.Scope.RunID,
 				e.CorrelationID, e.At.UTC().Format(time.RFC3339))
@@ -162,11 +116,11 @@ func runGaps(cmd *cobra.Command, cfg *config.Config) error {
 	}
 
 	switch {
-	case len(breaks) > 0 && len(integrityBreaks) > 0:
+	case len(unreconciled) > 0 && len(integrityBreaks) > 0:
 		return fmt.Errorf("gaps: %d unreconciled gap(s) and %d gap-log integrity break(s)",
-			len(breaks), len(integrityBreaks))
-	case len(breaks) > 0:
-		return fmt.Errorf("gaps: %d unreconciled gap(s)", len(breaks))
+			len(unreconciled), len(integrityBreaks))
+	case len(unreconciled) > 0:
+		return fmt.Errorf("gaps: %d unreconciled gap(s)", len(unreconciled))
 	default:
 		return fmt.Errorf("gaps: %d gap-log integrity break(s)", len(integrityBreaks))
 	}
