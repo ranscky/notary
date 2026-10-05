@@ -320,8 +320,9 @@ or a listing it could not read.
 ### See the whole surface work, offline
 
 `bash scripts/demo.sh` builds the CLI into a throwaway temp directory, generates its own signing key
-there (a fresh throwaway key every run — no key material is committed, and the directory is deleted on
-exit), seeds a small fixture ledger through the real write paths, and walks the whole surface in one
+at runtime — a fresh throwaway key every run, held in the process environment and never written to
+disk; only its public half reaches the temp directory, in the trusted-keys file `verify` reads — seeds
+a small fixture ledger through the real write paths, and walks the whole surface in one
 run: `verify` → `gaps` → `export` → `replay` → `explain <record-id>` → `explain --memory <mem0-id>`.
 It then demonstrates the two properties the project exists for: an edit to a stored record caught by
 `verify`, which names the exact record and field, and an unaudited operation reported by `gaps`. It

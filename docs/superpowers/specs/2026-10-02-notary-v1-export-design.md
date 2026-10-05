@@ -113,15 +113,17 @@ mark content at write time, and no `notary` command writes records, so a flag wo
 attach to: the rules belong to whatever application constructs the interceptor. Rules are configuration,
 never code, per parent §10.
 
-**Corrected (2026-10-04):** “no `notary` command writes records” was true of the phases that existed
-when this phase shipped, and it is not true of the shipped v1 — **`notary proxy` is a CLI command whose
-records carry content**, so `config.LoadSensitivityRules` is a **write-path** loader, not an
-application-facing one the CLI never touches: rules mark content at write time, so they concern every
-path whose records carry content, and the CLI has one. The load-bearing half of the sentence above
-survives and is why the correction is a note rather than a rewrite: there is deliberately **no CLI
-flag** for the path, because the variable already exists and a second way to say the same thing is how
-configuration drifts. (`notary export`, for which this document was written, still writes no
-records.)
+**Corrected (2026-10-04):** this paragraph originally said *no `notary` command writes records, so a
+flag would have nothing to attach to*. That was already loose when it was written — `notary reconcile`
+has appended records since Phase 5 (commit `c102422`, 2026-09-30, before this document), and `--dry-run`
+is opt-out — so the CLI did write records. What was true, and is what the rules actually turn on, is
+narrower: **no CLI command wrote records CARRYING CONTENT**, so no rule could mark anything through the
+CLI. **`notary proxy` is the first CLI command whose records do carry content**, and it reads
+`NOTARY_SENSITIVITY_RULES` through `config.LoadSensitivityRules` — a **write-path** loader, not an
+application-facing one the CLI never touches. The load-bearing half of the paragraph survives and is why
+this is a note rather than a rewrite: there is deliberately **no CLI flag** for the path, because the
+variable already exists and a second way to say the same thing is how configuration drifts.
+(`notary export`, for which this document was written, still writes no records.)
 
 ```yaml
 # Any rule that matches marks the record's content Sensitive at write time.
@@ -406,11 +408,14 @@ provider key that does not exist in this repository yet, and will be requested w
    configuration for whatever application constructs the interceptor, not for the CLI. There is
    deliberately no `Config.SensitivityRules` and no CLI flag.
 
-   **Corrected (2026-10-04):** “the application-facing `config.LoadSensitivityRules`” and “no `notary`
-   command writes records” are both false of the shipped v1. The loader is a **write-path** loader:
-   rules mark content at write time, so they concern the paths whose records CARRY content — an
-   application that constructs the interceptor, and **`notary proxy`**, the CLI command that writes
-   records and the first whose records do. Phase 9 is that counterexample. The load-bearing half of
+   **Corrected (2026-10-04):** this item originally called `config.LoadSensitivityRules` “the
+   application-facing” loader and said *no `notary` command writes records*. The loader is a
+   **write-path** loader — rules mark content at write time, so they concern the paths whose records
+   CARRY content — and it is reachable from the CLI, not only from an application: **`notary proxy`**,
+   the first CLI command whose records carry content, reads `NOTARY_SENSITIVITY_RULES` through it.
+   *No `notary` command writes records* was also already loose when this item was written: `notary
+   reconcile` has appended records since Phase 5 (commit `c102422`, 2026-09-30), though no record it
+   writes sets a `Content` field, so no rule could mark anything through it. The load-bearing half of
    this item survives: what this phase confirmed is that the rules are not a `Config` field, and there
    is still deliberately no `Config.SensitivityRules` and no CLI flag for the path.
 4. **The interceptor's doc comment is corrected.** `library/mem0.go` states that `Content.Sensitive`

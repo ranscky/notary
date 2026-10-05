@@ -3,8 +3,9 @@
 # demo.sh -- the whole notary surface, offline, in one command.
 #
 # What it does
-#   Builds the notary binary and a tiny seeder into a throwaway temp directory,
-#   generates a THROWAWAY ed25519 signing key at runtime, seeds a small
+#   Builds the notary binary into a throwaway temp directory and runs the
+#   fixture seeder from source (go run ./testdata/demo/seed), generates a
+#   THROWAWAY ed25519 signing key at runtime, seeds a small
 #   fixture ledger through the real write paths (internal/ledger for the
 #   records, internal/gap for one gap entry), and then walks the operator's
 #   surface: verify -> gaps -> export -> replay -> explain <record-id> ->

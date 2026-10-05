@@ -92,6 +92,7 @@ git commit -m "feat(store): read a memory's records by id"
 Against a fake `Reader`:
 - a single record renders its phrased claim (assert on the `export.Phrase` output appearing in `out`);
 - a memory's records render as a **timeline in `seq` order**, one line each, each with event, reason and tier (Review Focus 3);
+  (Corrected after implementation: the line also carries both of the record's instants — `at <At>, recorded at <RecordedAt>`, rendered RFC3339 — for the reason §6 of `2026-10-03-notary-v1-explain-design.md` was corrected; the shape is pinned by `TestExplainMemoryRendersATimelineInSeqOrder`, and `TestExplainTimelineLineShowsTheGapBetweenEventAndWriteTime` pins the gap between the two.)
 - **an empty `MemoryID` with an empty `RecordID` is rejected** before the reader is called;
 - **a record `export.Phrase` cannot word fails loudly** — construct one with an event/reason pair outside the vocabulary and assert an error, not a stub line (Review Focus 4);
 - a sensitive record is withheld by default and rendered under `IncludeSensitive` (Review Focus 5);
