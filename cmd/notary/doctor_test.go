@@ -323,6 +323,158 @@ func TestDoctorCmdGenerateKeyWritesAKeyTheFileLoaderAccepts(t *testing.T) {
 		"the key material must never be echoed when it is written to a file")
 }
 
+// TestDoctorCmdTrustedKeysOutWritesThePairAndRequiresGenerateKey is the test
+// that makes the two halves a PAIR rather than two strings: the file
+// --trusted-keys-out writes must load through the real sign.LoadTrustedKeys
+// into a keyring whose key id is the one sign.NewSigner reports for the
+// private half this same run printed -- so the identity is checked by the
+// loader and the signer, not by comparing base64 this test produced itself.
+// Without --generate-key the flag is refused by name and writes nothing.
+func TestDoctorCmdTrustedKeysOutWritesThePairAndRequiresGenerateKey(t *testing.T) {
+	dir := t.TempDir()
+	keysPath := filepath.Join(dir, "trusted.keys")
+
+	out, err := executeDoctorCmd(t, "--generate-key", "--trusted-keys-out", keysPath)
+	require.NoError(t, err)
+
+	// The private half is still on stdout, exactly as without the flag; the
+	// report of the public half's file follows it.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	require.Len(t, lines, 2, "the export line and the trusted-keys report, in that order, got %q", out)
+	prefix := "export " + config.DefaultSigningKeyEnv + "="
+	require.True(t, strings.HasPrefix(lines[0], prefix),
+		"the private half must be printed first, got %q", lines[0])
+	material := strings.TrimPrefix(lines[0], prefix)
+
+	t.Setenv(config.DefaultSigningKeyEnv, material)
+	sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceEnv, Ref: config.DefaultSigningKeyEnv})
+	require.NoError(t, err, "the printed private half must load")
+
+	keyring, err := sign.LoadTrustedKeys(keysPath)
+	require.NoError(t, err, "the written file must be exactly what sign.LoadTrustedKeys reads")
+	require.Len(t, keyring, 1)
+	assert.Contains(t, keyring, sg.KeyID(),
+		"the written public half must be the one belonging to the printed private half")
+
+	// And the pair must work as a pair: sign with the private half, verify
+	// under the public half loaded from the file.
+	msg := []byte("the two halves must be one identity")
+	sig, err := sg.Sign(msg)
+	require.NoError(t, err)
+	require.NoError(t, sign.NewVerifier(keyring).Verify(sg.KeyID(), msg, sig))
+
+	info, err := os.Stat(keysPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm(),
+		"the public half is 0644: it is not a credential, it is meant to be read")
+
+	t.Run("with --key-out both halves become files", func(t *testing.T) {
+		dir := t.TempDir()
+		keyPath := filepath.Join(dir, "signing.key")
+		keysPath := filepath.Join(dir, "trusted.keys")
+
+		out, err := executeDoctorCmd(t, "--generate-key", "--key-out", keyPath, "--trusted-keys-out", keysPath)
+		require.NoError(t, err)
+		assertNoExportedKeyLine(t, out)
+
+		privateInfo, err := os.Stat(keyPath)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), privateInfo.Mode().Perm())
+		keysInfo, err := os.Stat(keysPath)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o644), keysInfo.Mode().Perm())
+
+		sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceFile, Ref: keyPath})
+		require.NoError(t, err)
+		keyring, err := sign.LoadTrustedKeys(keysPath)
+		require.NoError(t, err)
+		assert.Contains(t, keyring, sg.KeyID(), "the two files must be one identity")
+	})
+
+	t.Run("without --generate-key the flag is refused", func(t *testing.T) {
+		refused := filepath.Join(t.TempDir(), "refused.keys")
+
+		_, err := executeDoctorCmd(t, "--trusted-keys-out", refused)
+		require.Error(t, err, "the flag must require --generate-key")
+		assert.Contains(t, err.Error(), "--trusted-keys-out", "the refusal must name the flag")
+		assert.Contains(t, err.Error(), "--generate-key", "the refusal must name what it needs")
+		_, statErr := os.Stat(refused)
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "a refused run must write nothing")
+	})
+
+	t.Run("an existing trusted keys file is refused", func(t *testing.T) {
+		// O_EXCL, for the same reason --key-out has it: a public file is not a
+		// credential, but it may be a keyring holding other keys, and
+		// replacing it silently would drop every one of them.
+		path := filepath.Join(t.TempDir(), "trusted.keys")
+		original := []byte("# an existing keyring that must survive\n")
+		require.NoError(t, os.WriteFile(path, original, 0o644))
+
+		_, err := executeDoctorCmd(t, "--generate-key", "--trusted-keys-out", path)
+		require.Error(t, err, "an existing trusted keys file must be refused, never overwritten")
+		assert.ErrorIs(t, err, os.ErrExist, "the refusal must be the exclusive-create failure")
+
+		after, rerr := os.ReadFile(path)
+		require.NoError(t, rerr)
+		assert.Equal(t, original, after, "the existing keyring must be byte-identical after the refusal")
+	})
+}
+
+// TestDoctorCmdTrustedKeysOutIsAllowedInsideTheRepository pins the asymmetry
+// between the two -out flags, which is deliberate and belongs in a test as
+// well as in the help text: the private half is a credential (0600, refused
+// inside the repository), while the public half is the material a verifier
+// reads (0644, allowed there, so a deployment can keep its configuration as
+// code). The private refusal is asserted beside the public allowance, so a
+// future "make them symmetric" change breaks this test instead of a
+// deployment.
+func TestDoctorCmdTrustedKeysOutIsAllowedInsideTheRepository(t *testing.T) {
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	dir, err := os.MkdirTemp(cwd, "doctor-trusted-keys-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	keysPath := filepath.Join(dir, "trusted.keys")
+	_, err = executeDoctorCmd(t, "--generate-key", "--trusted-keys-out", keysPath)
+	require.NoError(t, err, "a public half may live in a checkout: it is not a credential")
+
+	keyring, err := sign.LoadTrustedKeys(keysPath)
+	require.NoError(t, err)
+	assert.Len(t, keyring, 1)
+
+	keyPath := filepath.Join(dir, "signing.key")
+	out, err := executeDoctorCmd(t, "--generate-key", "--key-out", keyPath)
+	require.Error(t, err, "the private half is still refused inside the repository")
+	assert.Contains(t, err.Error(), "repository")
+	assertNoExportedKeyLine(t, out)
+
+	_, statErr := os.Stat(keyPath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the refused private half must not be created")
+}
+
+// TestDoctorHelpAndSetupPageExplainTheKeyPair pins the discoverability half of
+// the flag: a first-run operator reading the help -- or the setup page doctor
+// writes -- must learn that the pair's second file is the one
+// NOTARY_TRUSTED_KEYS_PATH names for verify, replay and report. Without that
+// the flag exists but setup still ends with "now find another tool".
+func TestDoctorHelpAndSetupPageExplainTheKeyPair(t *testing.T) {
+	cmd := newDoctorCmd()
+
+	flag := cmd.Flags().Lookup("trusted-keys-out")
+	require.NotNil(t, flag, "the flag that completes the setup must exist")
+	assert.Contains(t, flag.Usage, "public", "the flag must say it writes the public half")
+	assert.Contains(t, flag.Usage, config.EnvTrustedKeysPath, "the flag must say where that half is read from")
+	assert.Contains(t, cmd.Long, "--trusted-keys-out", "the long help must explain the flag pair")
+
+	var page bytes.Buffer
+	require.NoError(t, doctor.RenderSetup(nil, &page))
+	assert.Contains(t, page.String(), "--trusted-keys-out",
+		"the setup page must tell a first-run operator how to produce the key pair")
+	assert.Contains(t, page.String(), config.EnvTrustedKeysPath,
+		"the setup page must name the variable the public half goes to")
+}
+
 // TestDoctorCmdReportsTheMem0URLCheckInTheCheckListOrder pins that the one
 // finding the command computes itself (the Mem0 base URL, whose validator is
 // parseUpstream) is spliced into the design's check order -- after the signing

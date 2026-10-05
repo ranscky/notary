@@ -25,6 +25,14 @@ import (
 // refuse to load.
 const keyFilePerm os.FileMode = 0o600
 
+// trustedKeysFilePerm is the mode --trusted-keys-out writes with: 0644, not
+// 0600. The public half is not a credential -- it is the material every
+// verifier holds, meant to be readable by whatever checks a signature -- so it
+// takes the mode a configuration file takes. That, and being allowed inside a
+// checkout, is the deliberate asymmetry with --key-out's private half; the
+// reasoning lives on writeTrustedKeysFile.
+const trustedKeysFilePerm os.FileMode = 0o644
+
 // setupPageFilename is the page --out writes: a fixed name, so the operator
 // never has to guess what doctor produced in the directory it was handed.
 const setupPageFilename = "setup.html"
@@ -40,16 +48,19 @@ const setupPageFilename = "setup.html"
 // --generate-key is the second half of the command and the only thing in this
 // repository that creates key material. It prints an `export
 // NOTARY_SIGNING_KEY=...` line to stdout and writes no file; --key-out PATH
-// writes the key to PATH instead, at mode 0600 and outside the repository. It
-// is explicit because silence is the safety property: no other command, and no
-// other flag combination, ever generates a key.
+// writes the PRIVATE half to PATH instead, at mode 0600 and outside the
+// repository; and --trusted-keys-out PATH writes the PUBLIC half -- the one
+// base64 line NOTARY_TRUSTED_KEYS_PATH names for verify, replay and report --
+// at mode 0644, allowed inside a checkout, because a public half is not a
+// credential. It is explicit because silence is the safety property: no other
+// command, and no other flag combination, ever generates a key.
 //
 // It needs no signing key and no Mem0 key to run: it is a read-only check, and
 // reporting an absent key is one of the things it does.
 func newDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
-		Short: "Check the environment and generate a signing key",
+		Short: "Check the environment and generate a signing key pair",
 		Long: "Doctor checks that this deployment is set up correctly. It opens the ledger\n" +
 			"and the gap log (the latter for append, not merely to stat it), loads the\n" +
 			"trusted keyring and the signing key, validates the Mem0 base URL and the\n" +
@@ -67,12 +78,21 @@ func newDoctorCmd() *cobra.Command {
 			"\n" +
 			"--out DIR writes the same findings to DIR/setup.html, the setup page.\n" +
 			"\n" +
-			"--generate-key creates a fresh base64 ed25519 signing key and prints an\n" +
-			"export NOTARY_SIGNING_KEY=... line to stdout, writing no file: it is the only\n" +
-			"thing in this repository that creates key material, and it does so only when\n" +
-			"asked. --key-out PATH writes the key to PATH (mode 0600, outside the\n" +
-			"repository) instead of printing it. Key material never appears in a finding\n" +
-			"or in the setup page.",
+			"--generate-key creates a fresh base64 ed25519 key pair and prints the\n" +
+			"PRIVATE half as an export NOTARY_SIGNING_KEY=... line to stdout, writing no\n" +
+			"file: it is the only thing in this repository that creates key material, and\n" +
+			"it does so only when asked. --key-out PATH writes the private half to PATH\n" +
+			"(mode 0600, refused inside the repository) instead of printing it.\n" +
+			"\n" +
+			"--trusted-keys-out PATH, with --generate-key, writes the pair's PUBLIC half\n" +
+			"to PATH as the one base64 line NOTARY_TRUSTED_KEYS_PATH names for verify,\n" +
+			"replay and report, at mode 0644. It requires --generate-key because a loaded\n" +
+			"signer exposes no public key to recover, only its KeyID fingerprint and its\n" +
+			"Sign method, so the public half can only come from a seed doctor has just\n" +
+			"generated for it. Unlike --key-out it is allowed inside a checkout: a public\n" +
+			"half is not a secret, and a deployment may want its configuration as code --\n" +
+			"though it is normally deployment configuration and belongs outside the\n" +
+			"checkout. The private half never appears in a finding or in the setup page.",
 		Args: cobra.NoArgs,
 		// The root command's PersistentPreRunE creates the ledger file before
 		// every subcommand runs. Doctor opts out (root.go's
@@ -101,9 +121,11 @@ func newDoctorCmd() *cobra.Command {
 	cmd.Flags().String("out", "",
 		"write the setup page to setup.html in this directory")
 	cmd.Flags().Bool("generate-key", false,
-		"generate a fresh base64 ed25519 signing key and print an export NOTARY_SIGNING_KEY=... line (writes no file)")
+		"generate a fresh ed25519 key pair and print the private half as an export NOTARY_SIGNING_KEY=... line (see --key-out and --trusted-keys-out for the halves as files)")
 	cmd.Flags().String("key-out", "",
-		"with --generate-key, write the key to this path (mode 0600, outside the repository) instead of printing it")
+		"with --generate-key, write the private half to this path (mode 0600, refused inside the repository) instead of printing it")
+	cmd.Flags().String("trusted-keys-out", "",
+		"with --generate-key, write the public half to this path (mode 0644, allowed inside the repository) for NOTARY_TRUSTED_KEYS_PATH to read")
 	return cmd
 }
 
@@ -147,6 +169,10 @@ func runDoctor(cmd *cobra.Command, cfg *config.Config, env map[string]string) er
 	if err != nil {
 		return fmt.Errorf("reading --out: %w", err)
 	}
+	trustedKeysOut, err := cmd.Flags().GetString("trusted-keys-out")
+	if err != nil {
+		return fmt.Errorf("reading --trusted-keys-out: %w", err)
+	}
 
 	// --generate-key is an action, not a diagnosis: it creates key material
 	// and prints or writes it, and it runs no check and opens nothing (spec
@@ -160,7 +186,7 @@ func runDoctor(cmd *cobra.Command, cfg *config.Config, env map[string]string) er
 				"--out %s cannot be combined with --generate-key: generating a key runs no checks, so no setup page is written; "+
 					"run `notary doctor --out %s` without --generate-key to write the page", outDir, outDir)
 		}
-		return generateSigningKey(out, keyOut)
+		return generateSigningKey(out, keyOut, trustedKeysOut)
 	}
 	// The flag pair is deliberately not silently tolerated: --key-out alone
 	// would look like it had written a key somewhere, and a diagnostic must
@@ -169,6 +195,17 @@ func runDoctor(cmd *cobra.Command, cfg *config.Config, env map[string]string) er
 		return fmt.Errorf(
 			"--key-out %s was given without --generate-key: no key is ever written silently; "+
 				"add --generate-key to generate one, or drop --key-out", keyOut)
+	}
+	// --trusted-keys-out carries the same rule for its own reason: it writes
+	// the public half of a key THIS run generated. A loaded signer exposes no
+	// public key to recover -- sign.Signer has KeyID() and Sign, nothing else --
+	// so doctor will not pretend it can derive one.
+	if trustedKeysOut != "" {
+		return fmt.Errorf(
+			"--trusted-keys-out %s was given without --generate-key: the public half cannot be recovered from a loaded "+
+				"signing key (sign.Signer exposes only its KeyID fingerprint and Sign), so doctor writes it only for a key pair "+
+				"it has just generated; add --generate-key, or point %s at a keyring you already hold",
+			trustedKeysOut, config.EnvTrustedKeysPath)
 	}
 
 	findings := doctor.Diagnose(cfg, env, time.Now())
@@ -287,15 +324,21 @@ func writeSetupPage(path string, findings []doctor.Finding) error {
 	return nil
 }
 
-// generateSigningKey creates a fresh ed25519 signing key and either prints the
-// export line for it or writes it to keyOut. The seed is 32 random bytes,
-// base64-encoded -- the form sign.NewSigner accepts and the `export` line a
-// shell can evaluate.
+// generateSigningKey creates a fresh ed25519 key pair and emits it: the seed
+// (32 random bytes, base64-encoded -- the form sign.NewSigner accepts and the
+// `export` line a shell can evaluate) as the PRIVATE half, and the public key
+// derived from that same seed as the trusted-keys line when trustedKeysOut
+// asks for it.
 //
 // This is the repository's only generator of key material, and it runs only
 // when an operator asks for it by name: silence is the safety property (design
 // section 4), so nothing here is a side effect of any other flag or command.
-func generateSigningKey(out io.Writer, keyOut string) error {
+//
+// The private half is emitted first, so a failure to write the public file is
+// reported only after the operator already holds the private half; re-running
+// makes a new pair, and nothing here can leave a public file whose private
+// half was never emitted.
+func generateSigningKey(out io.Writer, keyOut, trustedKeysOut string) error {
 	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return fmt.Errorf("generating a signing key: %w", err)
@@ -303,14 +346,29 @@ func generateSigningKey(out io.Writer, keyOut string) error {
 	material := base64.StdEncoding.EncodeToString(seed)
 
 	if keyOut != "" {
-		return writeSigningKeyFile(out, keyOut, material)
+		if err := writeSigningKeyFile(out, keyOut, material); err != nil {
+			return err
+		}
+	} else {
+		// The default: the private half goes to stdout, and nothing is written
+		// for it. A caller can capture the line however it likes -- an env
+		// file, a secret manager, a subshell -- and the command keeps no copy.
+		fmt.Fprintf(out, "export %s=%s\n", config.DefaultSigningKeyEnv, material)
 	}
 
-	// The default: the key goes to stdout, and nothing is written anywhere. A
-	// caller can capture the line however it likes -- an env file, a secret
-	// manager, a subshell -- and the command keeps no copy.
-	fmt.Fprintf(out, "export %s=%s\n", config.DefaultSigningKeyEnv, material)
-	return nil
+	if trustedKeysOut == "" {
+		return nil
+	}
+
+	// The public half is derived from the seed THIS run generated, by the
+	// ed25519 construction every Go program shares, and never guessed from a
+	// loaded signer -- sign.Signer exposes only KeyID() (a one-way SHA-256
+	// fingerprint) and Sign. Checked, not asserted: doctor never panics.
+	public, ok := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	if !ok {
+		return fmt.Errorf("generating a signing key: the seed did not yield an ed25519 public key")
+	}
+	return writeTrustedKeysFile(out, trustedKeysOut, base64.StdEncoding.EncodeToString(public))
 }
 
 // writeSigningKeyFile writes material to path satisfying the loader's own
@@ -335,7 +393,7 @@ func writeSigningKeyFile(out io.Writer, path, material string) error {
 	if err != nil {
 		return fmt.Errorf("writing the signing key to %s: %w", path, err)
 	}
-	werr := writeKeyContents(f, material)
+	werr := writeKeyContents(f, material, keyFilePerm)
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}
@@ -346,18 +404,62 @@ func writeSigningKeyFile(out io.Writer, path, material string) error {
 		return fmt.Errorf("writing the signing key to %s: %w", path, werr)
 	}
 
-	fmt.Fprintf(out, "wrote a fresh ed25519 signing key to %s (mode 0600)\n", path)
+	fmt.Fprintf(out, "wrote a fresh ed25519 signing key to %s (mode %04o)\n", path, keyFilePerm)
+	return nil
+}
+
+// writeTrustedKeysFile writes the base64 public half to path as one line --
+// the exact format sign.LoadTrustedKeys reads, one base64 ed25519 public key
+// per line (internal/sign/keys.go) -- at mode 0644.
+//
+// The mode, and the absence of the repository refusal writeSigningKeyFile
+// applies, are the deliberate asymmetry between the two -out flags, and this
+// is where the reason lives: the public half is NOT a credential. It is the
+// material a verifier holds; it is meant to be readable by whatever checks a
+// signature, and the guardrail covers secrets and signing keys, which this is
+// neither of. So a deployment may keep it in a checkout as configuration as
+// code -- though the help text says it is normally deployment configuration and
+// belongs outside one.
+//
+// O_EXCL still applies: an existing keyring is never replaced silently, since
+// that would drop every other key in it. The mode is chmod'ed after creation
+// because the umask applies to the open, and a restrictive one could leave the
+// file narrower than the 0644 the spec fixes -- which would defeat the point
+// of a public file.
+func writeTrustedKeysFile(out io.Writer, path, publicHalf string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, trustedKeysFilePerm)
+	if err != nil {
+		return fmt.Errorf("writing the trusted keys to %s: %w", path, err)
+	}
+	werr := writeKeyContents(f, publicHalf, trustedKeysFilePerm)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		// Never leave a partial line behind. The file was created by this call
+		// (O_EXCL), so removing it removes only what this call made.
+		_ = os.Remove(path)
+		return fmt.Errorf("writing the trusted keys to %s: %w", path, werr)
+	}
+
+	fmt.Fprintf(out,
+		"wrote the trusted keys (the public half) to %s (mode %04o); point %s at it for verify, replay and report\n",
+		path, trustedKeysFilePerm, config.EnvTrustedKeysPath)
 	return nil
 }
 
 // writeKeyContents writes the base64 material as one line and pins the file's
-// mode to exactly 0600. The trailing newline is cosmetic -- the loader trims
-// whitespace -- and keeps the file a well-formed text file.
-func writeKeyContents(f *os.File, material string) error {
+// mode to perm with fchmod, because the umask applies to the open and a
+// restrictive one could clear bits from the mode the caller needs: 0600
+// exactly for the private half, which sign.KeySourceFile accepts at no other
+// mode, and the 0644 the spec fixes for the public half. The trailing newline
+// is cosmetic -- both loaders trim whitespace -- and keeps the file a
+// well-formed text file.
+func writeKeyContents(f *os.File, material string, perm os.FileMode) error {
 	if _, err := f.WriteString(material + "\n"); err != nil {
 		return err
 	}
-	if err := f.Chmod(keyFilePerm); err != nil {
+	if err := f.Chmod(perm); err != nil {
 		return err
 	}
 	return nil

@@ -15,6 +15,7 @@
   td.severity.warn { color: #9a6700; }
   td.severity.error { color: #b42318; }
   code { font-size: 0.9em; }
+  .first-run { border-left: 3px solid #999; padding-left: 0.75rem; }
   footer { margin-top: 2rem; font-size: 0.85em; }
 </style>
 </head>
@@ -24,6 +25,15 @@
 <p>
 Written by <code>notary doctor</code>: {{.OKs}} ok, {{.Warns}} warning(s), {{.Errs}} error(s).
 Errors make <code>notary doctor</code> exit non-zero; warnings do not.
+</p>
+<p class="first-run">
+New here? <code>notary doctor --generate-key --trusted-keys-out KEYFILE</code> creates a fresh key
+pair. The private half is printed as an <code>export NOTARY_SIGNING_KEY=...</code> line (or written
+<code>0600</code> to <code>--key-out</code>, which is refused inside a repository); the public half
+&mdash; the one base64 line <code>NOTARY_TRUSTED_KEYS_PATH</code> names for <code>verify</code>,
+<code>replay</code> and <code>report</code> &mdash; is written to <code>KEYFILE</code> at mode
+<code>0644</code>. A public half is not a credential, so it may live in a checkout; the private half
+belongs outside one, or in the environment.
 </p>
 <table>
 <thead>
