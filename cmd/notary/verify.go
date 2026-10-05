@@ -12,7 +12,6 @@ import (
 	"notary/config"
 	"notary/internal/gap"
 	"notary/internal/ledger"
-	"notary/internal/record"
 	"notary/internal/sign"
 	"notary/internal/store"
 )
@@ -131,47 +130,16 @@ func runVerify(cmd *cobra.Command, cfg *config.Config, checkpointPath, writeChec
 		}
 	}
 
-	breaks, err := l.Verify(verifier)
+	// CollectBreaks runs the three checks this command reports -- the chain
+	// walk, the gap cross-check, and the gap log's own integrity -- in the
+	// order they are printed below. It holds the project's one definition of
+	// whether the ledger is intact, so no two commands can answer that question
+	// differently, and its error already carries the context this command
+	// printed when the checks lived here, so it is returned as it is.
+	breaks, err := ledger.CollectBreaks(l, st, cfg.GapLogPath, verifier)
 	if err != nil {
-		return fmt.Errorf("verifying ledger: %w", err)
+		return err
 	}
-
-	// Cross-check the gap log against the store: a gap entry whose
-	// (Kind, Scope, CorrelationID) matches no stored record reports work that
-	// left no audit trail, and is surfaced as a "gap" break so the run exits
-	// non-zero. The "matched" case -- a gap later reconciled back into the
-	// ledger -- cannot be exercised until gaps have a corresponding record
-	// (Task 15); it is revisited in Task 19.
-	gapEntries, gerr := gap.Read(cfg.GapLogPath)
-	if gerr != nil {
-		return fmt.Errorf("reading gap log %s: %w", cfg.GapLogPath, gerr)
-	}
-	if len(gapEntries) > 0 {
-		seqEntries, serr := st.SeqEntries()
-		if serr != nil {
-			return fmt.Errorf("reading ledger records for gap check: %w", serr)
-		}
-		records := make([]record.Record, 0, len(seqEntries))
-		for _, se := range seqEntries {
-			if se.DecodeErr == nil {
-				records = append(records, se.Rec)
-			}
-		}
-		breaks = append(breaks, ledger.GapBreaks(gapEntries, records)...)
-	}
-
-	// Check the gap log's own hash chain. gap.Read above only returns decodable
-	// entries -- it silently skips a line that fails to decode and checks no
-	// hashes -- so a corrupt, rewritten, or reordered gap-log line, the evidence
-	// an attacker would most want to erase, is invisible to the cross-check.
-	// gap.Verify reports exactly those breaks, so they exit non-zero here. A
-	// missing or empty log yields no breaks and no error, so a system that never
-	// logged a gap behaves exactly as before.
-	gapIntegrityBreaks, gverr := gap.Verify(cfg.GapLogPath)
-	if gverr != nil {
-		return fmt.Errorf("verifying gap log %s: %w", cfg.GapLogPath, gverr)
-	}
-	breaks = append(breaks, ledger.GapIntegrityBreaks(gapIntegrityBreaks)...)
 
 	// --write-checkpoint emits a fresh signed checkpoint. It happens only after
 	// the plain walk succeeds, so we never sign an attestation for a chain we

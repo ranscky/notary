@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" driver used for raw tampering
 
 	"notary/config"
+	"notary/internal/gap"
 	"notary/internal/ledger"
 	"notary/internal/record"
 	"notary/internal/sign"
@@ -325,4 +329,153 @@ func TestRunVerifyNeverPrintsSigningKeyMaterial(t *testing.T) {
 	require.NoError(t, werr, "with the material in NOTARY_SIGNING_KEY the checkpoint must be written")
 	_, statErr := os.Stat(cpPath)
 	require.NoError(t, statErr, "the checkpoint file must exist")
+}
+
+// verifyBreakIdentity is one break reduced to what two answers must agree on:
+// the record it names (empty when it names none), the chain position, and the
+// field that broke. The differential below compares these identities rather
+// than the wording of either rendering, so a cosmetic change to `verify`'s text
+// does not fail it.
+type verifyBreakIdentity struct {
+	recordID string
+	seq      uint64
+	field    string
+}
+
+// verifyBreakLine matches the two shapes runVerify prints a break in -- "record
+// <id> (seq <n>): <field> — ..." and "seq <n>: <field> — ..." -- capturing the
+// identity and ignoring the Detail, which the differential does not compare.
+var verifyBreakLine = regexp.MustCompile(`^(?:record (\S+) \()?seq (\d+)\)?: (\S+) — `)
+
+// verifyBreakIdentities parses the break lines out of a verify run's output.
+// The success line is skipped; any other line must match the break shape, and
+// the test fails on it rather than skipping, so a change to how a break is
+// printed fails loudly instead of silently leaving nothing to compare.
+func verifyBreakIdentities(t *testing.T, out string) []verifyBreakIdentity {
+	t.Helper()
+	var ids []verifyBreakIdentity
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if line == "" || strings.HasPrefix(line, "ok:") {
+			continue
+		}
+		m := verifyBreakLine.FindStringSubmatch(line)
+		require.NotNil(t, m, "unrecognised verify output line %q", line)
+		seq, err := strconv.ParseUint(m[2], 10, 64)
+		require.NoError(t, err, "the printed seq %q must be a number", m[2])
+		ids = append(ids, verifyBreakIdentity{recordID: m[1], seq: seq, field: m[3]})
+	}
+	return ids
+}
+
+// collectBreaksForAnswer answers the same question through the shared
+// collection, configuring itself exactly as runVerify does: the same trusted
+// keys file and the same database, read without a signer.
+func collectBreaksForAnswer(t *testing.T, cfg *config.Config) []ledger.Break {
+	t.Helper()
+	keyring, err := sign.LoadTrustedKeys(cfg.TrustedKeysPath)
+	require.NoError(t, err)
+	st, err := store.Open(cfg.DBPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
+
+	breaks, err := ledger.CollectBreaks(ledger.New(st, nil, nil), st, cfg.GapLogPath, sign.NewVerifier(keyring))
+	require.NoError(t, err)
+	return breaks
+}
+
+// TestCollectBreaksAgreesWithVerify is the differential guard spec section 3,
+// decision 8 demands, and the proof that extracting the shared collection
+// changed no answer: over three fixtures -- an intact ledger, a ledger with an
+// edited record, and a ledger whose gap log holds an entry matching no record
+// -- `ledger.CollectBreaks` must find exactly what `notary verify` finds, break
+// for break, as identities: the count, the record ids, the chain positions, and
+// the fields.
+//
+// The third fixture is Review Focus 1's case, the one ledger.Verify alone
+// cannot see, so it is what makes the extraction necessary rather than
+// decorative. Transitivity is the point: CollectBreaks answers here as the
+// command does, and the report renders CollectBreaks' answer.
+func TestCollectBreaksAgreesWithVerify(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(t *testing.T, dbPath, gapPath string, sg *sign.Signer)
+	}{
+		{
+			name: "intact ledger",
+			build: func(t *testing.T, dbPath, _ string, sg *sign.Signer) {
+				buildLedger(t, dbPath, sg, 3)
+			},
+		},
+		{
+			name: "edited record",
+			build: func(t *testing.T, dbPath, _ string, sg *sign.Signer) {
+				buildLedger(t, dbPath, sg, 5)
+				execRawSQL(t, dbPath, `UPDATE records SET event = 'memory_kept' WHERE seq = 3`)
+			},
+		},
+		{
+			// Every record is intact, so only the gap cross-check can see
+			// this: the case ledger.Verify alone reports as clean.
+			name: "gap entry matching no record",
+			build: func(t *testing.T, dbPath, gapPath string, sg *sign.Signer) {
+				buildLedger(t, dbPath, sg, 3)
+				g, err := gap.Open(gapPath)
+				require.NoError(t, err)
+				require.NoError(t, g.Record(gap.Entry{
+					At:            verifyFixedNow,
+					Kind:          record.EventAuditGap,
+					Scope:         record.Scope{UserID: "u1", AgentID: "a1"},
+					CorrelationID: "rec-missing",
+					Detail:        "memory store unreachable",
+				}))
+				require.NoError(t, g.Close())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sg, pub := newVerifySigner(t)
+			dir := t.TempDir()
+			dbPath := filepath.Join(dir, "ledger.db")
+			gapPath := filepath.Join(dir, "gaps.log")
+			tc.build(t, dbPath, gapPath, sg)
+
+			cfg := &config.Config{
+				DBPath:          dbPath,
+				TrustedKeysPath: writeTrustedKeys(t, pub),
+				GapLogPath:      gapPath,
+			}
+
+			// The command's answer: what it printed, and its exit status.
+			cmd, buf := newTestVerifyCmd(t)
+			verr := runVerify(cmd, cfg, "", "")
+			printed := verifyBreakIdentities(t, buf.String())
+
+			// The shared collection's answer, over the same ledger.
+			collected := collectBreaksForAnswer(t, cfg)
+
+			require.Len(t, printed, len(collected),
+				"the command and CollectBreaks must find the same number of breaks")
+			var got []verifyBreakIdentity
+			for _, b := range collected {
+				got = append(got, verifyBreakIdentity{
+					recordID: string(b.RecordID),
+					seq:      b.Seq,
+					field:    b.Field,
+				})
+			}
+			assert.Equal(t, printed, got,
+				"each printed break must be the same break CollectBreaks returned, in the same order")
+
+			// And the same verdict: a non-zero exit if and only if a break
+			// exists.
+			if len(collected) == 0 {
+				assert.NoError(t, verr, "no breaks must exit zero")
+				assert.Contains(t, buf.String(), "ok:", "a clean run must say so")
+			} else {
+				assert.Error(t, verr, "a broken ledger must exit non-zero")
+			}
+		})
+	}
 }
