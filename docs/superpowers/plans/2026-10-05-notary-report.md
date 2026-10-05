@@ -72,7 +72,9 @@ Move the three stages out of `runVerify`, preserving their order, their error wr
 
 - [ ] **Step 5: Add the differential test**
 
-In `cmd/notary/verify_test.go`: for each of the three fixtures above, the report's chain state and `verify`'s output must agree — asserted by running both and comparing the break count and the record ids. This is Review Focus 1's guard at the command level.
+In `cmd/notary/verify_test.go`: for each of the three fixtures above, **`CollectBreaks`'s answer and the command's printed output must agree** — the break count, the record ids and the fields, compared as *identities* rather than as formatted text, so a cosmetic change to `verify`'s wording does not break it. That is what proves the extraction changed nothing; the report's own rendering of the same state is asserted in Task 4, and together they are Review Focus 1's guard.
+
+*(The controller corrected this step during preflight: it originally said "the report's chain state", which cannot exist until Task 3. The differential is between the extracted function and the command it came from.)*
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
