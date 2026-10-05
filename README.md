@@ -280,7 +280,8 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `pr
   implements gets a matchable error. `notary reconcile` is the one-shot command mode; no long-running
   in-process driver exists
 
-There is no `LICENSE` file yet. Until one is added, all rights are reserved by default.
+`notary` is licensed under the **Apache License 2.0** — the full text is in [`LICENSE`](LICENSE).
+Copyright 2026 Ransford Oduro.
 
 ---
 
