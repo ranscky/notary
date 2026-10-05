@@ -84,6 +84,22 @@ so nothing that persists holds a credential.
    it carries the honest wrinkle in §9, that a chain's integrity is a whole-ledger property, so a report of
    one Tuesday states the whole chain's state.
 
+**Found while writing the plan, and decided on merit:**
+
+8. **The report's chain state is `verify`'s answer, which means extracting verify's break collection into
+   one shared function.** `notary verify` reports more than the chain walk: it cross-checks the gap log
+   (`gap.Read` → `st.SeqEntries` → `ledger.GapBreaks`) and checks the gap log's own integrity (`gap.Verify` →
+   `ledger.GapIntegrityBreaks`), and that orchestration lives inline in `cmd/notary/verify.go`. A report built
+   on `ledger.Verify` alone would therefore say "clean" for a ledger `verify` exits non-zero on — two answers,
+   in one project, to *"is this intact?"*, and the report is the artefact a reader cannot cross-check. So the
+   break collection moves into one function both callers use. **This refactors Phase 2's
+   `cmd/notary/verify.go`, which `.clinerules` §5 says not to do "unless explicitly asked" — this decision
+   records that explicit ask**, on the same terms as the operator's "Approach A" answer that authorised
+   Phase 9's `library` refactor. *Cost:* one prior-phase file changes, and the extraction carries a
+   differential test (the report's state must equal what `verify` reports for the same ledger) rather than
+   trust. The alternative — narrowing the page to "the chain walk reported no breaks" — was rejected because
+   it institutionalises the divergence instead of preventing it.
+
 ## 4. `notary doctor`
 
 ```
@@ -108,7 +124,8 @@ The checks, each of which is a fact the code can establish:
   learned to do.
 - `NOTARY_MEM0_API_KEY` presence, reported as required only for the commands that make a Mem0 call.
 - `NOTARY_SENSITIVITY_RULES`, when set, parses (`config.LoadSensitivityRules`).
-- The ledger's chain state (`ledger.Verify`), so a doctor run answers "is this thing intact?" too.
+- The ledger's chain state — the same shared break collection `notary verify` uses (§3 decision 8), so a
+  doctor run answers "is this intact?" with the same answer `verify` gives, never a narrower one.
 
 `doctor` exits non-zero when any finding is an error, so it can gate a pipeline; warnings alone do not.
 
@@ -166,9 +183,10 @@ character) and asserts nothing is written outside `--out`.
 - **Every page that shows a hash says the file verifies nothing by itself.** The reader gets the
   `notary verify` command to re-run. A generated file asserting *"verified"* would be the unbacked claim this
   project exists to refuse.
-- **The chain state is attributed to the run that produced the file** — "as of <instant>, this tool's
-  verification reported …" — with the re-run command beside it. It is the generator's finding, not a property
-  of the file.
+- **The chain state is `verify`'s answer, through the one shared break collection (§3 decision 8)**, so the
+  page and `notary verify` cannot disagree. It is **attributed to the run that produced the file** — "as of
+  <instant>, this tool's verification reported …" — with the re-run command beside it. It is the generator's
+  finding, not a property of the file.
 
 ## 7. Assets, and the no-dependency rule
 
@@ -225,6 +243,10 @@ character) and asserts nothing is written outside `--out`.
 - **No key material anywhere in the output**, with the same canary discipline `export` and `replay` use.
 - **The chain state reports both ways**: clean on an intact fixture, and naming the exact record and field on
   a tampered one — the tampered fixture `testdata/tamper/` already exists.
+- **The chain state equals what `notary verify` reports for the same ledger** — a differential test over three
+  fixtures: an intact one, one with an edited record, and one whose *gap log* is broken or unmatched. The
+  third is the case `ledger.Verify` alone cannot see (§3 decision 8), so it is the one that proves the
+  extraction was necessary rather than decorative.
 - **`--out` refuses a non-empty directory** without `--force`, and writes nothing when it refuses.
 - **The subject selector refuses both, and neither**, naming what was given.
 - **`doctor`'s checks** are table-driven: one case per check, each asserting the finding's severity and that
@@ -233,12 +255,17 @@ character) and asserts nothing is written outside `--out`.
 
 ## 11. Sequencing
 
-1. **`doctor`** — the checks and the command, plus `--generate-key`. It has no dependency on the renderer and
-   is useful on its own, which makes it the right first task and a real deliverable if the phase stops early.
-2. **`internal/report`** — the page renderer, the derived filenames, the assets, and the reading through
+1. **The shared break collection** (§3 decision 8) — extract `cmd/notary/verify.go`'s orchestration (the chain
+   walk, the gap cross-check, and the gap log's integrity) into one function, with `verify` refactored to call
+   it and a differential test proving the answers are the same. **First**, because `doctor`'s chain-state check
+   and the report's `verify.html` both need it, and because `verify` is a shipped command whose behaviour must
+   be provably unchanged before anything depends on the extraction.
+2. **`doctor`** — the checks and the command, plus `--generate-key` and its `setup.html`. It depends on task 1
+   for the chain state and on nothing else, which keeps it a real deliverable if the phase stops early.
+3. **`internal/report`** — the page renderer, the derived filenames, the assets, and the reading through
    `ledger`. Built against a fixture ledger so it needs no command.
-3. **`notary report`** — the command, its flags, and the registration in `root.go`.
-4. **Docs** — the architecture spec's §9 read-path table gains a row, §13's table gains row 11, §14's delta
+4. **`notary report`** — the command, its flags, and the registration in `root.go`.
+5. **Docs** — the architecture spec's §9 read-path table gains a row, §13's table gains row 11, §14's delta
    table gains `internal/report`; the README gains both commands; `.clinerules`' folder tree gains the package.
 
 ## 12. Questions that were open, and how they resolved
