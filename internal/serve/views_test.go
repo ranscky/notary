@@ -179,18 +179,18 @@ func newFixture(t *testing.T) fixture {
 	})
 
 	// A keyring the chain view can verify against, and the file the banner
-	// names as the re-run command's --keyring. The verifier is keyed by the
-	// signer's own KeyID, so it trusts exactly the key the fixture signs with.
+	// names as the re-run command's --keyring. The map is keyed by the signer's
+	// own KeyID, so the verifier New derives from it trusts exactly the key the
+	// fixture signs with.
 	keyringPath := filepath.Join(dir, "trusted.keys")
 	require.NoError(t, os.WriteFile(keyringPath,
 		[]byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0o644))
-	verifier := sign.NewVerifier(map[string]ed25519.PublicKey{sg.KeyID(): pub})
 
 	srv, err := New(Options{
 		Ledger:      l,
 		Store:       st,
 		GapLogPath:  gapPath,
-		Verifier:    verifier,
+		Keyring:     map[string]ed25519.PublicKey{sg.KeyID(): pub},
 		KeyringPath: keyringPath,
 		Reveal:      io.Discard,
 		Now:         fixedClock,

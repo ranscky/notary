@@ -94,10 +94,11 @@ type chainView struct {
 //
 // It has exactly three outcomes and never lets them collapse:
 //
-//   - With no verifier it returns chainNotVerified WITHOUT running the check.
-//     It does not call ledger.CollectBreaks at all, because a verifier that
-//     trusts no keys -- which is what "no verifier" means here -- would report
-//     every record in a healthy ledger as a signature break. Not running the
+//   - With no verifier -- which, for a Server built by New, is exactly the case
+//     of a nil or empty Options.Keyring -- it returns chainNotVerified WITHOUT
+//     running the check. It does not call ledger.CollectBreaks at all, because
+//     a verifier that trusts no keys -- which is what "no verifier" means here
+//     -- would report every record in a healthy ledger as a signature break. Not running the
 //     check is the only way to avoid accusing an intact ledger of tampering,
 //     and this state says plainly that the check did not run. Breaks is left
 //     empty: there is nothing to show, and an empty list under a state that
@@ -110,9 +111,13 @@ type chainView struct {
 //
 // AsOf is the instant the check ran, so the banner is fresh, never a snapshot.
 // loadChain is called per request -- a whole-chain walk per page view -- which
-// is a recorded cost of this console, not a surprise. A CollectBreaks failure is
-// not a verdict: it is returned wrapped, and Breaks stays empty so a caller
-// cannot mistake a partial read for a clean chain.
+// is a recorded cost of this console, not a surprise.
+//
+// WHEN THE ERROR IS NON-NIL THE RETURNED VIEW IS MEANINGLESS: it is the zero
+// chainView, not a verdict. A caller must check the error and must NOT render
+// the view -- in particular must not read its empty Breaks, or its unset State,
+// as "clean". A CollectBreaks failure means the question could not be answered,
+// which is exactly what the error says; the view says nothing at all.
 func (s *Server) loadChain() (chainView, error) {
 	asOf := s.now()
 

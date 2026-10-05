@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -209,4 +210,50 @@ func TestChainStateIsNeverCleanWithoutAKeyring(t *testing.T) {
 	assert.NotEqual(t, chainClean, view.State,
 		"a chain that was never signature-checked must not render as verified")
 	assert.Equal(t, chainNotVerified, view.State)
+}
+
+// TestChainStateTreatsAnEmptyKeyringAsNoKeyring pins the guarantee this fix
+// round added to the package's contract: a Server built with a NON-nil but
+// EMPTY keyring must report chainNotVerified with no breaks, NEVER chainBroken.
+// A verifier over an empty keyring trusts no keys and reports every record of a
+// perfectly healthy ledger as a signature break, so the empty keyring must take
+// the same "the check did not run" path as a nil one.
+//
+// This test could not be written against the previous interface: Options took a
+// *sign.Verifier, and sign.NewVerifier always returns a non-nil Verifier even
+// for a nil or empty keyring, so New would have accepted sign.NewVerifier(empty)
+// and loadChain would have accused the ledger. The guard now lives in New,
+// which derives a verifier only when the keyring holds at least one key, so the
+// dangerous verifier can no longer be constructed through this package at all.
+//
+// (The empty keyring is reachable only via an explicitly empty map: a
+// comment-only keys file makes sign.LoadTrustedKeys return an error, not an
+// empty map, so a real command would surface that error before New is reached.)
+func TestChainStateTreatsAnEmptyKeyringAsNoKeyring(t *testing.T) {
+	f := newFixture(t)
+
+	cases := map[string]map[string]ed25519.PublicKey{
+		"nil keyring":   nil,
+		"empty keyring": {},
+	}
+	for name, keyring := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv, err := New(Options{
+				Ledger:      f.ledger,
+				Store:       f.store,
+				GapLogPath:  f.gapPath,
+				Keyring:     keyring,
+				KeyringPath: f.server.keyringPath,
+				Now:         fixedClock,
+			})
+			require.NoError(t, err)
+
+			view, err := srv.loadChain()
+			require.NoError(t, err)
+			assert.Equal(t, chainNotVerified, view.State)
+			assert.Empty(t, view.Breaks, "a keyless check must never produce a break list")
+			assert.NotEqual(t, chainBroken, view.State,
+				"a keyless verifier must never accuse a healthy ledger of tampering")
+		})
+	}
 }
