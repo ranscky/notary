@@ -100,10 +100,23 @@ so nothing that persists holds a credential.
    trust. The alternative — narrowing the page to "the chain walk reported no breaks" — was rejected because
    it institutionalises the divergence instead of preventing it.
 
+**Decided after the task review, on the operator's answer:**
+
+9. **`doctor --trusted-keys-out PATH`, the flag that finishes the setup.** The task's own review found that
+   `--generate-key` produced the private half while `verify`, `replay` and `report` all need the base64
+   **public** half, so first-run setup still ended with "now find another tool" — the phase's stated purpose
+   half met. §4 carries the shape and the reasoning; the load-bearing points are that it **requires
+   `--generate-key`** (the public half cannot be derived from a loaded key, because `Signer` exposes only
+   `KeyID()` and `Sign`), that it is `0644` because public material is not a credential, and that it — unlike
+   `--key-out` — is **allowed** inside a checkout, because the guardrail covers secrets and signing keys and a
+   public half is neither. *Cost:* one more flag, and an asymmetry between the two `-out` flags whose reason
+   (`secret` vs `public`) has to be legible from the help text, since the codes differ for a reason rather
+   than by accident.
+
 ## 4. `notary doctor`
 
 ```
-notary doctor [--out DIR] [--generate-key] [--key-out PATH]
+notary doctor [--out DIR] [--generate-key] [--key-out PATH] [--trusted-keys-out PATH]
 ```
 
 (`--verbose` is the root command's persistent flag, not this command's.)
@@ -135,6 +148,19 @@ it is the only thing in the repository that creates key material. Default behavi
 likes. `--key-out PATH` writes the seed to a file instead, `0600`, and **refuses a path inside the repository**
 (the guardrail's rule, enforced rather than documented). The generated material is never printed as part of a
 finding, never echoed to a log, and never appears in `setup.html`.
+
+**`--trusted-keys-out PATH` completes the setup, and it is why this flag exists.** `verify`, `replay` and
+`report` all read a trusted-keys file — the base64 **public** half — and nothing in the repository could
+produce one: `sign.Signer` exposes `KeyID()` (a `base64(SHA-256(public))` fingerprint, `sign.go:264`) and
+`Sign`, but no accessor for the public key itself, so the public half cannot be recovered from a *loaded* key
+without either changing `sign` or re-implementing its parser. `--generate-key` is holding the seed, though, so
+`ed25519.NewKeyFromSeed(seed).Public()` gives it directly. The flag therefore **requires `--generate-key`**,
+and says so when it is missing — the tool will not pretend to derive what it cannot read. The file is written
+as one base64 line, the format `sign.LoadTrustedKeys` reads (`internal/sign/keys.go:36-45`), at mode `0644`:
+unlike the private half it is **not** a credential, it is meant to be readable by whatever verifies, and the
+guardrail's "no secrets or signing keys in the repository" does not reach it. It may therefore live in a
+checkout if the deployment wants configuration as code, though the help text says it is normally deployment
+config and belongs outside one.
 
 ## 5. `notary report`
 
