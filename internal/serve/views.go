@@ -51,19 +51,26 @@ func badgeFor(t record.VisibilityTier) tierBadge {
 }
 
 // recordRow is one record as every list view shows it: the export.Line that
-// carries the claim, its tier badge, and the links to its own page and (when it
-// names one) its memory's page.
+// carries the claim and its tier badge.
 //
 // Line is the single source of the claim's tier, redaction and sentence --
 // produced by export.Render and never recomputed here -- so a row cannot drift
-// from the CLI. RecordHref is always set; MemoryHref is "" for a record whose
-// subject names no memory (the store's memory_id DEFAULT), which the template
-// renders as no link at all.
+// from the CLI. It also carries the two ids a view links by: Line.ID names the
+// record's own page and Line.MemoryID names its memory's page (empty for a
+// record whose subject names no memory -- the store's memory_id DEFAULT --
+// which a template renders as no link at all).
+//
+// A view builds those links from the ids IN THE QUERY POSITION, e.g.
+// href="/record?id={{.Line.ID}}" -- NEVER by interpolating a pre-joined whole
+// URL such as href="{{.SomeHref}}". html/template only percent-encodes an id
+// interpolated in the query position; a whole URL interpolated into href is
+// left essentially as it is (it does not encode "/", "#" or ":"), so an id
+// containing "#" starts a URL fragment, the server never sees the rest of the
+// id, and the link cannot round-trip. That is why recordRow deliberately holds
+// no href field: the safe shape cannot be captured as a pre-joined string.
 type recordRow struct {
-	Line       export.Line
-	Tier       tierBadge
-	RecordHref string
-	MemoryHref string
+	Line export.Line
+	Tier tierBadge
 }
 
 // filter is a records-view query: the date range, the scope, and whether
@@ -229,33 +236,7 @@ func (s *Server) rowFor(rec record.Record, reveal bool) (recordRow, error) {
 		return recordRow{}, fmt.Errorf("serve: render record %s: %w", rec.ID, err)
 	}
 	return recordRow{
-		Line:       line,
-		Tier:       badgeFor(line.Tier),
-		RecordHref: recordHref(rec.ID),
-		MemoryHref: memoryHref(rec.Subject.MemoryID),
+		Line: line,
+		Tier: badgeFor(line.Tier),
 	}, nil
-}
-
-// recordHref is the per-record page's URL for id: the fixed path /record plus
-// the id as a query value.
-//
-// The id is left RAW on purpose. html/template's URL-context escaper encodes a
-// query value on its own (design §6: ?id={{.ID}} renders "a/b#c d:e" as
-// "a%2fb%23c%20d%3ae"), so escaping it here would escape it twice. The path is
-// fixed and carries no id, so an id containing /, .., # or a space is only ever
-// a query value -- never a path segment or a filename.
-func recordHref(id record.RecordID) string {
-	return "/record?id=" + string(id)
-}
-
-// memoryHref is the per-memory page's URL for memoryID, or "" when the id is
-// empty. A record whose subject names no memory (the store's memory_id DEFAULT
-// "") has no memory to link to, so it gets no link at all rather than a link to
-// the empty-memory list. Like recordHref, the id is left raw for html/template
-// to encode once.
-func memoryHref(memoryID string) string {
-	if memoryID == "" {
-		return ""
-	}
-	return "/memory?id=" + memoryID
 }

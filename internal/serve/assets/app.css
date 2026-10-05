@@ -1,0 +1,154 @@
+/* The notary console's stylesheet. Hand-written, embedded, and fetched from
+   /assets/app.css. It carries the banner's own visual language: the three
+   visibility tiers are the banner's three colours and rules, so the console and
+   the banner tell one story. The tier badge always shows the tier NAME as text
+   beside its colour, so it survives colour-blindness, a greyscale printout and a
+   screenshot. */
+
+:root {
+  --ground: #0A0D12;
+  --panel: #141A23;
+  --text: #EEF1F5;
+  --muted: #98A2B3;
+  --observed: #D9A441;
+  --reconstructed: #8593A5;
+  --internal: #47505E;
+  --internal-line: #707B8A;
+  --clean: #4C8C5A;
+  --broken: #C05B5B;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: #8FB7E0; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.9em; }
+
+.site {
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--panel);
+  border-bottom: 1px solid #232B36;
+}
+.brand { font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.site-nav a { color: var(--muted); }
+
+.page { max-width: 1200px; margin: 0 auto; padding: 1.25rem; }
+
+.site-foot {
+  max-width: 1200px;
+  margin: 2rem auto 0;
+  padding: 1rem 1.25rem 2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* The chain banner: on every page, attributed to the run. Its three states are
+   deliberately three different treatments, so "not verified" can never be
+   mistaken for "clean". */
+.chain-banner {
+  border-left: 4px solid var(--muted);
+  background: var(--panel);
+  padding: 0.6rem 1.25rem;
+  margin: 0;
+}
+.chain-banner p { margin: 0.2rem 0; }
+.chain-not-verified { border-left-color: var(--internal-line); }
+.chain-clean { border-left-color: var(--clean); }
+.chain-broken { border-left-color: var(--broken); }
+.chain-line { color: var(--text); }
+.chain-rerun { color: var(--muted); font-size: 0.85rem; }
+
+/* The filter form is an ordinary GET form; htmx only upgrades the swap. */
+.filter fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: flex-end;
+  border: 1px solid #232B36;
+  background: var(--panel);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+.filter legend { color: var(--muted); padding: 0 0.4rem; }
+.filter label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.85rem; }
+.filter input[type="text"] {
+  background: var(--ground);
+  color: var(--text);
+  border: 1px solid #2C3844;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  min-width: 12rem;
+}
+.filter .reveal { flex-direction: row; align-items: center; gap: 0.4rem; }
+.filter button {
+  background: var(--observed);
+  color: #14100A;
+  border: 0;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filter-error {
+  border: 1px solid var(--broken);
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  color: var(--text);
+}
+
+.empty { color: var(--muted); }
+
+/* Records table. */
+table.records {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+}
+table.records th, table.records td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid #232B36;
+  vertical-align: top;
+}
+table.records th { color: var(--muted); font-weight: 600; }
+.record-row:hover { background: var(--panel); }
+
+/* Tier badges: name as text AND colour; the rule style is the banner's. */
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tier-observed {
+  color: #14100A;
+  background: var(--observed);
+  border: 2px solid var(--observed);
+}
+.tier-reconstructed {
+  color: var(--reconstructed);
+  background: transparent;
+  border: 2px dashed var(--reconstructed);
+}
+.tier-internal {
+  color: var(--internal-line);
+  background: transparent;
+  border: 2px dotted var(--internal-line);
+}
+
+.withheld { color: var(--observed); }
+.no-content, .no-memory { color: var(--muted); }

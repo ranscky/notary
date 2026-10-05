@@ -1,0 +1,24 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} — notary</title>
+<link rel="stylesheet" href="/assets/app.css">
+<script src="/assets/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="site">
+<span class="brand">notary</span>
+<nav class="site-nav"><a href="/">Records</a></nav>
+</header>
+{{template "chainBanner" .}}
+<main class="page">
+{{template "page" .}}
+</main>
+<footer class="site-foot">
+<p>Read-only console, rendered {{.Now.Format "2006-01-02 15:04:05 MST"}}. Every record is produced by <code>notary export</code>'s own rendering path.</p>
+</footer>
+</body>
+</html>
+{{end}}

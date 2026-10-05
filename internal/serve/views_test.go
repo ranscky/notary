@@ -340,28 +340,6 @@ func TestBadgeForNamesEachTier(t *testing.T) {
 	}
 }
 
-// TestMemoryHrefIsEmptyWhenTheRecordNamesNoMemory pins that a record whose
-// subject names no memory (the store's memory_id DEFAULT "") gets no memory
-// link, while every other record does.
-func TestMemoryHrefIsEmptyWhenTheRecordNamesNoMemory(t *testing.T) {
-	f := newFixture(t)
-
-	rows, err := f.server.loadRecords(defaultFilter())
-	require.NoError(t, err)
-	require.NotEmpty(t, rows)
-
-	var sawNoMemory bool
-	for _, r := range rows {
-		if r.Line.ID == "fixture-internal" {
-			sawNoMemory = true
-			assert.Empty(t, r.MemoryHref, "a record naming no memory must have no memory href")
-			continue
-		}
-		assert.NotEmpty(t, r.MemoryHref, "record %s names a memory and must link to it", r.Line.ID)
-	}
-	require.True(t, sawNoMemory, "the fixture must contain the no-memory record")
-}
-
 // TestLoadRecordAndMemoryRedactByDefaultAndRevealOnRequest pins the one
 // redaction rule: a sensitive record's text is absent and Redacted is
 // "sensitive" by default, present with reveal, and NO hash field differs

@@ -13,12 +13,13 @@
 // through the same function.
 //
 // This file holds the Server and the dependencies it is constructed from; the
-// data projections live in views.go, the routes and templates arrive in later
-// tasks.
+// data projections live in views.go, the routes in routes.go, the rendering in
+// render.go, and the embedded templates and assets in embed.go.
 package serve
 
 import (
 	"crypto/ed25519"
+	"html/template"
 	"io"
 	"time"
 
@@ -50,11 +51,13 @@ type Options struct {
 	GapLogPath string
 
 	// Keyring is the trusted public keys a chain check verifies against. A nil
-	// or EMPTY keyring means the check does not run at all: LoadTrustedKeys can
-	// return an empty map for a rules-only or comment-only file, and a keyless
-	// verifier reports every record as a signature break. New is the guarantor
-	// -- it derives the verifier only when len(Keyring) > 0 -- so no caller can
-	// hand the Server a verifier that trusts nothing. This is the guard
+	// or EMPTY keyring means the check does not run at all: a keyless verifier
+	// reports every record in a healthy ledger as a signature break, so building
+	// one at all is exactly what would turn an intact ledger into a chain
+	// "broken" banner. New is the guarantor -- it derives the verifier only when
+	// len(Keyring) > 0 -- so no caller can hand the Server a verifier that trusts
+	// nothing. A nil or empty map, however it arrives, must not produce a keyless
+	// verifier; the empty keyring is the dangerous one. This is the guard
 	// doctor.checkChain makes, for the same reason.
 	Keyring map[string]ed25519.PublicKey
 
@@ -86,6 +89,17 @@ type Server struct {
 	keyringPath string
 	reveal      io.Writer
 	now         func() time.Time
+
+	// templates holds one parsed template set per page, keyed by page name
+	// ("index", and the pages later tasks add). New builds them from the
+	// embedded template files, so the set of pages a Server can render is fixed
+	// at construction and a template that will not parse is a construction
+	// error rather than a blank page at request time.
+	templates map[string]*template.Template
+
+	// assets holds the embedded static files keyed by exact name, so the asset
+	// handler serves from memory and can never reach the OS filesystem.
+	assets map[string][]byte
 }
 
 // New builds a Server from opts. It normalises the optional settings -- a nil
@@ -104,10 +118,12 @@ type Server struct {
 // makes THIS package the guarantor rather than an invariant of another.
 //
 // It returns an error so a construction that cannot succeed can say why rather
-// than leaving a Server that looks usable. This task has nothing to fail on
-// yet (the templates arrive in a later task), so it is always nil now; the
-// error return is the shape later work needs and library code must never panic
-// to report a fault (.clinerules §4).
+// than leaving a Server that looks usable. The two things that can fail are
+// both fatal to the whole console -- a template file that will not parse and an
+// embedded asset that cannot be read -- so both are reported here, at
+// construction, rather than as a surprise at request time. Library code must
+// never panic to report a fault (.clinerules §4), so an error is the only
+// honest shape.
 func New(opts Options) (*Server, error) {
 	now := opts.Now
 	if now == nil {
@@ -121,6 +137,16 @@ func New(opts Options) (*Server, error) {
 	if len(opts.Keyring) > 0 {
 		verifier = sign.NewVerifier(opts.Keyring)
 	}
+
+	templates, err := buildTemplateSets()
+	if err != nil {
+		return nil, err
+	}
+	assets, err := loadAssets()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
 		ledger:      opts.Ledger,
 		store:       opts.Store,
@@ -129,5 +155,7 @@ func New(opts Options) (*Server, error) {
 		keyringPath: opts.KeyringPath,
 		reveal:      reveal,
 		now:         now,
+		templates:   templates,
+		assets:      assets,
 	}, nil
 }
