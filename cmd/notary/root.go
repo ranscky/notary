@@ -13,9 +13,23 @@ import (
 	"notary/config"
 )
 
+// skipEnsureLedgerAnnotation, set to "true" in a command's Annotations, tells
+// the root command's PersistentPreRunE not to create the ledger file (and its
+// parent directories) before that command runs.
+//
+// `notary doctor` is the command that carries it. Doctor exists to report
+// whether NOTARY_DB_PATH can hold the ledger, so creating the file first would
+// hide exactly the failure it is there to name (the pre-run's error would
+// replace doctor's findings), and it would make `doctor --generate-key` --
+// which promises to write no file -- write one. An annotation, rather than a
+// comparison against the command's name here, says WHY a command is exempt at
+// the command that declares the exemption.
+const skipEnsureLedgerAnnotation = "notary.skip-ensure-ledger"
+
 // newRootCmd builds the notary root command. It declares the persistent
 // --verbose and --config flags and, before any subcommand runs, ensures the
-// ledger file exists on disk.
+// ledger file exists on disk -- unless the subcommand opts out with
+// skipEnsureLedgerAnnotation, which `doctor` does.
 func newRootCmd() *cobra.Command {
 	var (
 		verbose    bool
@@ -29,10 +43,13 @@ func newRootCmd() *cobra.Command {
 			"and produces a signed, tamper-evident audit trail of those decisions.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
 			if err != nil {
 				return fmt.Errorf("loading configuration: %w", err)
+			}
+			if cmd.Annotations[skipEnsureLedgerAnnotation] == "true" {
+				return nil
 			}
 			if err := ensureLedgerFile(cfg.DBPath); err != nil {
 				return err

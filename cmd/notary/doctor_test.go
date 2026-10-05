@@ -177,31 +177,110 @@ func TestDoctorCmdGenerateKeyPrintsAnEnvLineAndWritesNothing(t *testing.T) {
 // TestDoctorCmdGenerateKeyRefusesAPathInsideTheRepository is the guardrail,
 // enforced rather than documented: the repository must hold no key material,
 // ever, so a --key-out inside the checkout is refused before anything is
-// written and no key is printed either. The package's own working directory is
-// inside the repository, so both a relative and an absolute path resolve
-// there.
+// written and no key is printed either. The package's working directory is
+// inside the repository, so a relative path, an absolute path, and an absolute
+// path given from elsewhere all resolve there.
+//
+// Every target lives in a fresh subdirectory of the package directory that the
+// test removes afterwards. That keeps the checkout clean even when the guard
+// is broken and the run writes a key -- as it did once, against the build that
+// scoped the refusal to the working directory: the file existed, the test
+// failed, and the cleanup removed the material.
 func TestDoctorCmdGenerateKeyRefusesAPathInsideTheRepository(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 
-	cases := []struct {
-		name string
-		path string
-	}{
-		{"absolute", filepath.Join(cwd, "doctor-key-must-not-exist.key")},
-		{"relative", "doctor-key-must-not-exist.key"},
+	// inRepository returns a fresh, empty directory inside the repository and
+	// removes it (and anything a buggy run wrote into it) after the test.
+	inRepository := func(t *testing.T) string {
+		t.Helper()
+		dir, err := os.MkdirTemp(cwd, "doctor-key-refusal-")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		return dir
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := executeDoctorCmd(t, "--generate-key", "--key-out", tc.path)
-			require.Error(t, err, "a key path inside the repository must be refused")
-			assert.Contains(t, err.Error(), "repository", "the refusal must say why")
 
-			_, statErr := os.Stat(tc.path)
-			assert.ErrorIs(t, statErr, os.ErrNotExist, "the refused path must not be created")
-			assertNoExportedKeyLine(t, out)
-		})
-	}
+	t.Run("absolute", func(t *testing.T) {
+		target := filepath.Join(inRepository(t), "doctor-key-must-not-exist.key")
+
+		out, err := executeDoctorCmd(t, "--generate-key", "--key-out", target)
+		require.Error(t, err, "a key path inside the repository must be refused")
+		assert.Contains(t, err.Error(), "repository", "the refusal must say why")
+
+		_, statErr := os.Stat(target)
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "the refused path must not be created")
+		assertNoExportedKeyLine(t, out)
+	})
+
+	t.Run("relative", func(t *testing.T) {
+		t.Chdir(inRepository(t)) // the relative path resolves inside the repository
+
+		out, err := executeDoctorCmd(t, "--generate-key", "--key-out", "doctor-key-must-not-exist.key")
+		require.Error(t, err, "a relative key path inside the repository must be refused")
+		assert.Contains(t, err.Error(), "repository", "the refusal must say why")
+
+		_, statErr := os.Stat("doctor-key-must-not-exist.key")
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "the refused path must not be created")
+		assertNoExportedKeyLine(t, out)
+	})
+
+	// The checkout the TARGET lives in counts too. Run from a directory
+	// outside any repository, an absolute path into this one must still be
+	// refused: locating the repository only from the working directory would
+	// let a key be written into the checkout from anywhere else.
+	t.Run("from outside the repository", func(t *testing.T) {
+		outside := t.TempDir()
+		if root, ok := repositoryRoot(outside); ok {
+			t.Skipf("the temp directory %s is inside a checkout (%s); cannot test the from-outside case", outside, root)
+		}
+		t.Chdir(outside) // the process no longer runs from the repository
+
+		target := filepath.Join(inRepository(t), "doctor-key-must-not-exist.key")
+		out, err := executeDoctorCmd(t, "--generate-key", "--key-out", target)
+		require.Error(t, err, "a path inside a checkout must be refused even when doctor runs from elsewhere")
+		assert.Contains(t, err.Error(), "repository", "the refusal must say why")
+
+		_, statErr := os.Stat(target)
+		assert.ErrorIs(t, statErr, os.ErrNotExist, "the refused path must not be created")
+		assertNoExportedKeyLine(t, out)
+	})
+}
+
+// TestDoctorCmdGenerateKeyRefusesToOverwriteAnExistingKey pins the O_EXCL
+// guard: replacing an existing key file would destroy the only copy of a
+// signing identity, so an existing path is a refusal -- non-zero, the original
+// bytes untouched, and no key printed on the way out.
+func TestDoctorCmdGenerateKeyRefusesToOverwriteAnExistingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "signing.key")
+	original := []byte("an existing signing key that must survive\n")
+	require.NoError(t, os.WriteFile(path, original, 0o600))
+
+	out, err := executeDoctorCmd(t, "--generate-key", "--key-out", path)
+	require.Error(t, err, "an existing key file must be refused, never overwritten")
+	assert.ErrorIs(t, err, os.ErrExist, "the refusal must be the exclusive-create failure")
+	assert.Contains(t, err.Error(), "signing key", "the refusal must say what it refused to write")
+	assertNoExportedKeyLine(t, out)
+
+	after, rerr := os.ReadFile(path)
+	require.NoError(t, rerr)
+	assert.Equal(t, original, after, "the existing key material must be byte-identical after the refusal")
+}
+
+// TestDoctorCmdRejectsOutWithGenerateKey pins that the flag pair cannot be
+// silently half-honoured: --generate-key writes a key and no page, so
+// combining it with --out is a refusal that names both flags, not a run that
+// ignores one of them.
+func TestDoctorCmdRejectsOutWithGenerateKey(t *testing.T) {
+	dir := t.TempDir()
+
+	out, err := executeDoctorCmd(t, "--generate-key", "--out", dir)
+	require.Error(t, err, "--out with --generate-key must be refused")
+	assert.Contains(t, err.Error(), "--out", "the refusal must name --out")
+	assert.Contains(t, err.Error(), "--generate-key", "the refusal must name --generate-key")
+
+	assertNoExportedKeyLine(t, out)
+	_, statErr := os.Stat(filepath.Join(dir, setupPageFilename))
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "a refused run must write no page")
 }
 
 // assertNoExportedKeyLine fails when out contains a line that is a printed
@@ -259,10 +338,14 @@ func TestDoctorCmdReportsTheMem0URLCheckInTheCheckListOrder(t *testing.T) {
 	urlPos := strings.Index(out, doctor.CheckMem0BaseURL)
 	require.NotEqual(t, -1, urlPos, "the Mem0 base URL check must be reported")
 	for _, check := range []string{doctor.CheckLedger, doctor.CheckSigningKey} {
-		assert.Less(t, strings.Index(out, check), urlPos, "%s must come before the Mem0 base URL check", check)
+		pos := strings.Index(out, check)
+		require.NotEqual(t, -1, pos, "%s must be reported", check)
+		assert.Less(t, pos, urlPos, "%s must come before the Mem0 base URL check", check)
 	}
 	for _, check := range []string{doctor.CheckMem0APIKey, doctor.CheckSensitivityRules, doctor.CheckChain} {
-		assert.Less(t, urlPos, strings.Index(out, check), "the Mem0 base URL check must come before %s", check)
+		pos := strings.Index(out, check)
+		require.NotEqual(t, -1, pos, "%s must be reported", check)
+		assert.Less(t, urlPos, pos, "the Mem0 base URL check must come before %s", check)
 	}
 }
 
@@ -329,4 +412,85 @@ func TestDoctorCmdSetupPageContainsNoKeyMaterial(t *testing.T) {
 	require.NoError(t, err, "--out must write setup.html")
 	assert.Contains(t, string(page), "Notary setup")
 	assert.NotContains(t, string(page), material, "setup.html must never contain key material")
+}
+
+// ---------------------------------------------------------------------------
+// Through the root command
+// ---------------------------------------------------------------------------
+
+// executeRootCmd runs `notary <args...>` through newRootCmd -- the real command
+// tree, with the root's PersistentPreRunE that the direct runDoctor tests
+// bypass -- and returns what it printed and what it returned.
+func executeRootCmd(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newRootCmd()
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return buf.String(), err
+}
+
+// TestRootDoctorGenerateKeyWritesNoLedger pins the promise `doctor
+// --generate-key` makes -- "writes no file by default" -- where the operator
+// actually meets it: through the root command, whose pre-run creates the
+// ledger file before every subcommand unless that subcommand opts out. Without
+// the exemption this fails with NOTARY_DB_PATH (and its parent directory)
+// created by a run that generated a key and no ledger.
+func TestRootDoctorGenerateKeyWritesNoLedger(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sub", "ledger.db")
+	t.Setenv(config.EnvDBPath, dbPath)
+	t.Setenv(config.EnvGapLogPath, filepath.Join(dir, "notary-gaps.log"))
+
+	out, err := executeRootCmd(t, "doctor", "--generate-key")
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	require.Len(t, lines, 1, "the run must print exactly the export line, got %q", out)
+	assert.True(t, strings.HasPrefix(lines[0], "export "+config.DefaultSigningKeyEnv+"="),
+		"stdout must be the export line, got %q", lines[0])
+
+	_, statErr := os.Stat(dbPath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "--generate-key must not create the ledger")
+	_, statErr = os.Stat(filepath.Dir(dbPath))
+	assert.ErrorIs(t, statErr, os.ErrNotExist,
+		"--generate-key must not create the ledger's parent directory either")
+}
+
+// TestRootDoctorReportsFindingsForAnUnusableLedgerPath pins the other half of
+// the exemption: when NOTARY_DB_PATH cannot hold a ledger, the CLI must print
+// doctor's findings -- naming what was found and the command that fixes it --
+// rather than dying in the root pre-run before doctor ever runs.
+func TestRootDoctorReportsFindingsForAnUnusableLedgerPath(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	t.Setenv(config.EnvDBPath, filepath.Join(file, "ledger.db"))
+	t.Setenv(config.EnvGapLogPath, filepath.Join(t.TempDir(), "notary-gaps.log"))
+
+	out, err := executeRootCmd(t, "doctor")
+	require.Error(t, err, "a broken deployment must exit non-zero")
+
+	assert.Contains(t, out, doctor.CheckLedger,
+		"doctor's findings must be printed, not replaced by a pre-run failure")
+	assert.Contains(t, out, "cannot be opened", "the finding must say what was found")
+	assert.Contains(t, out, "export "+config.EnvDBPath, "the finding must name the fix")
+	assert.NotContains(t, out, "checking ledger file",
+		"the root pre-run's own error must not replace doctor's diagnosis")
+}
+
+// TestRootStillEnsuresTheLedgerForOtherCommands pins that the doctor exemption
+// is scoped to doctor: every other subcommand still gets the ledger file
+// created ahead of it, which is the root pre-run's whole purpose.
+func TestRootStillEnsuresTheLedgerForOtherCommands(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sub", "ledger.db")
+	t.Setenv(config.EnvDBPath, dbPath)
+
+	_, err := executeRootCmd(t, "version")
+	require.NoError(t, err)
+
+	_, statErr := os.Stat(dbPath)
+	assert.NoError(t, statErr, "a non-doctor command must still have the ledger created before it runs")
 }

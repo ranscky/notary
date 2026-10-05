@@ -245,6 +245,44 @@ func TestDiagnoseReportsEachCheck(t *testing.T) {
 	}
 }
 
+// TestDiagnoseSaysWhenItCreatedAPath pins that the two path checks report
+// creation instead of silently manufacturing what they check. store.Open and
+// gap.Open create a missing file, so a health report that said only "opens"
+// about a file it had just made would let a typo'd NOTARY_DB_PATH pass as an
+// all-green run against a brand-new empty ledger. The first run must say it
+// created the paths; the second, when they exist, must not claim it did again.
+func TestDiagnoseSaysWhenItCreatedAPath(t *testing.T) {
+	dir := t.TempDir()
+	env := map[string]string{
+		config.EnvDBPath:     filepath.Join(dir, "ledger.db"),
+		config.EnvGapLogPath: filepath.Join(dir, "notary-gaps.log"),
+	}
+
+	findings := diagnose(t, env)
+
+	ledger := findingFor(t, findings, CheckLedger)
+	assert.Equal(t, OK, ledger.Severity)
+	assert.Contains(t, ledger.Message, "created a new empty ledger",
+		"a report must say the ledger did not exist before this run, not merely that it opens")
+
+	gapLog := findingFor(t, findings, CheckGapLog)
+	assert.Equal(t, OK, gapLog.Severity)
+	assert.Contains(t, gapLog.Message, "created a new gap log",
+		"a report must say the gap log did not exist before this run, not merely that it is writable")
+
+	findings = diagnose(t, env)
+
+	ledger = findingFor(t, findings, CheckLedger)
+	assert.Contains(t, ledger.Message, "opens")
+	assert.NotContains(t, ledger.Message, "created a new empty ledger",
+		"the second run found the file it made on the first; it must not claim to have made it again")
+
+	gapLog = findingFor(t, findings, CheckGapLog)
+	assert.Contains(t, gapLog.Message, "is writable")
+	assert.NotContains(t, gapLog.Message, "created a new gap log",
+		"the second run found the log it made on the first; it must not claim to have made it again")
+}
+
 // ---------------------------------------------------------------------------
 // Each broken check
 // ---------------------------------------------------------------------------
@@ -259,6 +297,9 @@ func TestDiagnoseReportsEachBrokenCheck(t *testing.T) {
 		breakIt     func(t *testing.T, env map[string]string)
 		check       string
 		fixContains string
+		// extra asserts facts about the OTHER findings the case produces,
+		// where breaking one check changes what a second check can do.
+		extra func(t *testing.T, findings []Finding)
 	}{
 		{
 			name: "DiagnoseReportsAMissingLedger",
@@ -295,6 +336,27 @@ func TestDiagnoseReportsEachBrokenCheck(t *testing.T) {
 			fixContains: config.EnvTrustedKeysPath,
 		},
 		{
+			name: "DiagnoseReportsACommentOnlyTrustedKeysFile",
+			breakIt: func(t *testing.T, env map[string]string) {
+				// A file that parses but yields ZERO keys. LoadTrustedKeys
+				// rejects it ("contains no keys"), so the keyring the chain
+				// check would use is empty -- and an empty keyring is the same
+				// hazard as a nil one: sign.NewVerifier(empty) reports every
+				// record as a signature break. The chain check must therefore
+				// be SKIPPED for it too, which is what extra pins.
+				env[config.EnvTrustedKeysPath] = writeFile(t, "trusted.keys", "# no keys here yet\n")
+			},
+			check:       CheckTrustedKeys,
+			fixContains: config.EnvTrustedKeysPath,
+			extra: func(t *testing.T, findings []Finding) {
+				chain := findingFor(t, findings, CheckChain)
+				assert.Equal(t, Warn, chain.Severity,
+					"an empty keyring must skip the chain check: %s", chain.Message)
+				assert.NotContains(t, chain.Message, "integrity break",
+					"the keyless run must not fabricate breaks for a healthy ledger")
+			},
+		},
+		{
 			name: "DiagnoseReportsAMalformedSigningKey",
 			breakIt: func(t *testing.T, _ map[string]string) {
 				t.Setenv(doctorKeyEnv, "not base64 at all !!!")
@@ -324,6 +386,9 @@ func TestDiagnoseReportsEachBrokenCheck(t *testing.T) {
 			assertFixIsRunnable(t, f)
 			assert.Contains(t, f.Fix, tc.fixContains, "the fix must name what to set or run")
 			assert.NotEmpty(t, f.Message, "every finding must say what was found")
+			if tc.extra != nil {
+				tc.extra(t, findings)
+			}
 		})
 	}
 }

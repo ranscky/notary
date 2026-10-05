@@ -74,6 +74,13 @@ func newDoctorCmd() *cobra.Command {
 			"repository) instead of printing it. Key material never appears in a finding\n" +
 			"or in the setup page.",
 		Args: cobra.NoArgs,
+		// The root command's PersistentPreRunE creates the ledger file before
+		// every subcommand runs. Doctor opts out (root.go's
+		// skipEnsureLedgerAnnotation): creating the ledger is the very thing
+		// its ledger check reports, so doing it first would hide the failure it
+		// exists to name and would make `doctor --generate-key` -- which
+		// promises to write no file -- write one.
+		Annotations: map[string]string{skipEnsureLedgerAnnotation: "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// The environment is read once, into a map, and both the
 			// configuration and the checks are derived from it -- the way
@@ -145,6 +152,14 @@ func runDoctor(cmd *cobra.Command, cfg *config.Config, env map[string]string) er
 	// and prints or writes it, and it runs no check and opens nothing (spec
 	// section 4 -- it writes no file but the one it is asked for).
 	if generateKey {
+		// --out promises a page of findings, and generating a key produces
+		// none. Honouring one of the two flags silently is not something this
+		// project does, so the combination is refused rather than half-run.
+		if outDir != "" {
+			return fmt.Errorf(
+				"--out %s cannot be combined with --generate-key: generating a key runs no checks, so no setup page is written; "+
+					"run `notary doctor --out %s` without --generate-key to write the page", outDir, outDir)
+		}
 		return generateSigningKey(out, keyOut)
 	}
 	// The flag pair is deliberately not silently tolerated: --key-out alone
@@ -348,35 +363,48 @@ func writeKeyContents(f *os.File, material string) error {
 	return nil
 }
 
-// refuseKeyInsideRepository refuses a --key-out path inside the repository
-// this process runs from. The repository is located by walking up from the
-// working directory to the nearest ancestor holding a .git entry -- the
-// checkout the guardrail ("no key material in the repository, ever") speaks
-// about. When there is no repository above the working directory there is
-// nothing to be inside of, so the path is allowed.
+// refuseKeyInsideRepository refuses a --key-out path inside a repository this
+// process can see. Two repositories count, and the target is refused when it
+// lies in EITHER:
 //
-// Paths are compared after filepath.Abs, as given: a path that reaches the
-// checkout through a symlink is not chased, because the guard is against the
-// ordinary mistake -- writing a key next to the code -- and a symlink into the
-// repository is a deliberate act, not a slip.
+//   - the checkout the process runs from -- the working directory's nearest
+//     ancestor holding a .git entry -- which catches a relative path and an
+//     absolute path given from inside the checkout; and
+//   - the checkout the TARGET lives in -- the target directory's nearest
+//     ancestor holding a .git entry -- which catches an absolute path into a
+//     checkout from somewhere else. Running doctor from /tmp must not make
+//     this repository writable key storage.
+//
+// When neither applies there is no repository to write into, so the path is
+// allowed. Paths are compared after filepath.Abs, as given: a path that
+// reaches a checkout through a symlink is not chased, because the guard is
+// against the ordinary mistake -- writing a key next to the code -- and a
+// symlink into the repository is a deliberate act, not a slip.
 func refuseKeyInsideRepository(path string) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		// Without a working directory there is no way to tell whether the path
-		// is inside a checkout; refuse rather than risk writing into one.
-		return fmt.Errorf("refusing to write key material to %s: cannot determine the working directory: %w", path, err)
-	}
-	root, ok := repositoryRoot(cwd)
-	if !ok {
-		return nil
-	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("refusing to write key material to %s: cannot resolve the path: %w", path, err)
 	}
-	if !pathWithin(root, abs) {
-		return nil
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		// Without a working directory there is no way to tell whether the
+		// target is inside the checkout this process runs from; refuse rather
+		// than risk writing into one.
+		return fmt.Errorf("refusing to write key material to %s: cannot determine the working directory: %w", abs, err)
 	}
+	if root, ok := repositoryRoot(cwd); ok && pathWithin(root, abs) {
+		return keyInRepositoryError(abs, root)
+	}
+	if root, ok := repositoryRoot(filepath.Dir(abs)); ok && pathWithin(root, abs) {
+		return keyInRepositoryError(abs, root)
+	}
+	return nil
+}
+
+// keyInRepositoryError is the refusal both repository checks return: it names
+// the path, the checkout it is inside, and the guardrail it would break.
+func keyInRepositoryError(abs, root string) error {
 	return fmt.Errorf(
 		"refusing to write key material to %s: it is inside the repository at %s, and no key material "+
 			"lives in the repository, ever -- write it outside the checkout, for example --key-out ~/.notary/signing.key",

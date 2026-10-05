@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"os"
 	"time"
 
 	"notary/config"
@@ -183,9 +184,15 @@ func Diagnose(cfg *config.Config, env map[string]string, now time.Time) []Findin
 
 // openLedger opens cfg.DBPath through store.Open, the same call every command
 // makes. A missing file is not a failure: store.Open creates it, so this check
-// answers "can this path hold the ledger?". The returned store is open for the
-// chain check that follows, and Diagnose closes it.
+// answers "can this path hold the ledger?". The report says when THIS run is
+// the one that created it -- a health report that said only "opens" about a
+// file it had just made would let a typo'd NOTARY_DB_PATH pass as an all-green
+// run against an empty ledger nobody meant to create. The returned store is
+// open for the chain check that follows, and Diagnose closes it.
 func openLedger(cfg *config.Config) (Finding, *store.SQLiteStore) {
+	_, statErr := os.Stat(cfg.DBPath)
+	created := errors.Is(statErr, os.ErrNotExist)
+
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		return Finding{
@@ -195,11 +202,12 @@ func openLedger(cfg *config.Config) (Finding, *store.SQLiteStore) {
 			Fix:      fixDBPath,
 		}, nil
 	}
-	return Finding{
-		Check:    CheckLedger,
-		Severity: OK,
-		Message:  fmt.Sprintf("the ledger at %s opens", cfg.DBPath),
-	}, st
+
+	message := fmt.Sprintf("the ledger at %s opens", cfg.DBPath)
+	if created {
+		message = fmt.Sprintf("created a new empty ledger at %s (the path did not exist before this check)", cfg.DBPath)
+	}
+	return Finding{Check: CheckLedger, Severity: OK, Message: message}, st
 }
 
 // checkGapLog opens cfg.GapLogPath for append -- the mode the gap log's own
@@ -207,8 +215,12 @@ func openLedger(cfg *config.Config) (Finding, *store.SQLiteStore) {
 // gap log on a read-only volume is present and unwritable, and it fails
 // exactly when it matters, on the write that records an audit gap. A missing
 // log is not a failure; gap.Open creates it, which is the state the first
-// recorded gap expects.
+// recorded gap expects -- and, as with the ledger, the report says when this
+// run is the one that created it.
 func checkGapLog(cfg *config.Config) Finding {
+	_, statErr := os.Stat(cfg.GapLogPath)
+	created := errors.Is(statErr, os.ErrNotExist)
+
 	gl, err := gap.Open(cfg.GapLogPath)
 	if err != nil {
 		return Finding{
@@ -226,11 +238,12 @@ func checkGapLog(cfg *config.Config) Finding {
 			Fix:      fixGapLogPath,
 		}
 	}
-	return Finding{
-		Check:    CheckGapLog,
-		Severity: OK,
-		Message:  fmt.Sprintf("the gap log at %s is writable", cfg.GapLogPath),
+
+	message := fmt.Sprintf("the gap log at %s is writable", cfg.GapLogPath)
+	if created {
+		message = fmt.Sprintf("created a new gap log at %s (the path did not exist before this check)", cfg.GapLogPath)
 	}
+	return Finding{Check: CheckGapLog, Severity: OK, Message: message}
 }
 
 // checkTrustedKeys loads cfg.TrustedKeysPath through sign.LoadTrustedKeys and
@@ -358,13 +371,20 @@ func checkSensitivityRules(env map[string]string) Finding {
 // log are intact, using the same function `notary verify` uses, so doctor and
 // verify cannot give two answers to one question.
 //
-// The chain check is SKIPPED, not run, when no trusted keyring is available.
-// sign.NewVerifier(nil) trusts no keys, and ledger.Verify reports a signature
-// break for any key the verifier does not trust, so a keyless run would report
-// every record in a perfectly healthy ledger as a break. That is a false
-// accusation of tampering, so the check does not run at all: the finding says
-// it was not checked and why, and it is a warning rather than an error, since
-// an unconfigured keyring is a setup gap, not proof of damage.
+// The chain check is SKIPPED, not run, when the trusted keyring is unusable --
+// nil or EMPTY. sign.NewVerifier(empty) trusts no keys, and ledger.Verify
+// reports a signature break for any key the verifier does not trust, so a
+// keyless run would report every record in a perfectly healthy ledger as a
+// break. That is a false accusation of tampering, so the check does not run at
+// all: the finding says it was not checked and why, and it is a warning rather
+// than an error, since an unconfigured keyring is a setup gap, not proof of
+// damage.
+//
+// The guard tests len(keyring) == 0 rather than keyring == nil deliberately:
+// the empty keyring is the dangerous one, and asking its length makes THIS
+// package's own code the guarantor. Relying on sign.LoadTrustedKeys erroring
+// on a zero-key file would leave the worst output this command can produce
+// resting on an invariant of a package doctor may not change.
 //
 // now stamps the finding with the moment the whole-ledger check was taken: the
 // chain's state is a property of the whole ledger at one instant, and a report
@@ -380,7 +400,7 @@ func checkChain(cfg *config.Config, st *store.SQLiteStore, keyring map[string]ed
 			Message:  "the chain was not checked: the ledger could not be opened",
 			Fix:      fixDBPath,
 		}
-	case keyring == nil:
+	case len(keyring) == 0:
 		return Finding{
 			Check:    CheckChain,
 			Severity: Warn,
