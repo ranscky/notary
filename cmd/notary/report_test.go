@@ -681,19 +681,71 @@ func TestReportCmdNeverCreatesAMissingLedger(t *testing.T) {
 			stdout, err := executeRootCmd(t, "report",
 				"--out", out, "--from", reportFrom, "--no-verify")
 
+			// The exemption half of the hazard is pinned by the assertions
+			// BELOW, not by the NotContains further down: with the annotation
+			// removed the root pre-run creates the ledger (and its directory),
+			// report then renders it happily, and the run does not fail at all
+			// -- so there is no error message for a NotContains to inspect.
+			// "It must have refused" plus "neither path exists" is what fails
+			// in that mutation.
 			require.Error(t, err, "a ledger that is not there must be refused, not created")
-			assert.Contains(t, err.Error(), dbPath, "the error must name the path that was looked for")
-			assert.NotContains(t, err.Error(), "creating ledger",
-				"the root pre-run must not have run: report carries the exemption")
 			for _, path := range mustNotExist {
 				_, statErr := os.Stat(path)
 				assert.ErrorIs(t, statErr, os.ErrNotExist,
 					"a report must create no ledger and no directory for one: %s", path)
 			}
+
+			assert.Contains(t, err.Error(), dbPath, "the error must name the path that was looked for")
+			// Knowingly unreachable in that mutation, and kept as a guard for a
+			// different future: were the root pre-run ever to start failing
+			// where today it succeeds, this refusal would be the pre-run's text
+			// rather than report's, and a reader must not mistake it for a
+			// ledger-shape finding. It cannot testify that the exemption is
+			// honoured -- nothing here can, except the pair above.
+			assert.NotContains(t, err.Error(), "creating ledger",
+				"the root pre-run must not have run: report carries the exemption")
 			assert.NoDirExists(t, out, "and it must write no report for a ledger it could not read")
 			assert.Empty(t, stdout, "the failure must leave stdout clean")
 		})
 	}
+}
+
+// TestReportCmdRefusesAnEmptyLedgerFile pins the NARROWER form of the same
+// hazard, which existence alone does not close. A file that exists and holds 0
+// bytes is not a ledger with no records: nothing ever wrote a ledger there, and
+// sqlite initialises a 0-byte file happily -- so `touch ledger.db` (or a path
+// that happens to be empty, or a truncated file) would still produce the one
+// artefact this command must never produce: "0 memories, 0 records", an
+// authoritative-looking report, exit 0, over a file that holds nothing at all.
+// A real ledger is never 0 bytes -- its schema alone is 20 KB before a single
+// record is appended -- so the two states are cleanly distinguishable.
+//
+// The refusal must also leave the file exactly as it was: a report reads the
+// ledger and never writes it, so a refused run removes nothing, truncates
+// nothing and writes no byte into it.
+func TestReportCmdRefusesAnEmptyLedgerFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ledger.db")
+	// `touch`: a file that exists, and holds nothing.
+	require.NoError(t, os.WriteFile(dbPath, nil, 0o644))
+	t.Setenv(config.EnvDBPath, dbPath)
+	t.Setenv(config.EnvGapLogPath, filepath.Join(dir, "notary-gaps.log"))
+	t.Setenv(config.EnvTrustedKeysPath, "")
+	out := filepath.Join(dir, "report")
+
+	stdout, err := executeRootCmd(t, "report",
+		"--out", out, "--from", reportFrom, "--no-verify")
+
+	require.Error(t, err, "a ledger file that holds nothing must be refused, not reported on")
+	assert.Contains(t, err.Error(), dbPath, "the error must name the path that was looked at")
+	assert.Contains(t, err.Error(), "empty", "the error must say the file is empty")
+	assert.NoDirExists(t, out, "a refused run must write no report for a ledger it could not read")
+	assert.Empty(t, stdout, "the failure must leave stdout clean")
+
+	info, statErr := os.Stat(dbPath)
+	require.NoError(t, statErr, "the refusal must not remove the file")
+	assert.Zero(t, info.Size(),
+		"and must not write a byte into it: a report never modifies the ledger it reads")
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +864,14 @@ func TestReportCmdNamesTheSameBreakAsVerify(t *testing.T) {
 		"a broken chain must exit non-zero even though the pages are written: the exit code is an interface too")
 	assert.Contains(t, reportErr.Error(), strconv.Itoa(len(printed)),
 		"the error must name how many breaks the run found")
+
+	// The error claims the pages were written, so the claim is backed rather
+	// than half-backed: the index -- the page that makes the folder a report --
+	// is there as well as the chain-state page the breaks are read from.
+	assert.FileExists(t, filepath.Join(out, "verify.html"),
+		"the chain-state page must be written even when it carries breaks")
+	assert.FileExists(t, filepath.Join(out, "index.html"),
+		"and so must the index, which is what the error's 'the pages were written' promises")
 
 	rendered := reportBreakIdentities(t, readFileText(t, filepath.Join(out, "verify.html")))
 	assert.Equal(t, printed, rendered,

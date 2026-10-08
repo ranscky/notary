@@ -453,20 +453,34 @@ func checkReportOutDir(dir string, force bool) error {
 		dir, countText(len(entries), "entry", "entries"), dir)
 }
 
-// requireLedgerFile refuses a ledger path with no ledger at it.
+// requireLedgerFile refuses a ledger path with no ledger at it, and one that
+// holds nothing.
 //
 // store.Open -- and the SQLite driver under it -- CREATES a missing database
-// file. Everywhere else that is a convenience; for a report it is a trap:
-// `notary report --out dist --from ...` aimed at a mistyped path would have an
-// empty ledger created for it, render zero memories over it and exit 0 -- an
-// authoritative-looking compliance artefact describing nothing, over a path the
-// operator mistyped, that no reader could tell apart from a real empty ledger.
+// file and initialises an empty one. Everywhere else that is a convenience; for
+// a report it is a trap: `notary report --out dist --from ...` aimed at a
+// mistyped path would have an empty ledger created for it, and `touch
+// ledger.db` would have a 0-byte file initialised into one -- either way
+// rendering zero memories and exiting 0, an authoritative-looking compliance
+// artefact describing nothing, over a path the operator mistyped or a file
+// nothing ever wrote, that no reader could tell apart from a real empty ledger.
 //
 // So this command carries the root command's opt-out
 // (skipEnsureLedgerAnnotation, the annotation `doctor` also carries) and
-// establishes the ledger's existence itself, before anything is opened, with an
-// error that names the path the operator gave. A path that exists but is not a
-// ledger still fails, one step later, in store.Open -- naming the same path.
+// establishes what the ledger path actually holds itself, before anything is
+// opened, with an error that names the path the operator gave. The two states
+// are cleanly distinguishable: a real ledger is never 0 bytes, because its
+// schema alone is tens of kilobytes before a single record is appended.
+//
+// What it does NOT check -- and what therefore still reaches store.Open -- is
+// that the file holds a LEDGER. A path that exists, is not empty and is not a
+// SQLite database is neither refused nor read as one: opening it makes SQLite
+// replace its contents with a fresh empty database, which the report then
+// renders zero memories over, and the operator's file is gone. That is not this
+// command's to fix: verify, export, replay, explain and gaps open their ledger
+// through the same store.Open and share the residual, so "is this file a Notary
+// ledger?" is a decision for a phase with its own spec rather than for one
+// command's existence check. It is recorded rather than quietly accepted.
 func requireLedgerFile(path string) error {
 	info, err := os.Stat(path)
 	switch {
@@ -480,6 +494,14 @@ func requireLedgerFile(path string) error {
 		return fmt.Errorf("report: cannot read the ledger at %s: %w", path, err)
 	case info.IsDir():
 		return fmt.Errorf("report: the ledger path %s is a directory, not a ledger file", path)
+	case info.Size() == 0:
+		return fmt.Errorf(
+			"report: the ledger file %s is empty (0 bytes): a ledger holds its schema and every record ever "+
+				"written, so a file holding nothing is a placeholder rather than a ledger with no records, and "+
+				"a report over it would describe nothing while looking authoritative -- the same reason a "+
+				"missing path is refused rather than created; check %s, and run `notary doctor` if this "+
+				"deployment has not written a ledger yet",
+			path, config.EnvDBPath)
 	}
 	return nil
 }
