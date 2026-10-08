@@ -188,7 +188,7 @@ notary report --out DIR (--memory <mem0-id> | --from <RFC3339> [--to <RFC3339>])
 
 | File | Carries |
 |---|---|
-| `index.html` | The slice: the exact command that produced it, the instant, the memory and record counts, the chain state (below), a filter box, and a table of memories with their record counts **and a per-tier count breakdown** — each row linking to its page |
+| `index.html` | The slice: the command that produced it — **reconstructed from the request, and labelled as equivalent rather than exact**, because the rendered string normalises flag order and instants and cannot echo flags it did not receive (an artefact that prints a command the reader could run and get a *different* report is worse than one that says "equivalent") — the instant, the memory and record counts, the chain state (below), a filter box, and a table of memories with their record counts **and a per-tier count breakdown** — each row linking to its page |
 | `memory/<n>.html` | One memory's lifecycle: the same timeline the CLI's `explain --memory` renders — event, reason kind, tier, both instants, and content — with each line linking to its record |
 | `record/<n>.html` | One record's story: the phrased sentence from `export.Phrase`, the event, the reason kind, the tier, the evidence payload, the subject (memory id, scope, content hash), and the chain fields — `prev_hash`, `hash`, `signature`, `signer_key_id` — with the long hex in a collapsed `<details>` |
 | `verify.html` | The chain state in full: clean, or every break with the record id and the field that failed |
