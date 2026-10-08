@@ -318,8 +318,17 @@ character) and asserts nothing is written outside `--out`.
    (`internal/export/line.go:35`), so the two clauses cannot both hold — the payload is reachable only through
    `record.Reason`'s accessors (`Reason.Observed()`, `Reason.Reconstructed()`, `Reason.InternalNote()`). Those
    payloads are the typed Mem0 protocol structures (`mem0.AddPayload`, `mem0.EventStatusResponse`,
-   `mem0.SearchPerformedPayload`): event ids, statuses and search parameters, **not memory text**, so
-   `--include-sensitive` is not implicated. **Resolved: §7 wins, and the rule it appeared to break was never
+   `mem0.SearchPerformedPayload`) — but this item's first draft claimed those are "event ids, statuses and
+   search parameters, **not memory text**, so `--include-sensitive` is not implicated", and **that claim is
+   false.** The implementation's review traced the reconcile paths and demonstrated it: `buildKeptObserved`
+   marshals the *whole* `mem0.Memory` listing entry (`internal/reconcile/kept.go:182-184`), whose `Memory
+   string` field carries the memory text (`internal/mem0/types.go:47`), and `addResolvedReason` marshals the
+   whole `mem0.EventStatusResponse`, whose payload and results are upstream `map[string]any`
+   (`internal/reconcile/adds.go:196-205`). A probe over one default report (`IncludeSensitive: false`) holding
+   a sensitive interceptor record and a reconcile-shaped one showed the add page withholding the text, the
+   index promising that "a record marked sensitive prints no text", and **the reconcile record's page printing
+   that same text verbatim inside its evidence envelope.** Memory text can reach the artefact with the
+   sensitivity flag off, on the ordinary path for reconciled records rather than a corner case. **Resolved: §7 wins, and the rule it appeared to break was never
    about this field.** The "render from `Line`" rule exists so that "the report and an exported line cannot
    describe a record differently"; for a field the line does not describe, that divergence is impossible, and
    the rule's purpose is served by reading the payload from the one place it exists. Refusing it would leave
@@ -341,3 +350,18 @@ character) and asserts nothing is written outside `--out`.
    shows a reader the wire shape (`notary/reason/v1`). That is the same trade §12.2 makes by publishing
    `signature`, and it is reversible — a later phase wanting decoded fields should add accessors to
    `internal/record` and record the ask.
+5. **What to do about memory text arriving through the evidence block.** Put to the operator with the probe
+   above, and **resolved: disclose it in the artefact, and fix it at the source in its own phase.** The
+   evidence block's `<summary>` states plainly that it is the stored reason verbatim and is **not** filtered by
+   `--include-sensitive`; the index's promise stops implying that the whole artefact is filtered and says what
+   is actually true — a record marked sensitive prints no *content*, while a record's evidence may carry text
+   the sensitivity rules never marked, because reconcile's observed payloads are upstream objects rather than
+   curated fields. *Why not gate the block behind the flag:* that would withhold the *why* for **every**
+   record to conceal it for some, which is the completeness §12.4 was built on — a report that withholds its
+   own evidence is less useful to the reader it exists for, and the flag's name would then be doing work its
+   mechanism cannot back. *Why not fix the payloads now:* the real repair is to narrow what reconcile records —
+   ids, scores and hashes rather than the whole `mem0.Memory` — and that changes what records **hash**, so it
+   bears on the verification of already-written ledgers and belongs to its own phase with its own spec. It is
+   recorded here and in the phase ledger as a named open item, not as a thing quietly accepted: **a future
+   phase should narrow reconcile's observed payloads, and this artefact's disclosure is what makes waiting
+   honest rather than silent.**
