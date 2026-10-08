@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"html"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,6 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"notary/config"
+	"notary/internal/gap"
+	"notary/internal/ledger"
 	"notary/internal/record"
 	"notary/internal/store"
 )
@@ -426,6 +431,49 @@ func TestReportCmdWritesThePagesIntoOut(t *testing.T) {
 	assert.Contains(t, index, "mem-2")
 }
 
+// TestReportCmdNamesTheLedgerHead is spec §12.6 at the command: the head the
+// index prints is the fixture ledger's OWN head, read here through the same
+// ledger.Head() the command reads -- so the artefact names the ledger it
+// describes, with the stored digest and not one the report derived, and nothing
+// of the deployment travels with it.
+func TestReportCmdNamesTheLedgerHead(t *testing.T) {
+	cfg := reportFixtureLedger(t, "mem-1", "mem-2")
+	out := filepath.Join(t.TempDir(), "report")
+
+	cmd, _, _ := newTestReportCmd(t)
+	setReportFlags(t, cmd, map[string]string{"out": out, "from": reportFrom, "to": reportTo})
+	require.NoError(t, runReport(cmd, cfg))
+
+	// What the ledger says its own head is.
+	st, err := store.Open(cfg.DBPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
+	head, ok, err := ledger.New(st, nil, nil).Head()
+	require.NoError(t, err)
+	require.True(t, ok, "the fixture ledger holds records, so it has a head")
+
+	index := readFileText(t, filepath.Join(out, "index.html"))
+	assert.Contains(t, index, "<dt>Ledger head</dt>",
+		"the index must name the head of the ledger this report was made from")
+	assert.Contains(t, index, "<code>seq "+strconv.FormatUint(head.Seq, 10)+"</code>")
+	assert.Contains(t, index, "<code>hash "+hex.EncodeToString(head.Hash[:])+"</code>",
+		"the page must carry the ledger's stored digest, exactly as the ledger holds it")
+
+	// The head names the ledger without naming the deployment: no path, no DSN,
+	// no variable that would leak where this ledger lives (spec §3 decision 6).
+	assert.NotContains(t, index, cfg.DBPath, "the ledger's path must not reach a page")
+	assert.NotContains(t, index, "--db-path", "nor the flag that sets it")
+	assert.NotContains(t, index, config.EnvDBPath, "nor the variable that carries it")
+	assert.NotContains(t, index, filepath.Dir(cfg.DBPath), "nor the directory it lives in")
+
+	// And the head is on the index alone: the record pages carry the ledger's
+	// records, not another copy of its head.
+	for _, name := range filesWithSuffix(t, filepath.Join(out, "record"), ".html") {
+		page := readFileText(t, filepath.Join(out, "record", name))
+		assert.NotContains(t, page, "Ledger head", "record/%s must not carry the head row", name)
+	}
+}
+
 // TestReportCmdMemoryRendersThatMemoryAlone pins the memory subject end to end:
 // the slice is that memory's records and nothing else, so a command that
 // quietly widened the read would be visible in the pages and in the counts.
@@ -793,6 +841,15 @@ func TestReportCmdAcceptsARealLedgerWithNoRecords(t *testing.T) {
 	_, ok, n := ledgerSnapshot(t, dbPath)
 	assert.False(t, ok, "the report must not have written a record")
 	assert.Zero(t, n, "nor appended one to the ledger it read")
+
+	// The ledger IS empty, and its head is a state of its own: the index says
+	// the ledger holds no record rather than printing seq 0 and a zero digest,
+	// which would read as the first record's position and a hash the ledger
+	// never wrote.
+	index := readFileText(t, filepath.Join(out, "index.html"))
+	assert.Contains(t, index, "the ledger holds no record yet")
+	assert.NotContains(t, index, "<code>seq 0</code>")
+	assert.NotContains(t, index, "<code>hash ")
 }
 
 // ---------------------------------------------------------------------------
@@ -929,4 +986,145 @@ func TestReportCmdNamesTheSameBreakAsVerify(t *testing.T) {
 	// record the break names is the tampered one in both.
 	assert.Contains(t, stdout.String(), "the chain state is broken")
 	assert.Contains(t, stdout.String(), strconv.Itoa(len(printed)))
+}
+
+// TestReportCmdNamesTheSameGapBreakAsVerify closes Review Focus 1's blind spot,
+// and it is the second half of spec §10's differential.
+//
+// TestReportCmdNamesTheSameBreakAsVerify tampers with CHAIN records, so every
+// break it compares comes from the chain walk: a `report` narrowed to
+// ledger.Verify would still pass it, which is the one thing Review Focus 1 is
+// about. This fixture is the other case -- every record intact, and the gap log
+// holding an entry that matches no record -- so the only break in existence is
+// the gap cross-check's, the stage `ledger.Verify` alone cannot see and the
+// stage spec §3 decision 8 extracted the shared collection for. It is therefore
+// the test that fails if the command ever narrows to the chain walk.
+//
+// The gap entry is written through internal/gap's own log, so its counter and
+// its hash chain are the real ones a deployment produces; the ledger is a real
+// signed one, so "every record intact" is what the chain walk actually finds.
+func TestReportCmdNamesTheSameGapBreakAsVerify(t *testing.T) {
+	sg, pub := newVerifySigner(t)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ledger.db")
+	buildLedger(t, dbPath, sg, 3)
+
+	// buildLedger's records are rec-0001..rec-0003, so a gap entry naming
+	// anything else is work that left no audit trail -- and it is the ONLY
+	// break this fixture can produce.
+	gapPath := filepath.Join(dir, "notary-gaps.log")
+	g, err := gap.Open(gapPath)
+	require.NoError(t, err)
+	require.NoError(t, g.Record(gap.Entry{
+		At:            verifyFixedNow,
+		Kind:          record.EventMemorySurfaced,
+		Scope:         record.Scope{UserID: "u1", AgentID: "a1"},
+		CorrelationID: "rec-9999",
+		Detail:        "an operation that was never audited",
+	}))
+	require.NoError(t, g.Close())
+
+	cfg := &config.Config{
+		DBPath:          dbPath,
+		GapLogPath:      gapPath,
+		TrustedKeysPath: writeTrustedKeys(t, pub),
+	}
+
+	// `notary verify`'s answer, with the fixture's own answer pinned so the
+	// differential cannot pass on two empty lists: exactly one break, and a gap
+	// break. If the chain walk contributed one, this fixture would no longer be
+	// gap-log-only and would prove nothing about the stage under test.
+	verifyCmd, vbuf := newTestVerifyCmd(t)
+	verifyErr := runVerify(verifyCmd, cfg, "", "")
+	require.Error(t, verifyErr, "an unmatched gap entry must exit non-zero from verify")
+	printed := verifyBreakIdentities(t, vbuf.String())
+	require.Len(t, printed, 1, "the fixture holds one unmatched gap entry and no chain break: %v", printed)
+	assert.Equal(t, "gap", printed[0].field, "the only break must be the gap cross-check's: %v", printed)
+	assert.Equal(t, "rec-9999", printed[0].recordID)
+
+	// `notary report`'s answer, over the same ledger and the same keyring.
+	out := filepath.Join(dir, "report")
+	reportCmd, stdout, _ := newTestReportCmd(t)
+	setReportFlags(t, reportCmd, map[string]string{"out": out, "from": reportFrom, "to": reportTo})
+	reportErr := runReport(reportCmd, cfg)
+	require.Error(t, reportErr,
+		"a ledger with an unmatched gap entry is not intact, so the run must exit non-zero")
+
+	rendered := reportBreakIdentities(t, readFileText(t, filepath.Join(out, "verify.html")))
+	assert.Equal(t, printed, rendered,
+		"verify.html must name the same break `notary verify` names -- the same record id, position and "+
+			"field -- and a report narrowed to the chain walk would name none of it")
+
+	assert.Contains(t, stdout.String(), "the chain state is broken")
+}
+
+// reportCanarySeed is a fixed seed, distinct from every other test seed, so the
+// material the report's leak canary looks for is unmistakable in any output.
+var reportCanarySeed = []byte{
+	0x5a, 0x17, 0xc4, 0x88, 0x2e, 0x9b, 0x03, 0x74,
+	0xd1, 0x6f, 0x35, 0xa0, 0x8c, 0x42, 0xe7, 0x19,
+	0xbe, 0x28, 0x51, 0x0d, 0xf3, 0x96, 0x4a, 0xc0,
+	0x71, 0x8e, 0x2b, 0xd5, 0x60, 0x09, 0xfa, 0x3c,
+}
+
+// TestReportCmdPrintsNoKeyMaterialAnywhere is spec §10's canary -- "no key
+// material anywhere in the output" -- with the same discipline export's canary
+// uses: material placed in the variable a deployment would place it in, a real
+// run, and an assertion over every file the run wrote rather than over the one
+// that was expected to leak.
+//
+// It guards a FUTURE change and says so. `report` never loads the private key
+// today: reportVerifier reads the public keyring, and nothing here signs, so
+// there is no path from NOTARY_SIGNING_KEY to a page. The canary exists because
+// the property is a promise the artefact makes to whoever it is emailed to, and
+// the ways to break it are all future ones -- a configuration row added to what
+// the report says about itself, a page echoing an environment value, a signer
+// threaded in for some new reason. It is not vacuous over nothing: the run must
+// succeed, so the assertion covers pages that exist.
+func TestReportCmdPrintsNoKeyMaterialAnywhere(t *testing.T) {
+	material := base64.StdEncoding.EncodeToString(reportCanarySeed)
+
+	// A real, intact, verifiable fixture, and the material in the variable the
+	// config names -- the natural configuration, driven through the ROOT
+	// command so config.Load reads the environment a deployment would set.
+	cfg := reportFixtureLedger(t, "mem-1", "mem-2")
+	t.Setenv(config.EnvDBPath, cfg.DBPath)
+	t.Setenv(config.EnvGapLogPath, cfg.GapLogPath)
+	t.Setenv(config.EnvTrustedKeysPath, cfg.TrustedKeysPath)
+	t.Setenv(config.DefaultSigningKeyEnv, material)
+
+	out := filepath.Join(t.TempDir(), "report")
+	stdout, err := executeRootCmd(t, "report", "--out", out, "--from", reportFrom, "--to", reportTo)
+	require.NoError(t, err, "the report must succeed, or the canary covers a run that wrote nothing")
+
+	// Every byte the run wrote into the folder, and both streams.
+	var written strings.Builder
+	require.NoError(t, filepath.WalkDir(out, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
+			return werr
+		}
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		written.Write(data)
+		return nil
+	}))
+	require.NotEmpty(t, written.String(), "the canary must cover pages that were written")
+	assert.FileExists(t, filepath.Join(out, "index.html"))
+	// The page text is unescaped before the comparison, and that is load-bearing
+	// rather than tidy: the template engine escapes "+" as "&#43;", so a page
+	// that carried the material would hold a string the raw scan of the file
+	// does not match. Measuring this canary under a mutation that put the
+	// material on a page showed it passing -- the leak was on the page, escaped
+	// -- which is exactly the "an assertion that cannot fail" defect this
+	// project keeps finding. Both forms are now covered: the unescaped text
+	// contains the material if either one does.
+	pageText := html.UnescapeString(written.String())
+	assert.NotContains(t, pageText, material,
+		"key material must never reach a page or an asset: the report is a folder that gets emailed")
+	assert.NotContains(t, written.String(), material,
+		"and not in the escaped form the template engine would produce either")
+	assert.NotContains(t, html.UnescapeString(stdout), material,
+		"nor the run's own output: a finding or a summary may name the variable, never its value")
 }

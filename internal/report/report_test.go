@@ -252,20 +252,32 @@ func allFilesUnder(t *testing.T, root string) []string {
 	return files
 }
 
-// assertLinksResolve asserts that every reference on a page -- every link, and
-// the asset references its head carries -- resolves, relative to that page, to
-// a file that exists under dir.
+// assertLinksResolve asserts that every reference a report file carries -- every
+// link on a page, and the asset references its head carries -- resolves,
+// relative to that file, to a file that exists under dir, and that no page
+// links to itself.
 //
-// A file that is not a page is skipped: an asset carries no references, and
-// requiring one would be requiring a stylesheet to link somewhere.
+// A file that is not a page must carry NO reference, and that is an assertion
+// rather than a skip: an asset is bytes a page links TO, so a reference inside
+// one is a link nothing follows -- the page scan starts at the page's own
+// references -- and a dangling one would go unseen. The report's two assets
+// carry none, which is the state this pins.
+//
+// The two references skipped are the same-document ones: "" and "#..." resolve
+// to the file they are written in, which exists by construction, so there is
+// nothing to resolve. No other reference is skipped, and an empty one is only
+// ever empty in a page that means "this document".
 func assertLinksResolve(t *testing.T, dir, page string) {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(page)))
+	pagePath := filepath.Join(dir, filepath.FromSlash(page))
+	body, err := os.ReadFile(pagePath)
 	require.NoError(t, err)
+	refs := refRe.FindAllStringSubmatch(string(body), -1)
 	if !strings.HasSuffix(page, ".html") {
+		assert.Empty(t, refs,
+			"%s is not a page: a reference here is not followed by any assertion, so it is refused rather than skipped", page)
 		return
 	}
-	refs := refRe.FindAllStringSubmatch(string(body), -1)
 	require.NotEmpty(t, refs, "%s carries no links at all", page)
 	for _, m := range refs {
 		ref := m[1]
@@ -278,6 +290,14 @@ func assertLinksResolve(t *testing.T, dir, page string) {
 		if serr == nil {
 			assert.True(t, info.Mode().IsRegular(), "%s links to %q, which is not a file", page, ref)
 		}
+		// Both sides are resolved to the same form before they are compared:
+		// the page's own path and the target's, each joined onto dir, so the
+		// comparison is of two paths in one space. Comparing the page's
+		// RELATIVE name against the target's ABSOLUTE path would never match,
+		// and the assertion could not fail -- a guard that cannot fail is worse
+		// than none, because it is read as one.
+		assert.NotEqual(t, filepath.ToSlash(filepath.Clean(pagePath)), filepath.ToSlash(filepath.Clean(target)),
+			"%s links to itself (%q): a reader sent to the page they are on has been sent nowhere", page, ref)
 	}
 }
 
@@ -1338,6 +1358,20 @@ func TestReportChainStateReportsBothWays(t *testing.T) {
 		assert.NotContains(t, index, "not verified")
 		// The index sends the reader to the page that carries the detail.
 		assert.Contains(t, files["index.html"], `href="./verify.html"`)
+
+		// The chain-state page's own footer describes the page instead of
+		// linking to it: the shared footer used to point every page at
+		// verify.html, which on verify.html is a link to itself -- a reader
+		// sent to the page they are on has been sent nowhere. The generic
+		// no-self-link assertion is in assertLinksResolve, over every page; this
+		// pins the sentence a reader meets there.
+		assert.Contains(t, flat(files["verify.html"]), "This page is the chain state this report was made with.")
+		assert.NotContains(t, files["verify.html"], `href="./verify.html"`,
+			"the chain-state page must not link to itself")
+		assert.Contains(t, flat(files[page("record", 0, "rec-chain")]),
+			"The chain state this report was made with is on",
+			"every other page still points at the chain state, in the same words")
+		assert.Contains(t, files[page("record", 0, "rec-chain")], `href="../verify.html"`)
 	})
 
 	t.Run("a break names its record, its field and its detail", func(t *testing.T) {
@@ -1484,8 +1518,22 @@ func TestReportIndexCarriesPerTierCounts(t *testing.T) {
 	assert.Contains(t, other, "1 internal")
 	assert.NotContains(t, other, "observed", "a memory with no observed record must not claim one")
 
-	// Counts, not a ranking: no page names a "highest" tier.
-	assert.NotContains(t, strings.ToLower(files["index.html"]), "highest")
+	// Counts, not a ranking, and the assertion is tied to the fixture rather
+	// than to one word: the cell must be EXACTLY the fixture's counts, so a
+	// superset -- "(worst: observed)" beside them, a "highest" prefix, an
+	// ordering, a severity or a confidence -- fails here. The earlier form
+	// asserted only that the word "highest" was absent, which every other
+	// ranking word passed, and a tier ranks nothing: architecture spec §3 is
+	// explicit that it "is not a confidence score and not a severity".
+	index := files["index.html"]
+	assert.Contains(t, mixed, "<td>2 observed, 1 reconstructed</td>",
+		"the tier cell is the counts and nothing else: the fixture has two observed records and one reconstructed")
+	assert.Contains(t, rowOf(t, index, "mem-other"), "<td>1 internal</td>",
+		"and a one-tier memory's cell is that one count")
+	for _, ranking := range []string{"highest", "worst", "severity", "confidence"} {
+		assert.NotContains(t, strings.ToLower(index), ranking,
+			"no page ranks a tier, and %q is ranking language", ranking)
+	}
 
 	// The memory's own page carries the same breakdown for the same records.
 	memoryPage := files[page("memory", 0, "mem-mixed")]
@@ -1585,11 +1633,18 @@ func TestReportWritesTheAssetsBesideThePages(t *testing.T) {
 }
 
 // TestReportIndexNeedsNoScriptToBeComplete asserts §3 decision 3's and §7's
-// progressive-enhancement claim from the file rather than promising it in a
+// progressive-enhancement claim from the files rather than promising it in a
 // comment: the renderer writes the whole table, the script only HIDES rows, and
 // the one control that needs a script is revealed by the script. With the script
 // missing or blocked a reader sees no dead control, every memory in the slice,
 // and a working link on every row.
+//
+// The claim is only as good as the third file that can take a row away, so the
+// stylesheet is pinned too: this test used to assert the markup and the script
+// and say nothing about CSS, under which a rule hiding the rows the script
+// un-hides kept it green. The assets are the report's own bytes, embedded in
+// the binary, so "the stylesheet hides nothing" is a property of this artefact
+// and not of a reader's browser.
 func TestReportIndexNeedsNoScriptToBeComplete(t *testing.T) {
 	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
 	reader := &fakeReader{records: []record.Record{
@@ -1600,10 +1655,20 @@ func TestReportIndexNeedsNoScriptToBeComplete(t *testing.T) {
 
 	_, files, _ := render(t, reader, report.Request{From: sliceFrom, To: sliceTo})
 	index, js := files["index.html"], files["assets/report.js"]
+	css := files["assets/report.css"]
 
 	// The table is in the HTML, whole: every memory has a row, each row carries
 	// its record count and its own link, and no row is hidden -- a row the
 	// renderer wrote is never hidden, because it is the script that hides.
+	//
+	// The markup is only two thirds of the claim. Three things can hide a row:
+	// the markup (asserted here), the script (asserted below), and the
+	// stylesheet, which no assertion on a page's markup can see -- a rule
+	// hiding the rows the script un-hides would leave a reader with no script
+	// looking at an empty table while this test stayed green. So the
+	// stylesheet is asserted to hide nothing at all: the report's own CSS
+	// carries no rule that removes anything from the page, which is what makes
+	// the script the only thing in the artefact that can.
 	require.Len(t, strings.Split(index, "<tr>"), 4, "the header row and one row per memory")
 	assert.Contains(t, rowOf(t, index, "mem-1"), "<td>2</td>")
 	assert.Contains(t, rowOf(t, index, "mem-1"), `href="./`+page("memory", 0, "mem-1")+`"`)
@@ -1612,6 +1677,10 @@ func TestReportIndexNeedsNoScriptToBeComplete(t *testing.T) {
 	for _, id := range []string{"mem-1", "mem-2"} {
 		assert.NotContains(t, rowOf(t, index, id), "hidden",
 			"a row is written visible: only the script hides one")
+	}
+	for _, hide := range []string{"display: none", "display:none", "visibility: hidden", "visibility:hidden", "opacity: 0"} {
+		assert.NotContains(t, css, hide,
+			"report.css hides nothing, or the no-script guarantee would depend on a stylesheet a page's markup cannot be checked against")
 	}
 
 	// The filter control is marked hidden in the markup and revealed by the
@@ -1636,4 +1705,106 @@ func TestReportIndexNeedsNoScriptToBeComplete(t *testing.T) {
 	for _, id := range []string{"mem-1", "mem-2", "rec-1"} {
 		assert.NotContains(t, js, id, "the script must carry no memory or record data")
 	}
+}
+
+// TestReportIndexNamesTheLedgerHead is spec §12.6's resolution: the artefact
+// names the HEAD of the ledger it describes -- the greatest sequence number and
+// that record's stored hash -- and never its path, its DSN or any other
+// deployment detail, so a report that travels by email carries no operator
+// configuration (spec §3 decision 6) and a reader can still check what they
+// hold: `notary export` prints every line's seq and hash, so the index's head
+// can be held against the exported line at that seq -- a comparison of two
+// values the ledger wrote, needing no keyring and no checkpoint.
+//
+// Four facts, in one test because they are one claim about one field:
+//
+//   - the head renders VERBATIM -- the stored digest, not one this package
+//     derived, because a page must attest the ledger's bytes rather than the
+//     renderer's arithmetic;
+//   - it renders on the INDEX and nowhere else, so there is no copy to drift;
+//   - a request carrying NO head renders no head row, rather than an empty one
+//     that would read as a claim;
+//   - a head is a fact about the ledger's content and does not soften the
+//     "not verified" state: a --no-verify render carrying a head still says no
+//     verification ran.
+func TestReportIndexNamesTheLedgerHead(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	reader := &fakeReader{records: []record.Record{newTestRecord(t, "rec-1", 0, "mem-1", base)}}
+	// A digest that is NOT the record's own: a renderer that recomputed the
+	// head instead of printing the stored one would put a different hex on the
+	// page and fail here.
+	head := record.ContentHash("the-ledger-head", "rec-1")
+	headHex := hex.EncodeToString(head[:])
+
+	t.Run("the stored head renders verbatim, seq and hash", func(t *testing.T) {
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, Verify: true, VerifiedAt: base,
+			Head: &report.LedgerHead{Seq: 7, Hash: head},
+		})
+
+		index := files["index.html"]
+		assert.Contains(t, index, "<dt>Ledger head</dt>",
+			"the index's slice block must name the ledger's head")
+		assert.Contains(t, index, "<code>seq 7</code>")
+		assert.Contains(t, index, "<code>hash "+headHex+"</code>",
+			"the page prints the ledger's stored digest, in the hex `notary export` prints")
+		recordOwnHash := record.ContentHash("hash", "rec-1")
+		assert.NotContains(t, index, hex.EncodeToString(recordOwnHash[:]),
+			"and never a digest this package derived from the record")
+
+		// The head is on the index alone: a copy on a memory page, a record
+		// page or the chain-state page would be a second place to keep in step.
+		for _, name := range []string{
+			page("memory", 0, "mem-1"), page("record", 0, "rec-1"), "verify.html",
+		} {
+			assert.NotContains(t, files[name], "Ledger head", "%s must not carry the head row", name)
+			assert.NotContains(t, files[name], headHex, "%s must not carry the head", name)
+		}
+
+		// The footer's shared sentence says where the head is named, on every
+		// page that carries the sentence (verify.html's footer describes
+		// itself without linking, and names the index's head too).
+		for _, name := range []string{"index.html", page("record", 0, "rec-1"), "verify.html"} {
+			assert.Contains(t, flat(files[name]), "the index names its head",
+				"%s's footer must say where the ledger's head is named", name)
+		}
+	})
+
+	t.Run("no head renders no head row", func(t *testing.T) {
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, Verify: true, VerifiedAt: base,
+		})
+
+		assert.NotContains(t, files["index.html"], "Ledger head",
+			"a request that carried no head must make no claim about one")
+	})
+
+	t.Run("a head does not soften the not-verified state", func(t *testing.T) {
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, VerifiedAt: base,
+			Head: &report.LedgerHead{Seq: 7, Hash: head},
+		})
+
+		index := flat(files["index.html"])
+		assert.Contains(t, index, "<code>seq 7</code>",
+			"the head is read without a keyring, so a run that verified nothing still names it")
+		assert.Contains(t, index, "Chain state: not verified",
+			"a head says nothing about the chain: the chain state must still read as unverified")
+		assert.NotContains(t, index, "Chain state: clean")
+	})
+
+	t.Run("an empty ledger says so instead of printing zero", func(t *testing.T) {
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, Verify: true, VerifiedAt: base,
+			Head: &report.LedgerHead{Empty: true},
+		})
+
+		index := files["index.html"]
+		assert.Contains(t, flat(index), "the ledger holds no record yet",
+			"an empty ledger is a state of its own: it has no head to print")
+		assert.NotContains(t, index, "<code>seq 0</code>",
+			"seq 0 is the FIRST record's position, so printing it for an empty ledger would state a record that does not exist")
+		assert.NotContains(t, index, "<code>hash ",
+			"and a zero digest is not a hash the ledger wrote")
+	})
 }

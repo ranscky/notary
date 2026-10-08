@@ -204,6 +204,52 @@ type Request struct {
 	// A zero VerifiedAt renders pages with no instant rather than a fabricated
 	// one.
 	VerifiedAt time.Time
+
+	// Head is the ledger's head as the caller read it, or nil when the caller
+	// carried none. It is rendered on the INDEX only, in the slice block, and
+	// it names what the report describes without naming a path, a deployment or
+	// a configuration: an artefact that travels by email carries no operator
+	// detail (spec §3 decision 6) and is still checkable, because `notary
+	// export` prints every line's seq and hash -- a reader holds this head
+	// against the exported line at that Seq. The comparison needs no keyring
+	// and no checkpoint, and it is not a verification.
+	//
+	// It is a claim about the ledger's CONTENT and never an attestation: it
+	// says nothing about whether the chain is intact, which is Verify and
+	// Breaks' question, and it neither softens nor stands in for the "not
+	// verified" state those two render. The renderer reads no ledger of its
+	// own -- the caller reads, this package renders, as with Breaks.
+	Head *LedgerHead
+}
+
+// LedgerHead is the ledger's head as the caller read it: the greatest sequence
+// number the ledger held, and that record's stored digest.
+//
+// It is a POINTER on Request so three states stay apart: nil is "the caller
+// carried no head", so the report makes no claim about one; a head with Empty
+// set is "the ledger held no record when it was read"; and a head with neither
+// is a real record's position and hash. The empty ledger needs that state of
+// its own because both its values are already taken -- Seq 0 is the FIRST
+// record's position, and the zero digest is what a hash field reads as when it
+// was never filled -- so inferring emptiness from them would put a claim on the
+// page no ledger made.
+//
+// Hash is the ledger's STORED digest, printed as the ledger holds it and never
+// recomputed: a report that hashed the record itself would attest its own
+// arithmetic rather than the bytes the ledger wrote, and a reader could not
+// tell the two apart. It is public data -- no key material, private or public,
+// reaches a page (spec §10) -- and it is not a verification: `notary export`
+// prints each line's seq and hash, and `notary verify` answers whether the
+// chain is intact.
+type LedgerHead struct {
+	// Empty reports that the ledger held no record at all when its head was
+	// read. Seq and Hash are then meaningless and carry no claim, and the page
+	// says so rather than printing them.
+	Empty bool
+	// Seq is the head record's chain position, the greatest the ledger held.
+	Seq uint64
+	// Hash is the head record's stored digest, exactly as the ledger holds it.
+	Hash record.Hash
 }
 
 // validate refuses a request this renderer cannot honour: one that names no
@@ -633,9 +679,11 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 			name:     memoryPages[id],
 			template: memoryFile,
 			data: memoryPage{
-				Title:    "Notary report: memory " + id,
-				Base:     subBase,
-				Home:     subBase + "/" + indexFile,
+				pageChrome: pageChrome{
+					Title: "Notary report: memory " + id,
+					Base:  subBase,
+					Home:  subBase + "/" + indexFile,
+				},
 				MemoryID: id,
 				Records:  byMemory[id],
 				Tiers:    countTiers(byMemory[id]),
@@ -649,9 +697,11 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 			name:     view.Page,
 			template: recordFile,
 			data: recordPage{
-				Title:  "Notary report: record " + string(view.Line.ID),
-				Base:   subBase,
-				Home:   subBase + "/" + indexFile,
+				pageChrome: pageChrome{
+					Title: "Notary report: record " + string(view.Line.ID),
+					Base:  subBase,
+					Home:  subBase + "/" + indexFile,
+				},
 				Record: view,
 			},
 		})
@@ -678,9 +728,14 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 		name:     verifyFile,
 		template: verifyFile,
 		data: verifyPage{
-			Title: "Notary report: chain state",
-			Base:  rootBase,
-			Home:  rootBase + "/" + indexFile,
+			pageChrome: pageChrome{
+				Title: "Notary report: chain state",
+				Base:  rootBase,
+				Home:  rootBase + "/" + indexFile,
+				// This page IS the chain state, so its footer says so rather
+				// than linking the reader back to the page they are on.
+				SelfChainState: true,
+			},
 			RunAt: runAtText(req.VerifiedAt),
 			Chain: chain,
 		},
@@ -714,8 +769,10 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 		name:     indexFile,
 		template: indexFile,
 		data: indexPage{
-			Title:       "Notary report",
-			Base:        rootBase,
+			pageChrome: pageChrome{
+				Title: "Notary report",
+				Base:  rootBase,
+			},
 			Command:     req.commandLine(dir),
 			RunAt:       runAtText(req.VerifiedAt),
 			Subject:     req.subjectText(),
@@ -723,6 +780,7 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 			Sensitivity: req.sensitivityText(),
 			Counts:      countsText(len(memoryOrder), len(views), res.Redacted),
 			Chain:       chain,
+			LedgerHead:  newLedgerHeadView(req),
 			Memories:    memoryRows,
 			Memoryless:  memoryless,
 		},
@@ -867,9 +925,7 @@ func newRecordView(rec renderedRecord, page, memoryPage string) recordView {
 
 // indexPage is index.html's data: the run, the slice, and one row per memory.
 type indexPage struct {
-	Title string
-	// Base is the link prefix for a page at the report's root.
-	Base string
+	pageChrome
 
 	// Command is the notary report invocation this Request describes, in the
 	// command's flag order. It is reconstructed from the Request -- the
@@ -892,6 +948,12 @@ type indexPage struct {
 	// means and where the detail is. It is the same chainView verify.html
 	// renders in full, so the two pages cannot disagree.
 	Chain chainView
+	// LedgerHead is the ledger's head, or nil when the request carried none.
+	// It is on the index and nowhere else: the head is a property of the ledger
+	// the report was made from, the index is the page that describes what the
+	// report holds, and a copy on every page would be one more thing to keep in
+	// step.
+	LedgerHead *ledgerHeadView
 
 	// Memories is one row per memory in the slice; Memoryless is one row per
 	// record that names no memory, which is why it has no memory page.
@@ -923,13 +985,31 @@ type recordRow struct {
 	At string
 }
 
+// pageChrome is the data every page's head and foot render from: the document
+// title, the page's own depth for relative links, the index's link, and whether
+// this page IS the chain-state page.
+//
+// The four page kinds embed it rather than each carrying its own copy, so the
+// head and the foot -- the two shared snippets -- cannot drift between page
+// kinds, and so the foot's chain-state sentence renders from the one bit it
+// needs instead of from a second footer definition.
+type pageChrome struct {
+	Title string
+	// Base is the link prefix for this page's depth: "." at the report's root,
+	// ".." one directory down.
+	Base string
+	// Home is the index's link relative to this page. It is empty on the index,
+	// which is where it would point.
+	Home string
+	// SelfChainState reports that this page IS verify.html, so the footer
+	// describes the chain state on the page rather than linking the reader to
+	// the page they are already reading.
+	SelfChainState bool
+}
+
 // memoryPage is memory.html's data: one memory's lifecycle, in Seq order.
 type memoryPage struct {
-	Title string
-	// Base is the link prefix for a page one directory down; Home is the
-	// index's link, relative to this page.
-	Base string
-	Home string
+	pageChrome
 	// MemoryID is the memory's id, displayed and never used as a name.
 	MemoryID string
 	// Records is the slice's records for this memory, in Seq order, each
@@ -942,22 +1022,52 @@ type memoryPage struct {
 
 // recordPage is record.html's data: one record's story.
 type recordPage struct {
-	Title string
-	// Base is the link prefix for a page one directory down; Home is the
-	// index's link, relative to this page.
-	Base string
-	Home string
+	pageChrome
 	// Record is the record, as its exported line renders it.
 	Record recordView
 }
 
+// ledgerHeadView is the head claim the index renders, or nil when the request
+// carried none -- in which case the index prints no head row at all, which is
+// the true statement for a caller that read no head.
+//
+// The values are formatted here rather than in the template, so the seq and the
+// hash read exactly as `notary export` prints them: the seq in decimal and the
+// digest in the lowercase hex every other hash on these pages uses, which is
+// what lets a reader compare the two without a tool.
+type ledgerHeadView struct {
+	// Empty reports that the ledger held no record when the head was read, in
+	// which case Seq and Hash carry no claim and the page says so.
+	Empty bool
+	// Seq is the head's chain position, in decimal.
+	Seq string
+	// Hash is the head's stored digest, lowercase hex, as the ledger holds it.
+	Hash string
+}
+
+// newLedgerHeadView renders the head the request carries, or nil when it
+// carries none.
+//
+// Nothing is computed from a ledger here: the values are the caller's, which is
+// the same division Request.Breaks follows. The hash is the STORED digest
+// encoded for display -- never a digest this package derived from the record,
+// which would attest the renderer's arithmetic in place of the ledger's.
+func newLedgerHeadView(req Request) *ledgerHeadView {
+	if req.Head == nil {
+		return nil
+	}
+	if req.Head.Empty {
+		return &ledgerHeadView{Empty: true}
+	}
+	return &ledgerHeadView{
+		Seq:  strconv.FormatUint(req.Head.Seq, 10),
+		Hash: hex.EncodeToString(req.Head.Hash[:]),
+	}
+}
+
 // verifyPage is verify.html's data: the chain state in full.
 type verifyPage struct {
-	Title string
-	// Base is the link prefix for a page at the report's root; Home is the
-	// index's link, relative to this page.
-	Base string
-	Home string
+	pageChrome
 	// RunAt is the instant the chain state is attributed to, or "" when the run
 	// carries no instant. The renderer never calls time.Now, so the state is
 	// dated from the Request or not at all.

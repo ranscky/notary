@@ -199,6 +199,29 @@ func runReport(cmd *cobra.Command, cfg *config.Config) error {
 	// signer, and it never holds a private key.
 	l := ledger.New(st, nil, nil)
 
+	// The ledger's head, read once here rather than inside internal/report: the
+	// renderer renders what it is handed, and the caller reads -- the same
+	// division Breaks follows. It is the greatest Seq the ledger held and that
+	// record's STORED hash, carried across unchanged so the page prints the
+	// bytes the ledger wrote rather than a digest this process derived, which
+	// would attest the wrong thing. Head() is one store read: it walks no
+	// chain, takes no verifier and loads no key, so a --no-verify report names
+	// the head exactly as a verified one does.
+	//
+	// ok == false is the ledger that holds no record: it is passed on as an
+	// empty head, NOT as no head, because "the ledger is empty" is a fact the
+	// index can state truthfully, while Seq 0 with a zero hash would read as
+	// the first record's position.
+	head, ok, err := l.Head()
+	if err != nil {
+		return fmt.Errorf("reading the ledger head: %w", err)
+	}
+	if ok {
+		req.Head = &report.LedgerHead{Seq: head.Seq, Hash: head.Hash}
+	} else {
+		req.Head = &report.LedgerHead{Empty: true}
+	}
+
 	if req.Verify {
 		verifier, err := reportVerifier(cfg)
 		if err != nil {
@@ -240,8 +263,13 @@ func runReport(cmd *cobra.Command, cfg *config.Config) error {
 		countText(res.Records, "record", "records"),
 		countText(res.Redacted, "record with content withheld", "records with content withheld"))
 
-	// The chain state, in the artefact's own words, so the summary and the page
-	// cannot describe one run differently.
+	// The chain state, in this command's own words. They are NOT the artefact's:
+	// the sentences below are literals here, the pages' are literals in
+	// internal/report, and the two merely agree -- each carries the same state
+	// word chainView derives ("clean", "broken", "not verified"), which the
+	// tests on both sides pin. Nothing makes one sentence follow from the
+	// other, so a change to either has to be taken to the other by hand; the
+	// comment here used to claim the pages' own words, which was never true.
 	switch {
 	case !req.Verify:
 		fmt.Fprintf(out,

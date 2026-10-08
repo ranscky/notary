@@ -413,11 +413,17 @@ func TestDiagnoseReportsABrokenChain(t *testing.T) {
 // The checks that must not be mistaken for failures
 // ---------------------------------------------------------------------------
 
-// TestDiagnoseDoesNotFailOnAMissingSigningKeyForReadPaths pins the spec's
-// wording: with no signing key configured the finding is informational -- not
-// an error -- and it says the key is not needed for the read paths, while
-// still naming the command that produces one.
-func TestDiagnoseDoesNotFailOnAMissingSigningKeyForReadPaths(t *testing.T) {
+// TestDiagnoseDoesNotFailOnAMissingSigningKey pins the true finding: with no
+// signing key configured the finding is informational -- not an error -- and it
+// names EVERY command that refuses to start without one, `export` included.
+//
+// It used to assert the phrase "not needed for the read paths", which was
+// false: `export` IS a read path and it refuses to start without a key
+// (cmd/notary/export.go refuses before it opens anything, even with no
+// --checkpoint-out, because it signs the checkpoint that flag may write). The
+// falsehood was pinned by this test, so the test is where the correction is
+// held: a message that stopped naming export would fail here again.
+func TestDiagnoseDoesNotFailOnAMissingSigningKey(t *testing.T) {
 	env := healthyEnv(t)
 	t.Setenv(doctorKeyEnv, "") // the deployment has no signing key
 
@@ -425,7 +431,12 @@ func TestDiagnoseDoesNotFailOnAMissingSigningKeyForReadPaths(t *testing.T) {
 
 	f := findingFor(t, findings, CheckSigningKey)
 	assert.NotEqual(t, Err, f.Severity, "a missing signing key must not be an error")
-	assert.Contains(t, f.Message, "not needed for the read paths")
+	for _, cmd := range []string{"reconcile", "proxy", "export"} {
+		assert.Contains(t, f.Message, cmd,
+			"the finding must name %s: it refuses to start without a signing key", cmd)
+	}
+	assert.NotContains(t, f.Message, "not needed for the read paths",
+		"export is a read path and refuses without a key, so no wording may claim the key is unneeded for reads")
 	assertFixIsRunnable(t, f)
 	assert.Contains(t, f.Fix, "notary doctor --generate-key",
 		"the finding must name the command that creates the missing key")

@@ -45,15 +45,16 @@ const setupPageFilename = "setup.html"
 // alone do not. --out DIR additionally writes the same findings to
 // DIR/setup.html.
 //
-// --generate-key is the second half of the command and the only thing in this
-// repository that creates key material. It prints an `export
-// NOTARY_SIGNING_KEY=...` line to stdout and writes no file; --key-out PATH
-// writes the PRIVATE half to PATH instead, at mode 0600 and outside the
-// repository; and --trusted-keys-out PATH writes the PUBLIC half -- the one
-// base64 line NOTARY_TRUSTED_KEYS_PATH names for verify, replay and report --
-// at mode 0644, allowed inside a checkout, because a public half is not a
-// credential. It is explicit because silence is the safety property: no other
-// command, and no other flag combination, ever generates a key.
+// --generate-key is the second half of the command and the only command in
+// this repository that creates key material: no other command, and no other
+// flag combination, ever generates a key (the demo script mints its own
+// throwaway key, from /dev/urandom, and writes it to no file). It prints an
+// `export NOTARY_SIGNING_KEY=...` line to stdout and writes no file;
+// --key-out PATH writes the PRIVATE half to PATH instead, at mode 0600 and
+// outside the repository; and --trusted-keys-out PATH writes the PUBLIC half --
+// the one base64 line NOTARY_TRUSTED_KEYS_PATH names for verify, replay and
+// report -- at mode 0644, allowed inside a checkout, because a public half is
+// not a credential. It is explicit because silence is the safety property.
 //
 // It needs no signing key and no Mem0 key to run: it is a read-only check, and
 // reporting an absent key is one of the things it does.
@@ -71,7 +72,11 @@ func newDoctorCmd() *cobra.Command {
 			"\n" +
 			"It exits non-zero when any finding is an error, so it can gate a pipeline;\n" +
 			"warnings alone do not. A signing key that is absent is a warning, not an\n" +
-			"error: it is not needed for the read paths. The chain is reported as NOT\n" +
+			"error: most read paths need none, but the commands that sign something\n" +
+			"refuse to start without one -- reconcile and proxy sign the records they\n" +
+			"write, and export is the strict case, signing the checkpoint\n" +
+			"--checkpoint-out may write and refusing without a key even when that flag\n" +
+			"was not given. The chain is reported as NOT\n" +
 			"checked -- never as broken -- when no trusted keys are configured, because a\n" +
 			"verifier with no trusted keys would report every record as a signature\n" +
 			"break.\n" +
@@ -80,7 +85,8 @@ func newDoctorCmd() *cobra.Command {
 			"\n" +
 			"--generate-key creates a fresh base64 ed25519 key pair and prints the\n" +
 			"PRIVATE half as an export NOTARY_SIGNING_KEY=... line to stdout, writing no\n" +
-			"file: it is the only thing in this repository that creates key material, and\n" +
+			"file: it is the only command in this repository that creates key material\n" +
+			"(the demo script mints its own throwaway key, and writes it to no file), and\n" +
 			"it does so only when asked. --key-out PATH writes the private half to PATH\n" +
 			"(mode 0600, refused inside the repository) instead of printing it.\n" +
 			"\n" +

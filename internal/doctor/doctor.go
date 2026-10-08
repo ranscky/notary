@@ -279,11 +279,16 @@ func checkTrustedKeys(cfg *config.Config) (Finding, map[string]ed25519.PublicKey
 
 // checkSigningKey asks sign.NewSigner for the key cfg names -- the same loader
 // every command uses -- and reports the answer. A key that is absent is a
-// warning, not an error: it is "not needed for the read paths" (verify, gaps,
-// export, replay, explain), and the finding names the command that creates
-// one. A key that is present but does not load is an error: commands that
-// write signed records would refuse to start. The key's public fingerprint is
-// the only thing about it that is ever printed.
+// warning, not an error, because what REFUSES without one is the commands that
+// sign something: reconcile and proxy sign the records they write, and verify
+// and export sign the checkpoints they are asked to write -- verify only when
+// --write-checkpoint or --write-gap-checkpoint is given, while export refuses
+// UNCONDITIONALLY, signing the checkpoint --checkpoint-out may write and
+// refusing without a key even when that flag was not given. Every read that
+// signs nothing needs no key, and the finding names the ones that do. A key
+// that is present but does not load is an error: those same commands would
+// refuse to start. The key's public fingerprint is the only thing about it that
+// is ever printed.
 //
 // The loader's KeySourceEnv reads the PROCESS environment; see Diagnose for
 // why that is the honest source for this one check.
@@ -301,7 +306,10 @@ func checkSigningKey(cfg *config.Config) Finding {
 			Check:    CheckSigningKey,
 			Severity: Warn,
 			Message: fmt.Sprintf(
-				"no signing key is configured (%v); it is not needed for the read paths, but commands that write signed records (reconcile, proxy) refuse to start without one",
+				"no signing key is configured (%v); most read paths need none, but the commands that sign "+
+					"something refuse to start without one -- reconcile and proxy sign the records they write, "+
+					"and export is the strict case: it signs the checkpoint --checkpoint-out may write and "+
+					"refuses without a key even when that flag was not given",
 				err),
 			Fix: fixSigningKey,
 		}

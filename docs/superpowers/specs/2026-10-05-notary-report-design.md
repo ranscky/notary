@@ -369,3 +369,37 @@ character) and asserts nothing is written outside `--out`.
    recorded here and in the phase ledger as a named open item, not as a thing quietly accepted: **a future
    phase should narrow reconcile's observed payloads, and this artefact's disclosure is what makes waiting
    honest rather than silent.**
+6. **Whether the artefact should name the ledger it describes** — found by the phase review, and the one gap
+   a reader meets immediately: three sentences tell the reader to run `notary verify` *"against the ledger
+   this report was made from"*, while no page says which ledger that is, so the instruction cannot be
+   followed. **Resolved: the index names the ledger's HEAD — its greatest `Seq` and that record's stored
+   `Hash` — and never its path.** §3 decision 6 is why: a report is shared, and a path on an emailed page
+   leaks the operator's deployment while confirming nothing — a reader holding a ledger still cannot tell
+   whether it is the one, and the path is wrong the moment the folder moves. A head is content-free, determined
+   by the ledger itself and **checkable**: `notary export` prints every line's `seq` and `hash`
+   (`internal/export/line.go`), so a reader holds the exported line at that `Seq` against the index's head.
+   The comparison needs no keyring and no checkpoint, and it is not a verification: the head is a value the
+   ledger wrote, carried through rather than re-derived. The head is read **once, by the command**, and
+   carried on `Request` — the
+   `Breaks` pattern, the caller reads and the renderer renders — and it is the ledger's **stored** digest
+   printed as it is, never one the report recomputed, because a hash the renderer derived would attest its
+   own arithmetic. It is a claim about the ledger's content and **not** an attestation: it never stands in
+   for `verify`, and a `--no-verify` page that names a head still reads *not verified*. An empty ledger is a
+   state of its own — *"the ledger holds no record yet"* — because its head's `Seq` would be `0`, which is
+   also the FIRST record's position, and its digest would be the zero value. It renders on the index alone,
+   so there is no copy to drift, and the pages that repeat the `verify` instruction now say where the head is
+   named. *Cost:* one field on `Request` and one `Head()` store read per run, and a reader who wants to match
+   the head must read the ledger — which is the point: the head is a claim about the ledger's content, so
+   checking it means reading the ledger, and nothing on the page pretends otherwise.
+7. **Whether this phase converges its templates with `serve`'s console** — the one decision Phase 12's spec
+   left to `report` ("when `report` is built, its templates and this console's templates are separate, and
+   convergence is `report`'s decision to make", `2026-10-06-notary-serve-design.md` §3 record 1; its §10
+   repeats the present-tense "`notary report`, which does not exist", which this phase makes historical).
+   **Resolved: the renderers stay separate; this phase takes no convergence work.** The two artefacts answer
+   different questions — the console serves a live ledger to a reviewer over a browser, the report is a static
+   folder that must open offline years later — so they share `export.Line` (the data) and their page sets,
+   their assets and their lifetimes are their own; convergence would mean one renderer parameterised by two
+   surfaces, and neither surface needs the other's pages. *Cost:* two sets of templates to keep in step, with
+   no shared test between them, so a change to `export.Line`'s rendering must be verified against both. The
+   data being single-sourced is what keeps that cost bounded: neither renderer invents a field, so the two can
+   differ in HTML but not in what they claim about a record.

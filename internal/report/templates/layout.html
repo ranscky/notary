@@ -13,10 +13,11 @@
 {{define "foot"}}<footer>
 <p>
 This page is a rendering of the ledger, not the ledger: the files here verify
-nothing by themselves. The chain state this report was made with is on
-<a href="{{.Base}}/verify.html">the chain-state page</a>; to check the chain
-yourself, run <code>notary verify</code> against the ledger this report was
-made from.
+nothing by themselves. {{if .SelfChainState}}This page is the chain state this
+report was made with.{{else}}The chain state this report was made with is on
+<a href="{{.Base}}/verify.html">the chain-state page</a>.{{end}} To check the
+chain yourself, run <code>notary verify</code> against the ledger this report
+was made from -- the index names its head.
 </p>
 </footer>
 </body>

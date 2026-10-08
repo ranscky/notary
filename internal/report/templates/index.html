@@ -12,7 +12,8 @@ so the flag order is normalised and flags that changed no page are not shown.
 <dt>Slice</dt><dd>{{.Subject}}</dd>
 <dt>Scope</dt><dd>{{.Scope}}</dd>
 <dt>Sensitive content</dt><dd>{{.Sensitivity}}</dd>
-<dt>Evidence</dt><dd>not filtered: every record page shows the record's own stored reason, exactly as
+{{with .LedgerHead}}<dt>Ledger head</dt><dd>{{if .Empty}}the ledger holds no record yet: nothing has been appended to it{{else}}<code>seq {{.Seq}}</code>, <code>hash {{.Hash}}</code> -- the ledger's head as this run read it, being the greatest sequence number the ledger held and that record's stored hash, printed exactly as the ledger holds it. <code>notary export</code> prints every line's <code>seq</code> and <code>hash</code>, so this can be matched against the exported line at that seq -- a comparison of two values the ledger wrote, not a verification.{{end}}</dd>
+{{end}}<dt>Evidence</dt><dd>not filtered: every record page shows the record's own stored reason, exactly as
 the ledger hashes it, and that is the same whether or not <code>--include-sensitive</code> was given.
 It can therefore quote memory text that the sensitivity rules did not mark, including text a record's
 content section withholds, because reconcile stores whole upstream objects rather than curated fields.</dd>

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# demo.sh -- the whole notary surface, offline, in one command.
+# demo.sh -- the read-path commands (verify, gaps, export, replay, explain),
+# offline, in one command.
 #
 # What it does
 #   Builds the notary binary into a throwaway temp directory and runs the
@@ -75,7 +76,7 @@ export NOTARY_DB_PATH NOTARY_GAP_LOG_PATH NOTARY_TRUSTED_KEYS_PATH
 PATH="$bin_dir:$PATH"
 export PATH
 
-printf 'notary demo -- the whole surface, offline, in one throwaway directory\n\n'
+printf 'notary demo -- the read paths (verify, gaps, export, replay, explain), offline, in one throwaway directory\n\n'
 printf '  workspace      %s\n' "$demo_tmp"
 printf '  signing key    generated now (head -c 32 /dev/urandom | base64), never written to disk\n'
 printf '  ledger         %s\n' "$NOTARY_DB_PATH"

@@ -473,6 +473,18 @@ func TestDoctorHelpAndSetupPageExplainTheKeyPair(t *testing.T) {
 		"the setup page must tell a first-run operator how to produce the key pair")
 	assert.Contains(t, page.String(), config.EnvTrustedKeysPath,
 		"the setup page must name the variable the public half goes to")
+
+	// The help must carry the corrected signing-key fact as well, and this is
+	// where it is held: the long help used to say a missing signing key "is not
+	// needed for the read paths", which is false for `export` -- a read path
+	// that refuses to start without one because it signs the checkpoint
+	// --checkpoint-out may write. A help text naming only the writers
+	// (reconcile, proxy) would leave an operator to meet that refusal instead,
+	// so the help must name export, and must not carry the false claim.
+	assert.Contains(t, cmd.Long, "export is the strict case",
+		"the help must name export among the commands that refuse to start without a signing key")
+	assert.NotContains(t, cmd.Long, "not needed for the read paths",
+		"the help must not claim a signing key is unneeded for reads: export refuses without one")
 }
 
 // TestDoctorCmdReportsTheMem0URLCheckInTheCheckListOrder pins that the one
