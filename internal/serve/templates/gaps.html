@@ -1,0 +1,36 @@
+{{define "page"}}<div id="gaps">
+<h2>Gaps</h2>
+{{if .View.OK}}<p class="empty">No outstanding gaps.</p>
+{{else}}
+{{if .View.Unreconciled}}
+<h3>{{len .View.Unreconciled}} unreconciled gap(s)</h3>
+<table class="records">
+<thead><tr><th>Counter</th><th>Kind</th><th>Scope</th><th>Correlation</th><th>At</th><th>Detail</th></tr></thead>
+<tbody>
+{{range .View.Unreconciled}}<tr class="gap-row">
+<td class="counter">{{.Counter}}</td>
+<td class="kind">{{.Kind}}</td>
+<td class="scope">user={{.Scope.UserID}} agent={{.Scope.AgentID}} app={{.Scope.AppID}} run={{.Scope.RunID}}</td>
+<td class="correlation">{{.CorrelationID}}</td>
+<td class="at">{{.At.Format "2006-01-02 15:04:05 MST"}}</td>
+<td class="detail">{{.Detail}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{end}}
+{{if .View.Integrity}}
+<h3>{{len .View.Integrity}} gap-log integrity break(s)</h3>
+<p class="integrity-note">The gap log's own hash chain is broken; the list above may be incomplete.</p>
+<table class="records">
+<thead><tr><th>Line</th><th>Field</th><th>Detail</th></tr></thead>
+<tbody>
+{{range .View.Integrity}}<tr class="integrity-row">
+<td class="line">{{.Line}}</td>
+<td class="field">{{.Field}}</td>
+<td class="detail">{{.Detail}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{end}}
+{{end}}
+</div>{{end}}

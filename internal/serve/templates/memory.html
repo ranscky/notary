@@ -1,0 +1,20 @@
+{{define "page"}}<div id="memory">
+{{template "revealToggle" .RevealControl}}
+{{if .Err}}<p class="view-error" role="alert">{{.Err}}</p>{{end}}
+{{if .MemoryID}}<h2>Memory {{.MemoryID}}</h2>{{end}}
+<p class="back"><a href="/">Back to records</a></p>
+{{if .Rows}}
+<table class="records">
+<thead><tr><th>Seq</th><th>Event</th><th>Tier</th><th>Phrasing</th><th>Content</th></tr></thead>
+<tbody>
+{{range .Rows}}<tr class="record-row" data-seq="{{.Line.Seq}}" data-id="{{.Line.ID}}" data-tier="{{.Line.Tier}}" data-content="{{if .Line.Content}}shown{{else if .Line.Redacted}}withheld{{else}}none{{end}}">
+<td class="seq">{{.Line.Seq}}</td>
+<td class="event">{{.Line.Event}}</td>
+<td class="tier"><span class="badge {{.Tier.Class}}">{{.Tier.Name}}</span></td>
+<td class="phrasing"><a href="{{recordHref .Line.ID}}">{{.Line.Phrasing}}</a></td>
+<td class="content">{{if .Line.Content}}<span class="content-text">{{.Line.Content}}</span>{{else if .Line.Redacted}}<span class="withheld">Content withheld — marked sensitive</span>{{else}}<span class="no-content">No content recorded</span>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>
+{{else if not .Err}}<p class="empty">No records for this memory.</p>{{end}}
+</div>{{end}}

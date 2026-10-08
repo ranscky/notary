@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"notary/internal/record"
+	"notary/internal/store"
 )
 
 // shutdownTimeout bounds how long Serve waits for in-flight requests to finish
@@ -26,20 +29,26 @@ const shutdownTimeout = 5 * time.Second
 // refusal paths write a status and no body, so neither echoes anything about
 // the ledger.
 //
-// The routes are exactly the ones this task ships -- the records view and the
-// assets. The per-record, per-memory, gaps and verify routes arrive with their
-// pages in a later task, so the route table and the set of pages that exist stay
-// in step.
-//
-// The per-record and per-memory views that later task adds must build their
-// links from the raw ids IN THE QUERY POSITION -- href="/record?id={{.Line.ID}}"
-// -- and never from a pre-joined whole URL. html/template does not
-// percent-encode a whole URL interpolated into href (it leaves "/", "#" and ":"
-// alone), so an id containing "#" becomes a URL fragment, truncates the id
-// server-side, and cannot round-trip. See recordRow's doc comment.
+// The route table is fixed and small: the records view, the per-record,
+// per-memory, gaps and verify views, and the assets. Every link that carries an
+// id is built by the recordHref and memoryHref template functions, which
+// url.QueryEscape the id ONCE in Go and hand the SAME string to every URL
+// attribute of the link -- both the href and any hx-get. html/template's
+// contextual escaper only URL-encodes its fixed set of URL attributes (href,
+// action, src, ...), so it reaches href but NOT a custom attribute such as
+// htmx's hx-get; leaving an id raw for the escaper would, in hx-get, start a URL
+// fragment and fetch a truncated id. See recordRow's and recordHref's doc
+// comments. The mux prefers the longest matching pattern, so the exact
+// "/record" (and its siblings) wins over the "/" prefix that catches
+// everything else; handleIndex's own r.URL.Path != "/" guard 404s any path none
+// of them claims.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/record", s.handleRecord)
+	mux.HandleFunc("/memory", s.handleMemory)
+	mux.HandleFunc("/gaps", s.handleGaps)
+	mux.HandleFunc("/verify", s.handleVerify)
 	mux.HandleFunc("/assets/", s.handleAsset)
 	return guardMethods(guardHost(mux))
 }
@@ -129,6 +138,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	data.Filter = f
 	data.Rows = rows
+	// The index view reveals too -- its filter form carries reveal=1 -- so a
+	// revealing records request writes the same one-line audit note, naming the
+	// records view. It is logged with the other views' reveals, so no reveal
+	// path is silent.
+	if f.Reveal {
+		s.logReveal("records")
+	}
 	s.respond(w, http.StatusOK, "index", data)
 }
 
@@ -149,6 +165,245 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", assetContentType(name))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// revealControl is a view's own reveal toggle as the shared "revealToggle"
+// partial renders it: the two URLs the toggle uses and the element id htmx
+// swaps in place.
+//
+// Href and RevealHref are built by recordHref/memoryHref, so the id is escaped
+// exactly once in Go and the SAME string is used for both the href and the
+// hx-get of the anchor -- required because html/template URL-encodes href but
+// only HTML-escapes hx-get (see recordHref's doc comment).
+type revealControl struct {
+	// Href is the view's own URL without reveal=1 -- the "hide" link, and the
+	// base the reveal link is built from.
+	Href string
+	// RevealHref is Href with reveal=1 appended -- the reveal link.
+	RevealHref string
+	// On reports whether the view is currently revealed.
+	On bool
+	// Target is the id of the element htmx swaps, e.g. "record".
+	Target string
+}
+
+// recordData is the per-record view's payload: the page shell, the record's row,
+// its reveal control, and -- when the id was missing or named no record -- the
+// error to show in place of the row.
+type recordData struct {
+	pageData
+	RevealControl revealControl
+	Row           recordRow
+	Err           string
+}
+
+// memoryData is the per-memory view's payload: the page shell, the memory id,
+// the rows in Seq order, the reveal control, and a usage error for an empty id.
+type memoryData struct {
+	pageData
+	MemoryID      string
+	RevealControl revealControl
+	Rows          []recordRow
+	Err           string
+}
+
+// gapsData is the gaps view's payload: the page shell and the shared gap
+// report. It carries no reveal control: the gaps view renders no memory content,
+// so there is nothing to reveal and a reveal note would be a false claim.
+type gapsData struct {
+	pageData
+	View gapsView
+}
+
+// verifyData is the verify view's payload: the page shell, whose embedded Chain
+// is the full chain state this page renders, plus the record count the clean
+// state reports. Like gapsData it carries no reveal control -- the verify view
+// renders no memory content.
+type verifyData struct {
+	pageData
+	Records int
+}
+
+// handleRecord renders the per-record view for ?id=<record-id>.
+//
+// The chain banner is on every page, so the chain verdict is taken first, before
+// the id is validated -- a 400 or 404 still renders the banner. An empty id is
+// ErrMissingID and a 400; an id that names no record keeps store.ErrNotFound in
+// its chain and is a 404, both rendering the page with the error named rather
+// than a contentless body.
+func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	reveal := r.URL.Query().Get("reveal") == "1"
+
+	chain, err := s.loadChain()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	revealHref := recordHref(record.RecordID(id))
+	data := recordData{
+		pageData: pageData{Title: "Record", Now: s.now(), Chain: chain},
+		RevealControl: revealControl{
+			Href:       revealHref,
+			RevealHref: revealHref + "&reveal=1",
+			On:         reveal,
+			Target:     "record",
+		},
+	}
+	if id != "" {
+		data.Title = "Record " + id
+	}
+
+	row, err := s.loadRecord(record.RecordID(id), reveal)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrMissingID):
+			data.Err = err.Error()
+			s.respond(w, http.StatusBadRequest, "record", data)
+		case errors.Is(err, store.ErrNotFound):
+			data.Err = err.Error()
+			s.respond(w, http.StatusNotFound, "record", data)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	data.Row = row
+	// One line per revealing request, written only once the view renders: a
+	// request that revealed nothing (a 400 or 404) writes no note.
+	if reveal {
+		s.logReveal("record " + id)
+	}
+	s.respond(w, http.StatusOK, "record", data)
+}
+
+// handleMemory renders the per-memory view for ?id=<mem0-id>: every record whose
+// subject memory is id, in Seq order, the same claims `notary explain --memory`
+// prints.
+//
+// An empty id is ErrMissingID and a 400, rendering the page with the error and
+// NO rows -- the store matches the empty memory_id column's DEFAULT, so an empty
+// filter would otherwise list the whole ledger as one memory's life. A memory
+// with no records is not an error: it renders its "no records for this memory"
+// page rather than a blank success.
+func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	reveal := r.URL.Query().Get("reveal") == "1"
+
+	chain, err := s.loadChain()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	revealHref := memoryHref(id)
+	data := memoryData{
+		pageData: pageData{Title: "Memory", Now: s.now(), Chain: chain},
+		MemoryID: id,
+		RevealControl: revealControl{
+			Href:       revealHref,
+			RevealHref: revealHref + "&reveal=1",
+			On:         reveal,
+			Target:     "memory",
+		},
+	}
+	if id != "" {
+		data.Title = "Memory " + id
+	}
+
+	rows, err := s.loadMemory(id, reveal)
+	if err != nil {
+		if errors.Is(err, ErrMissingID) {
+			data.Err = err.Error()
+			s.respond(w, http.StatusBadRequest, "memory", data)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data.Rows = rows
+	if reveal {
+		s.logReveal("memory " + id)
+	}
+	s.respond(w, http.StatusOK, "memory", data)
+}
+
+// handleGaps renders the gaps view: every outstanding gap and any gap-log
+// integrity break, from the same report `notary gaps` prints.
+//
+// It takes no reveal: the view renders no memory content, so there is nothing to
+// reveal and it must not write a "revealed sensitive content" note that would be
+// false, nor offer a control that reveals nothing.
+func (s *Server) handleGaps(w http.ResponseWriter, _ *http.Request) {
+	chain, err := s.loadChain()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	view, err := s.loadGaps()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := gapsData{
+		pageData: pageData{Title: "Gaps", Now: s.now(), Chain: chain},
+		View:     view,
+	}
+	s.respond(w, http.StatusOK, "gaps", data)
+}
+
+// handleVerify renders the chain state in full: the three-state verdict the
+// banner only summarises, with every break, or the clean record count, or the
+// keyring fix the "not verified" state names.
+//
+// Like handleGaps it takes no reveal: the view renders no memory content, so it
+// must not offer a reveal control or write a false reveal note.
+func (s *Server) handleVerify(w http.ResponseWriter, _ *http.Request) {
+	chain, err := s.loadChain()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := verifyData{
+		pageData: pageData{Title: "Verify", Now: s.now(), Chain: chain},
+	}
+	// The record count is the clean state's own claim, so it is read only for a
+	// clean chain -- a broken or not-verified chain has no count to report.
+	if chain.Clean() {
+		n, err := s.recordCount()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		data.Records = n
+	}
+	s.respond(w, http.StatusOK, "verify", data)
+}
+
+// logReveal writes the one-line audit note a revealing request leaves on the
+// operator's stderr, naming the view so the note records WHICH view was
+// revealed. The write error is deliberately not surfaced: this is a note to a
+// log writer (io.Discard when none is configured), and a failed note must not
+// fail the page it annotates.
+func (s *Server) logReveal(view string) {
+	fmt.Fprintf(s.reveal, "serve: revealed sensitive content for %s\n", view)
+}
+
+// recordCount returns the number of records in the ledger, matching the count
+// `notary verify` prints for a clean chain: the head's Seq plus one, or zero for
+// an empty ledger.
+func (s *Server) recordCount() (int, error) {
+	head, ok, err := s.ledger.Head()
+	if err != nil {
+		return 0, fmt.Errorf("serve: read ledger head: %w", err)
+	}
+	if !ok {
+		return 0, nil
+	}
+	return int(head.Seq) + 1, nil
 }
 
 // assetContentType names the media type of an embedded asset from its file name.

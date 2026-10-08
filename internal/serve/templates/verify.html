@@ -1,0 +1,22 @@
+{{define "page"}}<div id="verify">
+<h2>Chain state</h2>
+{{if .Chain.NotVerified}}
+<section class="verify-not-verified">
+<p><strong>Not verified — no trusted keys are configured.</strong></p>
+<p>The check did not run, so this page cannot say whether the chain is intact. Set <code>NOTARY_TRUSTED_KEYS_PATH</code> to a keyring of base64-encoded ed25519 public keys{{if .Chain.KeyringPath}} (currently <code>{{.Chain.KeyringPath}}</code>){{end}}, then re-run <code>notary verify</code>.</p>
+</section>
+{{else if .Chain.Broken}}
+<section class="verify-broken">
+<p><strong>Broken — {{len .Chain.Breaks}} break(s) found.</strong></p>
+<ul class="breaks">
+{{range .Chain.Breaks}}<li class="break">record {{.RecordID}} (seq {{.Seq}}): {{.Field}} — {{.Detail}}</li>{{end}}
+</ul>
+<p>Re-run <code>notary verify</code> to check this against the ledger directly.</p>
+</section>
+{{else if .Chain.Clean}}
+<section class="verify-clean">
+<p><strong>Clean — {{.Records}} records verified. No breaks across the whole ledger.</strong></p>
+<p>Re-run <code>notary verify</code> to check this against the ledger directly.</p>
+</section>
+{{end}}
+</div>{{end}}

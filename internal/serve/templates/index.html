@@ -24,9 +24,9 @@
 <td class="event">{{.Line.Event}}</td>
 <td class="reason">{{.Line.ReasonKind}}</td>
 <td class="tier"><span class="badge {{.Tier.Class}}">{{.Tier.Name}}</span></td>
-<td class="memory">{{if .Line.MemoryID}}<a href="/memory?id={{.Line.MemoryID}}">{{.Line.MemoryID}}</a>{{else}}<span class="no-memory">—</span>{{end}}</td>
+<td class="memory">{{if .Line.MemoryID}}<a href="{{memoryHref .Line.MemoryID}}">{{.Line.MemoryID}}</a>{{else}}<span class="no-memory">—</span>{{end}}</td>
 <td class="scope">{{scopeString .Line.Scope}}</td>
-<td class="phrasing"><a href="/record?id={{.Line.ID}}">{{.Line.Phrasing}}</a></td>
+<td class="phrasing"><a href="{{recordHref .Line.ID}}">{{.Line.Phrasing}}</a></td>
 <td class="content">{{if .Line.Content}}<span class="content-text">{{.Line.Content}}</span>{{else if .Line.Redacted}}<span class="withheld">Content withheld — marked sensitive</span>{{else}}<span class="no-content">No content recorded</span>{{end}}</td>
 </tr>{{end}}
 </tbody>

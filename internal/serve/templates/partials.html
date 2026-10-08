@@ -4,3 +4,5 @@
 <p class="chain-rerun">Re-run: <code>notary verify</code>{{if .Chain.KeyringPath}} (trusted keys: <code>{{.Chain.KeyringPath}}</code>){{end}}</p>
 </div>
 {{end}}
+
+{{define "revealToggle"}}<p class="reveal-toggle">{{if .On}}<a href="{{.Href}}" hx-get="{{.Href}}" hx-target="#{{.Target}}" hx-select="#{{.Target}}" hx-swap="outerHTML">Hide sensitive content</a>{{else}}<a href="{{.RevealHref}}" hx-get="{{.RevealHref}}" hx-target="#{{.Target}}" hx-select="#{{.Target}}" hx-swap="outerHTML">Reveal sensitive content</a>{{end}}</p>{{end}}

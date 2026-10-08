@@ -60,14 +60,18 @@ func badgeFor(t record.VisibilityTier) tierBadge {
 // record whose subject names no memory -- the store's memory_id DEFAULT --
 // which a template renders as no link at all).
 //
-// A view builds those links from the ids IN THE QUERY POSITION, e.g.
-// href="/record?id={{.Line.ID}}" -- NEVER by interpolating a pre-joined whole
-// URL such as href="{{.SomeHref}}". html/template only percent-encodes an id
-// interpolated in the query position; a whole URL interpolated into href is
-// left essentially as it is (it does not encode "/", "#" or ":"), so an id
-// containing "#" starts a URL fragment, the server never sees the rest of the
-// id, and the link cannot round-trip. That is why recordRow deliberately holds
-// no href field: the safe shape cannot be captured as a pre-joined string.
+// A view builds those links with the recordHref and memoryHref template
+// functions -- href="{{recordHref .Line.ID}}" -- never by interpolating the raw
+// id, and never from a pre-joined string built anywhere else. Those helpers
+// url.QueryEscape the id exactly ONCE, and a link hands the SAME string to every
+// URL attribute it carries (both the href and any hx-get), so the two cannot
+// diverge. This cannot be delegated to html/template's contextual escaper: it
+// URL-encodes only its fixed set of URL attributes (href, action, src, ...) and
+// merely HTML-escapes a custom attribute such as htmx's hx-get, so an id left
+// raw for the escaper starts a URL fragment in hx-get, the server never sees the
+// rest of the id, and the request fetches the wrong record (or 404s). That is
+// why recordRow deliberately holds no href field: the escaped shape lives in the
+// helpers, not in a pre-joined string a view could hand around.
 type recordRow struct {
 	Line export.Line
 	Tier tierBadge

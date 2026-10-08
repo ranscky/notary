@@ -6,10 +6,12 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"net/url"
 	"strings"
 	"time"
 
 	"notary/internal/export"
+	"notary/internal/record"
 )
 
 // pageData is the shell every page renders through the shared layout: the
@@ -59,7 +61,41 @@ func (v chainView) NotVerified() bool { return v.State == chainNotVerified }
 // templateFuncs is the function map every page set parses with. It holds only
 // presentation helpers that add no claim of their own.
 func templateFuncs() template.FuncMap {
-	return template.FuncMap{"scopeString": scopeString}
+	return template.FuncMap{
+		"scopeString": scopeString,
+		"recordHref":  recordHref,
+		"memoryHref":  memoryHref,
+	}
+}
+
+// recordHref builds the per-record view's URL for a record id: the path, the
+// "id" query key, and the id url.QueryEscaped exactly once, here in Go.
+//
+// The id is escaped HERE rather than left to html/template's contextual escaper
+// because that escaper only recognises a fixed set of URL attributes -- href,
+// action, src and the like. A custom attribute such as htmx's hx-get is treated
+// as an ordinary attribute value and receives HTML-escaping only, so an id
+// containing "#", "/" or ":" interpolated raw into hx-get would start a URL
+// fragment (or a path segment), the server would see a truncated id, and the
+// request would fetch the wrong record or 404. A link uses ONE pre-escaped
+// string for BOTH its href and its hx-get, so the two can never diverge.
+//
+// html/template does not re-encode "%", so the escapes survive the contextual
+// escaper; a structural "&" in the joined URL is HTML-escaped to "&amp;", which
+// decodes back to "&" in the DOM; QueryEscape's "+" for a space is HTML-escaped
+// to "&#43;", which decodes to "+", which a query then decodes back to a space.
+// The id therefore round-trips out of either attribute. See recordRow's doc
+// comment.
+func recordHref(id record.RecordID) string {
+	return "/record?id=" + url.QueryEscape(string(id))
+}
+
+// memoryHref builds the per-memory view's URL for a memory id, escaped exactly
+// once here in Go for the same reason recordHref escapes its id: the same string
+// is handed to every URL attribute of the link, so an id containing "#" cannot
+// truncate in hx-get, where html/template's contextual escaper does not reach.
+func memoryHref(id string) string {
+	return "/memory?id=" + url.QueryEscape(id)
 }
 
 // scopeString renders a record's scope as one readable line, showing only the
