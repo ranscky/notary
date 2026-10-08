@@ -1,7 +1,7 @@
 {{define "page"}}<div id="record">
-{{template "revealToggle" .RevealControl}}
 {{if .Err}}<p class="view-error" role="alert">{{.Err}}</p>
 {{else}}
+{{template "revealToggle" .RevealControl}}
 <h2>Record {{.Row.Line.ID}}</h2>
 <p class="record-memory">{{if .Row.Line.MemoryID}}Memory: <a href="{{memoryHref .Row.Line.MemoryID}}">{{.Row.Line.MemoryID}}</a>{{else}}<span class="no-memory">This record names no memory.</span>{{end}}</p>
 <p class="record-sentence">{{.Row.Line.Phrasing}}</p>

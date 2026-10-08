@@ -10,7 +10,7 @@
 {{range .View.Unreconciled}}<tr class="gap-row">
 <td class="counter">{{.Counter}}</td>
 <td class="kind">{{.Kind}}</td>
-<td class="scope">user={{.Scope.UserID}} agent={{.Scope.AgentID}} app={{.Scope.AppID}} run={{.Scope.RunID}}</td>
+<td class="scope">{{recordScopeString .Scope}}</td>
 <td class="correlation">{{.CorrelationID}}</td>
 <td class="at">{{.At.Format "2006-01-02 15:04:05 MST"}}</td>
 <td class="detail">{{.Detail}}</td>

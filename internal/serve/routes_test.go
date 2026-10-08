@@ -781,6 +781,12 @@ func TestGapsViewMatchesTheSharedReport(t *testing.T) {
 		assert.Contains(t, body, e.Detail, "the page must carry the detail")
 		assert.Contains(t, body, string(e.Kind), "the page must name the kind")
 		assert.NotContains(t, body, "No outstanding gaps")
+		// The scope cell renders only the dimensions the entry carried, the same
+		// way the records and record views render scope: this entry carries user
+		// u1 and agent a1, so app= and run= must not appear.
+		assert.Contains(t, body, "user=u1 agent=a1", "the scope cell must render the carried dimensions")
+		assert.NotContains(t, body, "app=", "an empty scope dimension must be omitted")
+		assert.NotContains(t, body, "run=", "an empty scope dimension must be omitted")
 	})
 
 	t.Run("corrupt-log", func(t *testing.T) {
@@ -1031,4 +1037,104 @@ func TestNoKeyMaterialInAnyPage(t *testing.T) {
 			assert.NotContains(t, body, secret, "GET %s must never carry key material", target)
 		}
 	}
+}
+
+// revealToggleMarker is the class the shared "revealToggle" partial stamps on
+// the paragraph wrapping its anchor, so a test can assert whether a view offers
+// a reveal control without depending on the link's label. The records view's own
+// control is its filter form's checkbox instead, marked by name="reveal".
+const revealToggleMarker = `class="reveal-toggle"`
+
+// TestRevealScopeIsPinned locks in which views reveal and log. Only the views
+// that render memory content offer a reveal control and write the one-line
+// reveal note: the records view, /record and /memory. /gaps and /verify render
+// no memory content, so a request carrying reveal=1 to either must render NO
+// reveal control and write NOTHING; and an error render of /record or /memory (a
+// 400 or 404) has no content to reveal either, so it must offer no control. The
+// scope was set by an earlier fix round but nothing tested it, so it could
+// silently regress.
+func TestRevealScopeIsPinned(t *testing.T) {
+	f := newFixture(t)
+	var reveal bytes.Buffer
+	srv, err := New(Options{
+		Ledger:      f.ledger,
+		Store:       f.store,
+		GapLogPath:  f.gapPath,
+		Keyring:     map[string]ed25519.PublicKey{f.signer.KeyID(): f.pub},
+		KeyringPath: f.server.keyringPath,
+		Reveal:      &reveal,
+		Now:         fixedClock,
+	})
+	require.NoError(t, err)
+	h := srv.Handler()
+
+	// Content-bearing views: a revealing request renders the view's own reveal
+	// control and writes exactly ONE line naming the view.
+	for _, tc := range []struct {
+		name   string
+		target string
+		marker string
+		view   string
+	}{
+		{"records", "/?reveal=1", `name="reveal"`, "records"},
+		{"record", "/record?id=fixture-observed&reveal=1", revealToggleMarker, "record fixture-observed"},
+		{"memory", "/memory?id=mem-alpha&reveal=1", revealToggleMarker, "memory mem-alpha"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reveal.Reset()
+			rr := get(t, h, tc.target)
+			require.Equal(t, http.StatusOK, rr.Code)
+			assert.Contains(t, rr.Body.String(), tc.marker, "%s must offer its reveal control", tc.name)
+			assert.Equal(t, 1, strings.Count(reveal.String(), "\n"), "exactly one reveal line per revealing request")
+			assert.Contains(t, reveal.String(), tc.view, "the line must name the view")
+		})
+	}
+
+	// Contentless views: a revealing request offers no control and writes
+	// nothing -- a note there would be a false claim about content that is not on
+	// the page.
+	for _, target := range []string{"/gaps?reveal=1", "/verify?reveal=1"} {
+		t.Run(target, func(t *testing.T) {
+			reveal.Reset()
+			rr := get(t, h, target)
+			require.Equal(t, http.StatusOK, rr.Code)
+			body := rr.Body.String()
+			assert.NotContains(t, body, revealToggleMarker, "%s must offer no reveal control", target)
+			assert.NotContains(t, body, "Reveal sensitive content", "%s must offer no reveal control", target)
+			assert.Empty(t, reveal.String(), "%s must write nothing to the reveal log", target)
+		})
+	}
+
+	// Error renders: the /record and /memory 400/404 pages carry no content, so
+	// they must render no reveal control (the toggle would point at a dead URL
+	// built from the empty id) and write nothing.
+	for _, target := range []string{"/record?id=", "/record?id=no-such-record", "/memory?id="} {
+		t.Run("error "+target, func(t *testing.T) {
+			reveal.Reset()
+			rr := get(t, h, target)
+			assert.NotContains(t, rr.Body.String(), revealToggleMarker,
+				"%s must render no reveal control on its error page", target)
+			assert.Empty(t, reveal.String(), "%s must write nothing to the reveal log", target)
+		})
+	}
+}
+
+// TestRecordViewMissingAndUnknownID pins /record's 400-versus-404 split: an
+// empty id is a 400 (a usage error naming an id as required), and an id that
+// names no record is a 404 whose body names the missing id. These are different
+// answers to different questions -- "you asked wrong" versus "there is no such
+// record" -- and the branch that tells them apart is exactly the kind that can
+// silently flip.
+func TestRecordViewMissingAndUnknownID(t *testing.T) {
+	f := newFixture(t)
+	h := f.server.Handler()
+
+	empty := get(t, h, "/record?id=")
+	require.Equal(t, http.StatusBadRequest, empty.Code, "an empty id must be 400")
+	assert.Contains(t, empty.Body.String(), "id is required", "the 400 must say an id is required")
+
+	const missing = "no-such-record"
+	notFound := get(t, h, "/record?id="+missing)
+	require.Equal(t, http.StatusNotFound, notFound.Code, "an id that names no record must be 404")
+	assert.Contains(t, notFound.Body.String(), missing, "the 404 must name the missing id")
 }

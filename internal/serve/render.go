@@ -62,9 +62,10 @@ func (v chainView) NotVerified() bool { return v.State == chainNotVerified }
 // presentation helpers that add no claim of their own.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"scopeString": scopeString,
-		"recordHref":  recordHref,
-		"memoryHref":  memoryHref,
+		"scopeString":       scopeString,
+		"recordScopeString": recordScopeString,
+		"recordHref":        recordHref,
+		"memoryHref":        memoryHref,
 	}
 }
 
@@ -98,22 +99,42 @@ func memoryHref(id string) string {
 	return "/memory?id=" + url.QueryEscape(id)
 }
 
-// scopeString renders a record's scope as one readable line, showing only the
-// dimensions the record actually carried (an empty dimension is omitted rather
-// than printed as "user=" with nothing after it).
+// scopeString renders a record's scope -- the shape export.Line carries -- as
+// one readable line, showing only the dimensions the record actually carried (an
+// empty dimension is omitted rather than printed as "user=" with nothing after
+// it).
 func scopeString(s export.LineScope) string {
+	return scopeLine(s.UserID, s.AgentID, s.AppID, s.RunID)
+}
+
+// recordScopeString renders a caller scope -- the shape a gap entry carries
+// (gap.Entry.Scope is a record.Scope, not an export.LineScope) -- exactly as
+// scopeString renders an export.LineScope, so the records, record and gaps
+// views all render a scope the same way. The two scope types are structurally
+// identical but distinct, and neither owning package exports a renderer, so the
+// smallest change that makes the three views agree is this sibling over the one
+// shared join.
+func recordScopeString(s record.Scope) string {
+	return scopeLine(s.UserID, s.AgentID, s.AppID, s.RunID)
+}
+
+// scopeLine joins the non-empty dimensions of one caller scope, so a dimension
+// the record did not carry is omitted rather than printed with an empty value.
+// It is the single body scopeString and recordScopeString share, so the two
+// scope shapes cannot render differently.
+func scopeLine(user, agent, app, run string) string {
 	parts := make([]string, 0, 4)
-	if s.UserID != "" {
-		parts = append(parts, "user="+s.UserID)
+	if user != "" {
+		parts = append(parts, "user="+user)
 	}
-	if s.AgentID != "" {
-		parts = append(parts, "agent="+s.AgentID)
+	if agent != "" {
+		parts = append(parts, "agent="+agent)
 	}
-	if s.AppID != "" {
-		parts = append(parts, "app="+s.AppID)
+	if app != "" {
+		parts = append(parts, "app="+app)
 	}
-	if s.RunID != "" {
-		parts = append(parts, "run="+s.RunID)
+	if run != "" {
+		parts = append(parts, "run="+run)
 	}
 	return strings.Join(parts, " ")
 }

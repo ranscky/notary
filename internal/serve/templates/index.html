@@ -9,6 +9,7 @@
 <label>Agent <input type="text" name="agent_id" value="{{.Filter.Scope.AgentID}}"></label>
 <label>App <input type="text" name="app_id" value="{{.Filter.Scope.AppID}}"></label>
 <label>Run <input type="text" name="run_id" value="{{.Filter.Scope.RunID}}"></label>
+{{/* Reveal lives IN this form on purpose: this view has a form, so its control is this checkbox submitted with the filter -- htmx-enhanced via the form's hx-get, and a plain form submission whose URL carries reveal=1 with JS off. /record and /memory have no form, so they use the revealToggle anchor. Per-view either way; nothing persisted. */}}
 <label class="reveal"><input type="checkbox" name="reveal" value="1"{{if .Filter.Reveal}} checked{{end}}> Reveal sensitive content</label>
 <button type="submit">Filter</button>
 </fieldset>

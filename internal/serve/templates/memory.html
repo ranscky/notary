@@ -1,6 +1,6 @@
 {{define "page"}}<div id="memory">
-{{template "revealToggle" .RevealControl}}
 {{if .Err}}<p class="view-error" role="alert">{{.Err}}</p>{{end}}
+{{if not .Err}}{{template "revealToggle" .RevealControl}}{{end}}
 {{if .MemoryID}}<h2>Memory {{.MemoryID}}</h2>{{end}}
 <p class="back"><a href="/">Back to records</a></p>
 {{if .Rows}}
