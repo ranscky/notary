@@ -298,9 +298,13 @@ A hash chain cannot detect deletion of trailing records — what remains is self
 | `notary replay --at <ts>` | the ledger as of an instant | what Notary knew at time T |
 | `notary verify [--checkpoint]` | the whole chain | whether anything was tampered with |
 | `notary serve` | the whole ledger, live, read-only, over loopback | show me, in a browser, and let me set the range |
+| `notary report --out DIR (--memory <mem0-id> \| --from <ts> [--to <ts>])` | one memory, or a range, written out as static pages | give me the slice as files I can attach and hand over |
 
-- **`explain`** is the single-subject view; **`export`** is the range view.
+- **`explain`** is the single-subject view; **`export`** is the range view; **`report`** takes either subject and writes it as a folder of files rather than a stream.
 - **`serve`** is the browser view over the same records: read-only, loopback-only (`127.0.0.1`, no host or address flag), and it needs no signing key and no keyring. Its ledger is opened with a nil signer, so it can never write; content is redacted by default and revealed per view, and revealing never changes a hash.
+- **`report`** is the artefact view over the same records: one subject, **bounded by construction** — `--memory <mem0-id>`, or `--from`/`--to` (on each record's `At`, the event time) narrowed by the four scope flags through the same `export.ScopeMatches` matcher `export` and `replay` use — with no `--all`, and `--out DIR` refused when the directory already holds files unless `--force` is given. It is a read path that writes only inside `--out` and holds **no signing key**: the trusted public keyring only, and none at all with `--no-verify`. It refuses a ledger path with **no ledger at it, or a zero-byte file**, rather than creating one, and it exits non-zero when the chain state it rendered is broken **while still writing the pages**.
+- **`report`'s chain state is `verify`'s answer, not a second one.** All three checks `notary verify` runs without a checkpoint file — the chain walk, the gap cross-check against the store, and the gap log's own integrity — live in one function, `ledger.CollectBreaks` (`internal/ledger/breaks.go`), so a report and the command cannot disagree about "is this ledger intact?". It is a whole-ledger property, not slice-scoped.
+- **`report`'s evidence block is not filtered by `--include-sensitive`.** The flag governs a record's stored **content**; the evidence block is the record's own stored reason, printed exactly as the ledger hashed it (`Reason.Encode`), and `reconcile` records whole upstream objects rather than curated fields — so such a reason can quote memory text the sensitivity rules never marked. The index, every record page and the help text say so, and narrowing what `reconcile` records is recorded as work for a phase of its own, because it changes what records hash.
 - **Redaction is presentation, never storage.** Full content is stored, the hash covers the real content, and redaction happens at render. Every redacted entry states that it was redacted. `--include-sensitive` reveals content and does not change any hash.
 - **`replay --at T`** returns records with `RecordedAt <= T`, inclusive, ordered by `Seq`. A `Reconstructed` claim written later is correctly absent from an earlier replay.
 - **The LLM phrasing pass** is export-only, opt-in, and lives in `internal/phrase`. Its output is a distinct `Paraphrase` type that is never an input to any decision function, is always displayed alongside the structured record and its tier, and is labelled a paraphrase. Failure degrades to the structured record plus a note.
@@ -369,9 +373,12 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 8 | **`explain`** (new) | ✅ complete |
 | 9 | Proxy mode | ✅ complete |
 | 10 | Polish, README, demo fixtures | ✅ complete |
+| 11 | **`report` and `doctor`** (new, post-v1): the static evidence report, and the setup diagnosis | ✅ complete |
 | 12 | **`notary serve`** (new): the read-only loopback dashboard | ✅ complete |
 
-Phases 0–10 are implemented and merged to `master`. Each phase that needs design work of its own gets a
+Phases 0–12 are implemented and merged to `master`. Phase 11 was designed first and numbered then, and
+`notary serve` was built and merged as Phase 12 while it was still in progress, so row 11 sits between 10 and
+12 because its number does, not because it landed first. Each phase that needs design work of its own gets a
 dated design spec and implementation plan under `docs/superpowers/`; the reconciler's are
 `specs/2026-09-30-notary-v1-reconciler-design.md` and `plans/2026-09-30-notary-v1-reconciler.md`. This
 table is updated as each phase lands, so a ⬜ here means genuinely not built — not merely undocumented.
@@ -396,6 +403,8 @@ The folder structure gains packages the original layout did not account for:
 | `internal/reconcile/` | The reconciler |
 | `internal/explain/` | The per-record and per-memory lifecycle view |
 | `internal/serve/` | The read-only loopback dashboard over the ledger |
+| `internal/report/` | The static evidence report: the pages, their derived filenames, and the two embedded assets |
+| `internal/doctor/` | The deployment diagnosis: the checks, the findings, and the setup page |
 | `internal/gap/` | The hash-chained fallback gap log |
 | `internal/phrase/` | The only package that talks to an LLM, whatever provider it is pointed at. **Corrected (2026-10-03):** this row originally read "The isolated Anthropic adapter" |
 

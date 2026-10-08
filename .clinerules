@@ -35,8 +35,12 @@ notary/
 │   │   └── export.go
 │   ├── replay/
 │   │   └── replay.go
-│   └── serve/                       # The read-only loopback dashboard over the ledger
-│       └── server.go
+│   ├── serve/                       # The read-only loopback dashboard over the ledger
+│   │   └── server.go
+│   ├── report/                      # The static evidence report: the pages, their derived filenames, and the embedded assets
+│   │   └── report.go
+│   └── doctor/                      # The deployment diagnosis, and the setup page it renders
+│       └── doctor.go
 ├── config/
 │   └── config.go
 ├── go.mod

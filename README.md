@@ -7,7 +7,7 @@
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
 ![Dependencies](https://img.shields.io/badge/direct_dependencies-4-blue)
 ![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
-![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_proxy_(phases_1--10)-orange)
+![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_proxy_serve_report_doctor_(phases_1--12)-orange)
 
 **A signed, tamper-evident audit trail for agent memory — one that records _why_ a memory was kept, dropped, or surfaced, not just that it was.**
 
@@ -121,8 +121,24 @@ go run ./cmd/notary version
 go run ./cmd/notary gaps
 ```
 
-`verify` needs a ledger, a signing key, and a keyring of trusted public keys (base64 ed25519 public
-keys, one per line — the key ID is derived from the key, so the file can never disagree with itself):
+`doctor` looks at this deployment and says what is missing, with the exact command that fixes each finding;
+it exits non-zero when any finding is an error, so it can gate a pipeline. It is also the one command that
+creates key material, and one call produces both halves of a fresh key pair — the private half printed as
+the `export` line to put in the environment, and `--trusted-keys-out` writing the matching public half, the
+one-base64-line-per-key file `NOTARY_TRUSTED_KEYS_PATH` names. So the trusted-keys file `verify`, `replay`
+and `report` read needs no external tool to produce it:
+
+```bash
+go run ./cmd/notary doctor                                  # what is wrong here, and how to fix it
+go run ./cmd/notary doctor --generate-key --trusted-keys-out trusted-keys.txt
+# prints:  export NOTARY_SIGNING_KEY=<base64 seed>    # the private half; nothing is written for it
+# writes:  trusted-keys.txt (mode 0644)               # the public half, no external tool needed
+```
+
+`verify` needs a ledger and a keyring of trusted public keys (base64 ed25519 public keys, one per line —
+the key ID is derived from the key, so the file can never disagree with itself). A signing key is needed
+only by `--write-checkpoint` and `--write-gap-checkpoint`, which sign a fresh attestation; plain `verify`,
+`--checkpoint` and `--gap-checkpoint` read and check, and never sign:
 
 ```bash
 export NOTARY_DB_PATH=notary.db
@@ -131,6 +147,19 @@ export NOTARY_TRUSTED_KEYS_PATH=trusted-keys.txt
 go run ./cmd/notary verify                            # walk the chain
 go run ./cmd/notary verify --write-checkpoint cp.json # attest the head
 go run ./cmd/notary verify --checkpoint cp.json       # detect a removed tail
+```
+
+`report` renders a slice of the ledger as a folder of static, self-contained HTML pages — an index, one page
+per memory, one per record, and the chain state — to open from disk, attach to a ticket or hand to an
+auditor. It is bounded by construction: exactly one subject, either `--memory <mem0-id>` or `--from`/`--to`
+narrowed by the four scope flags, and there is no `--all`:
+
+```bash
+export NOTARY_DB_PATH=notary.db
+export NOTARY_TRUSTED_KEYS_PATH=trusted-keys.txt
+
+go run ./cmd/notary report --out ./report --from 2026-09-01T00:00:00Z
+go run ./cmd/notary report --out ./report --memory <mem0-id>
 ```
 
 `export` renders a range of the ledger to stdout as JSONL — one stable object per record — so an audit
@@ -212,7 +241,7 @@ All configuration is environment-only:
 
 ## Status
 
-This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `proxy`: phases 1–10** of the design, complete and tested.
+This is the **core ledger, the reconciler, `export`, `replay`, `explain`, `proxy`, `serve`, `report` and `doctor`: phases 1–12** of the design's phase table, complete and tested. Phases 11 (`report` and `doctor`) and 12 (`notary serve`) sit beyond v1's ten rows; Phase 11 was designed first and numbered then, and `serve` was built and merged while it was still in progress, so Phase 11 landed last.
 
 **Working today**
 
@@ -272,6 +301,44 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `pr
   reach nor read it. It is structurally read-only — the ledger is opened with no signer, so it can never
   append — and it needs neither a signing key nor a trusted-key file: a keyring, when one is configured,
   only enables the chain banner's verdict.
+- **`notary report`** — renders a slice of the ledger as a folder of static HTML pages: an index, one page
+  per memory, one page per record, the chain state in full, and the stylesheet and filter script they link
+  to. The slice is bounded by construction — one subject, `--memory <mem0-id>` or `--from`/`--to` (bounded on
+  each record's event time) narrowed by the four scope flags, with no `--all` — and `--out` is required,
+  refused when the directory already holds files unless `--force` is given. Sensitive content is withheld by
+  default and the page says so; `--include-sensitive` prints it and changes no hash. It needs no signing key
+  (it never signs) and `--no-verify` needs no keyring at all — `verify.html` is still written, saying that no
+  verification ran, because a skipped check must never read as a clean one. Its chain state is `verify`'s
+  answer, through the same shared break collection, so the page and the command cannot disagree, and it
+  covers the whole ledger rather than the slice. The ledger must already exist: `report` refuses a path with
+  no ledger at it, or a zero-byte file, rather than creating an empty one, because a report over nothing and
+  a report over a mistyped path must never look the same. It exits non-zero when the chain state it rendered
+  is broken, **after** writing the pages, because a report of a tampered ledger is exactly the artefact its
+  reader needs. It does not check that the file *is* a Notary ledger, and the code records why that belongs to
+  a phase of its own: a file of exactly one byte is initialised into an empty ledger — or, in the same way, a
+  foreign SQLite file given this project's schema — and renders 0 memories with exit 0. The **evidence block**
+  on every record page is not filtered by `--include-sensitive`: the flag governs the record's stored content,
+  the evidence is the record's own stored reason printed as the ledger hashed it, and `reconcile` records
+  whole upstream objects rather than curated fields — so such a reason can quote memory text the sensitivity
+  rules never marked. The index and every record page say so, and so does the help text.
+- **`notary doctor`** — says what this deployment is missing and the exact command that fixes each finding:
+  the ledger and the gap log (opened for real, and created when absent, with the finding saying when this run
+  is the one that created them), the trusted keyring, the signing key (a warning rather than an error when it
+  is absent, because the read paths do not need one), the Mem0 base URL, the Mem0 API key (required only by
+  the commands that call Mem0 — `reconcile` — since `proxy` forwards the caller's own credential), the
+  sensitivity rules when they are configured, and the ledger's chain state through the same shared break
+  collection `notary verify` uses, reported as **not checked** — never as broken — when no trusted keys are
+  configured. It exits non-zero when any finding is an error, so it can gate a pipeline; warnings alone do
+  not. `--out DIR` writes the same findings to `DIR/setup.html`. **`--generate-key` is the only command that
+  creates key material**, and no other command and no other flag ever does (the demo script below mints its
+  own throwaway key, from `/dev/urandom`, and never writes it to disk): it prints a fresh ed25519 seed as an
+  `export NOTARY_SIGNING_KEY=…` line to stdout and writes no file, `--key-out PATH` writes that private half
+  to a file instead (mode `0600`, refused inside a checkout), and `--trusted-keys-out PATH`, with
+  `--generate-key`, writes the matching **public** half (mode `0644`, allowed inside a checkout, because a
+  public half is not a credential) as the base64 line `NOTARY_TRUSTED_KEYS_PATH` reads — so a first run needs
+  no external tool to derive the public half from a key it has just made. It requires `--generate-key`
+  because a loaded signer exposes no public key to recover, only its `KeyID` fingerprint and its `Sign`
+  method. It needs no signing key and no Mem0 key to run.
 - **`notary proxy`** — serves Mem0 traffic and records the `add` and `search` requests that pass through
   it. The application re-points its Mem0 base URL at Notary, which forwards every request to the real
   Mem0 and returns the response untouched, recording the same records library mode records for those two
@@ -305,9 +372,12 @@ gofmt -l .         # no output expected
 go test ./...
 ```
 
-`go test ./...` runs every package in the module. `internal/ledger` is the slow one (a subprocess crash test
-SIGKILLs a writer mid-transaction, ~30s), so a full run takes a couple of minutes — run packages
-individually if you are on a short timeout.
+`go test ./...` runs every package the `./...` pattern matches — which is nearly every package in the tree,
+because `go build`, `go vet` and `go test` all skip `testdata` directories. The two programs that live in
+one are built or run explicitly instead: `internal/ledger/testdata/crashwriter`, which the crash test builds
+(`internal/ledger/crash_test.go`), and `testdata/demo/seed`, which `scripts/demo.sh` runs.
+`internal/ledger` is the slow one (a subprocess crash test SIGKILLs a writer mid-transaction, ~30s), so a
+full run takes a couple of minutes — run packages individually if you are on a short timeout.
 
 Tests never touch the network. The Mem0 client is tested against **recorded response fixtures** in
 `internal/mem0/testdata/`, whose provenance is documented in `FIXTURES.md`. A live test is opt-in
@@ -329,13 +399,13 @@ one it ever hands to Mem0; each deletion is re-checked against it locally rather
 service to honour a filter. It wipes the scope afterwards when it passed or failed — barring a kill,
 or a listing it could not read.
 
-### See the whole surface work, offline
+### See the surface work, offline
 
 `bash scripts/demo.sh` builds the CLI into a throwaway temp directory, generates its own signing key
 at runtime — a fresh throwaway key every run, held in the process environment and never written to
 disk; only its public half reaches the temp directory, in the trusted-keys file `verify` reads — seeds
-a small fixture ledger through the real write paths, and walks the whole surface in one
-run: `verify` → `gaps` → `export` → `replay` → `explain <record-id>` → `explain --memory <mem0-id>`.
+a small fixture ledger through the real write paths, and walks the audit trail in one run: `verify` →
+`gaps` → `export` → `replay` → `explain <record-id>` → `explain --memory <mem0-id>`.
 It then demonstrates the two properties the project exists for: an edit to a stored record caught by
 `verify`, which names the exact record and field, and an unaudited operation reported by `gaps`. It
 needs a Go toolchain and nothing else — no network, no Mem0, no LLM key, no configuration — and it
