@@ -1,0 +1,18 @@
+{{template "head" .}}
+<main>
+<p class="nav"><a href="{{.Home}}">Report index</a></p>
+<h1>Memory <code>{{.MemoryID}}</code></h1>
+
+<p class="counts">Records in this slice: {{len .Records}}.</p>
+
+<ol class="timeline">
+{{range .Records}}<li class="timeline-record">
+<p class="line"><span class="seq">#{{.Line.Seq}}</span> <span class="event">{{.Line.Event}}</span> <span class="reason">{{.Line.ReasonKind}}</span> <span class="tier">tier {{.Line.Tier}}</span></p>
+<p class="instants">the event at {{.At}}, recorded at {{.RecordedAt}}</p>
+<p class="phrasing">{{.Line.Phrasing}}</p>
+<p class="link"><a href="{{$.Base}}/{{.Page}}">record <code>{{.Line.ID}}</code></a></p>
+{{template "content" .}}
+</li>
+{{end}}</ol>
+</main>
+{{template "foot" .}}

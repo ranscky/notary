@@ -1,0 +1,26 @@
+{{define "head"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+</head>
+<body>
+{{end}}
+
+{{define "foot"}}<footer>
+<p>
+This page is a rendering of the ledger, not the ledger: the files here verify
+nothing by themselves. To check the chain, run <code>notary verify</code>
+against the ledger this report was made from.
+</p>
+</footer>
+</body>
+</html>
+{{end}}
+
+{{define "content"}}{{if .Withheld}}<p class="withheld">Content withheld: <code>{{.Line.Redacted}}</code>. The stored record marked this content sensitive, and this report was not asked to include it.</p>
+{{else if .HasContent}}{{if .ContentEmpty}}<p class="empty">The record carried content, and the content was empty.</p>
+{{else}}<pre class="content">{{.Content}}</pre>
+{{end}}{{else}}<p class="none">This record carries no content.</p>
+{{end}}{{end}}

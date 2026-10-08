@@ -1,0 +1,39 @@
+{{template "head" .}}
+<main>
+<p class="nav"><a href="{{.Home}}">Report index</a></p>
+<h1>Record <code>{{.Record.Line.ID}}</code></h1>
+
+<p class="phrasing">{{.Record.Line.Phrasing}}</p>
+
+<dl class="record">
+<dt>Sequence</dt><dd>{{.Record.Line.Seq}}</dd>
+<dt>Event</dt><dd>{{.Record.Line.Event}}</dd>
+<dt>Reason</dt><dd>{{.Record.Line.ReasonKind}}</dd>
+<dt>Tier</dt><dd>{{.Record.Line.Tier}}</dd>
+<dt>Event at</dt><dd>{{.Record.At}}</dd>
+<dt>Recorded at</dt><dd>{{.Record.RecordedAt}}</dd>
+<dt>Memory</dt><dd>{{if .Record.MemoryPage}}<a href="{{.Base}}/{{.Record.MemoryPage}}"><code>{{.Record.Line.MemoryID}}</code></a>{{else}}this record names no memory{{end}}</dd>
+<dt>Scope</dt><dd>{{.Record.ScopeText}}</dd>
+<dt>Content hash</dt><dd><code>{{.Record.Line.ContentHash}}</code></dd>
+</dl>
+
+<h2>Content</h2>
+{{template "content" .Record}}
+
+<h2>Chain fields</h2>
+<details class="chain">
+<summary>prev_hash, hash, signature and signer_key_id</summary>
+<dl>
+<dt>prev_hash</dt><dd><code>{{.Record.Line.PrevHash}}</code></dd>
+<dt>hash</dt><dd><code>{{.Record.Line.Hash}}</code></dd>
+<dt>signature</dt><dd><code>{{.Record.Line.Signature}}</code></dd>
+<dt>signer_key_id</dt><dd><code>{{.Record.Line.SignerKeyID}}</code></dd>
+</dl>
+<p>
+These are the fields a verifier checks, shown in full: a truncated hash is not
+evidence. This page verifies nothing by itself -- run <code>notary verify</code>
+against the ledger it was made from.
+</p>
+</details>
+</main>
+{{template "foot" .}}

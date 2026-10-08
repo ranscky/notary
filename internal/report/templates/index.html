@@ -1,0 +1,43 @@
+{{template "head" .}}
+<main>
+<h1>Notary report</h1>
+
+<p class="provenance">
+This slice was rendered by <code>{{.Command}}</code>{{with .RunAt}}, as of {{.}}{{end}}.
+</p>
+
+<dl class="slice">
+<dt>Slice</dt><dd>{{.Subject}}</dd>
+<dt>Scope</dt><dd>{{.Scope}}</dd>
+<dt>Sensitive content</dt><dd>{{.Sensitivity}}</dd>
+</dl>
+
+<p class="counts">{{.Counts}}.</p>
+
+<h2>Memories</h2>
+{{if .Memories}}<table class="memories">
+<thead>
+<tr><th>Memory</th><th>Records in this slice</th><th>Page</th></tr>
+</thead>
+<tbody>
+{{range .Memories}}<tr>
+<td><code>{{.ID}}</code></td>
+<td>{{.Records}}</td>
+<td><a href="{{$.Base}}/{{.Page}}">open</a></td>
+</tr>
+{{end}}</tbody>
+</table>
+{{else}}<p>This slice holds no record for any memory.</p>
+{{end}}
+
+{{if .Memoryless}}<h2>Records outside any memory</h2>
+<p>
+These records name no memory, so they have no memory page. Each one still has a
+record page of its own.
+</p>
+<ul class="memoryless">
+{{range .Memoryless}}<li><a href="{{$.Base}}/{{.Page}}"><code>{{.ID}}</code></a>, at {{.At}}</li>
+{{end}}</ul>
+{{end}}
+</main>
+{{template "foot" .}}
