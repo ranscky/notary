@@ -24,6 +24,7 @@ var rootSubcommands = []string{
 	"proxy",
 	"doctor",
 	"serve",
+	"report",
 }
 
 // TestNewRootCmdRegistersExactlyTheExpectedSubcommands pins the root command's

@@ -17,19 +17,23 @@ import (
 // the root command's PersistentPreRunE not to create the ledger file (and its
 // parent directories) before that command runs.
 //
-// `notary doctor` is the command that carries it. Doctor exists to report
-// whether NOTARY_DB_PATH can hold the ledger, so creating the file first would
-// hide exactly the failure it is there to name (the pre-run's error would
+// `doctor` and `report` are the commands that carry it, each because the file
+// this pre-run creates is one its own answer depends on. Doctor exists to
+// report whether NOTARY_DB_PATH can hold the ledger, so creating the file first
+// would hide exactly the failure it is there to name (the pre-run's error would
 // replace doctor's findings), and it would make `doctor --generate-key` --
-// which promises to write no file -- write one. An annotation, rather than a
-// comparison against the command's name here, says WHY a command is exempt at
-// the command that declares the exemption.
+// which promises to write no file -- write one. Report renders a ledger that
+// must already be there: the pre-run would manufacture an empty ledger at a
+// mistyped path, and the report would then render zero memories over it and
+// exit 0. An annotation, rather than a comparison against the command's name
+// here, says WHY a command is exempt at the command that declares the
+// exemption.
 const skipEnsureLedgerAnnotation = "notary.skip-ensure-ledger"
 
 // newRootCmd builds the notary root command. It declares the persistent
 // --verbose and --config flags and, before any subcommand runs, ensures the
 // ledger file exists on disk -- unless the subcommand opts out with
-// skipEnsureLedgerAnnotation, which `doctor` does.
+// skipEnsureLedgerAnnotation, which `doctor` and `report` do.
 func newRootCmd() *cobra.Command {
 	var (
 		verbose    bool
@@ -71,6 +75,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newProxyCmd())
 	cmd.AddCommand(newDoctorCmd())
 	cmd.AddCommand(newServeCmd())
+	cmd.AddCommand(newReportCmd())
 
 	return cmd
 }
