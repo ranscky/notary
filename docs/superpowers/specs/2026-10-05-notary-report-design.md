@@ -324,7 +324,20 @@ character) and asserts nothing is written outside `--out`.
    describe a record differently"; for a field the line does not describe, that divergence is impossible, and
    the rule's purpose is served by reading the payload from the one place it exists. Refusing it would leave
    the evidence artefact without the *why* — the same partial-representation defect §12.2 rejected for the
-   signature. The payload renders **verbatim**, because `ObservedEvidence.Payload()` returns the canonicalised
-   bytes the record hash was computed over, so pretty-printing would display something the hash does not cover;
-   escaped by the template engine, collapsed like the long hex, and absent rather than empty when a record
-   carries no such evidence.
+   signature. **What renders is the reason's own canonical encoding — `Reason.Encode()`, verbatim, collapsed,
+   and absent rather than empty when there is no evidence — and implementation refined this in a way worth
+   recording.** The payload first reached the page through `ObservedEvidence.Payload()`, and it lands in
+   `Encode()`'s envelope as raw JSON (`observedEnvelope.Payload` is a `json.RawMessage`,
+   `internal/record/reason.go:454`), so the bytes the hash covers are the bytes on the page, with no
+   pretty-printing step to falsify them. It is also **complete where `Payload()` was not**: `Encode()` is the
+   whole self-describing reason — version tag, kind, tier, and the payload for that tier — so an `Observed`
+   reason shows its source *and* its payload, a `Reconstructed` one shows its basis, rule, rule version and
+   confidence, and an `Internal` one shows its note. `Payload()` is the *only* exported accessor on any of the
+   three evidence types — there is no `Source()`, no `Basis()`, no `Note()` — so the narrower rendering would
+   have shown nothing at all for two of the three kinds, which is the same partial-representation defect
+   §12.2 rejected. Reading the canonical encoding needs no new API and no change to `internal/record`: the
+   package exposed `Payload()` for `reconcile`'s single consumer (`internal/reconcile/worklist.go:291`), and
+   that is not a licence to widen it here. **Cost:** the envelope is a storage-format surface, so the artefact
+   shows a reader the wire shape (`notary/reason/v1`). That is the same trade §12.2 makes by publishing
+   `signature`, and it is reversible — a later phase wanting decoded fields should add accessors to
+   `internal/record` and record the ask.
