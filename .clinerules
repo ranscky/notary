@@ -33,8 +33,10 @@ notary/
 │   │       └── pipeline.go          # The bounded write queue: queue, writer goroutine, drop tally, drain
 │   ├── export/
 │   │   └── export.go
-│   └── replay/
-│       └── replay.go
+│   ├── replay/
+│   │   └── replay.go
+│   └── serve/                       # The read-only loopback dashboard over the ledger
+│       └── server.go
 ├── config/
 │   └── config.go
 ├── go.mod

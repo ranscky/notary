@@ -297,8 +297,10 @@ A hash chain cannot detect deletion of trailing records — what remains is self
 | `notary export --from --to [--include-sensitive]` | a time range, bulk | everything between these dates |
 | `notary replay --at <ts>` | the ledger as of an instant | what Notary knew at time T |
 | `notary verify [--checkpoint]` | the whole chain | whether anything was tampered with |
+| `notary serve` | the whole ledger, live, read-only, over loopback | show me, in a browser, and let me set the range |
 
 - **`explain`** is the single-subject view; **`export`** is the range view.
+- **`serve`** is the browser view over the same records: read-only, loopback-only (`127.0.0.1`, no host or address flag), and it needs no signing key and no keyring. Its ledger is opened with a nil signer, so it can never write; content is redacted by default and revealed per view, and revealing never changes a hash.
 - **Redaction is presentation, never storage.** Full content is stored, the hash covers the real content, and redaction happens at render. Every redacted entry states that it was redacted. `--include-sensitive` reveals content and does not change any hash.
 - **`replay --at T`** returns records with `RecordedAt <= T`, inclusive, ordered by `Seq`. A `Reconstructed` claim written later is correctly absent from an earlier replay.
 - **The LLM phrasing pass** is export-only, opt-in, and lives in `internal/phrase`. Its output is a distinct `Paraphrase` type that is never an input to any decision function, is always displayed alongside the structured record and its tier, and is labelled a paraphrase. Failure degrades to the structured record plus a note.
@@ -367,6 +369,7 @@ No secrets in the repository; `.clinerules` guardrails apply unchanged.
 | 8 | **`explain`** (new) | ✅ complete |
 | 9 | Proxy mode | ✅ complete |
 | 10 | Polish, README, demo fixtures | ✅ complete |
+| 12 | **`notary serve`** (new): the read-only loopback dashboard | ✅ complete |
 
 Phases 0–10 are implemented and merged to `master`. Each phase that needs design work of its own gets a
 dated design spec and implementation plan under `docs/superpowers/`; the reconciler's are
@@ -392,6 +395,7 @@ The folder structure gains packages the original layout did not account for:
 | `internal/mem0/` | The thin REST client, shared by `interceptor/library` and `reconcile` |
 | `internal/reconcile/` | The reconciler |
 | `internal/explain/` | The per-record and per-memory lifecycle view |
+| `internal/serve/` | The read-only loopback dashboard over the ledger |
 | `internal/gap/` | The hash-chained fallback gap log |
 | `internal/phrase/` | The only package that talks to an LLM, whatever provider it is pointed at. **Corrected (2026-10-03):** this row originally read "The isolated Anthropic adapter" |
 

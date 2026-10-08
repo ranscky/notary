@@ -70,6 +70,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newExplainCmd())
 	cmd.AddCommand(newProxyCmd())
 	cmd.AddCommand(newDoctorCmd())
+	cmd.AddCommand(newServeCmd())
 
 	return cmd
 }

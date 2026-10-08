@@ -261,6 +261,17 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain` and `pr
   withheld. Sensitive content is withheld by default and the view says so; `--include-sensitive`
   prints it and changes no hash. It is a read path that signs and verifies nothing, so it needs
   neither a signing key nor a trusted-key file.
+- **`notary serve`** — serves the read-only ledger dashboard on the loopback address `127.0.0.1`, so a
+  reviewer can read the trail in a browser instead of a terminal: the same records `export`, `explain`,
+  `gaps` and `verify` report, rendered as pages. The records view defaults to the last 30 days and is
+  narrowed by range and scope in the page; each record opens its own page, each memory its lifecycle, and
+  the gaps and verification pages report what `notary gaps` and `notary verify` report. Sensitive content
+  is withheld by default and a per-view toggle reveals it for that view only, writing one audit line to
+  stderr each time and never changing a hash. `--port` is its only flag: it binds `127.0.0.1` and only
+  `127.0.0.1` (there is no host or address flag) and sets no CORS header, so a foreign page can neither
+  reach nor read it. It is structurally read-only — the ledger is opened with no signer, so it can never
+  append — and it needs neither a signing key nor a trusted-key file: a keyring, when one is configured,
+  only enables the chain banner's verdict.
 - **`notary proxy`** — serves Mem0 traffic and records the `add` and `search` requests that pass through
   it. The application re-points its Mem0 base URL at Notary, which forwards every request to the real
   Mem0 and returns the response untouched, recording the same records library mode records for those two

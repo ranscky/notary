@@ -112,8 +112,8 @@ name.
 5. **Ids travel in query strings, never path segments and never filenames.** Record ids in this codebase carry
    `#`, `:` and `/` (`corr-search-1#1`, `add_resolved:stored_by_mem0:<event-id>`), so a path segment would be
    both a routing hazard and the path-traversal class Phase 11 flagged for filenames. The route set is
-   therefore fixed and small (`/record?id=…`), and `html/template`'s URL-context escaping does the encoding
-   (§6). *Cost:* slightly less pretty URLs. There are no filesystem paths in this phase at all, which removes
+   therefore fixed and small (`/record?id=…`), and the id is `url.QueryEscape`d exactly once in Go and handed
+   unchanged to both the `href` and the `hx-get` (§6). *Cost:* slightly less pretty URLs. There are no filesystem paths in this phase at all, which removes
    the traversal class rather than mitigating it.
 
 6. **A loopback `Host` check, and never a CORS header.** A request whose `Host` is not loopback is refused,
@@ -227,14 +227,22 @@ revealing request writes one line to stderr, e.g. `serve: revealed sensitive con
 no value is ever `template.HTML`, `template.JS` or `template.URL`, and no stored string is ever
 concatenated into markup. Memory text is arbitrary agent- or user-supplied content rendered into a browser
 document, and a memory id, a scope value, a gap detail and a phrasing sentence are all stored or derived text
-that goes through the template the same way. **Ids in URLs** ride in **query values**, and `html/template`'s URL-context
-escaper encodes them on its own — measured during design, `?id={{.ID}}` renders `corr-search-1#1 a/b:c..d`
-as `corr-search-1%231%20a%2fb%3ac..d`, so `#` (fragment), space, `/` and `:` are all encoded and the value
-round-trips through `r.URL.Query()`. `urlquery` is deliberately **not** applied: the contextual escaper
-already encodes the value, and `urlquery` on top of it HTML-escapes `+` to `&#43;`, so it would be a second
-and worse encoder. An id's `..` is left literal, which is harmless precisely because an id is only ever a
-query value — never a path segment or a filename (§3 record 5). A test pins the exact rendered `href` and
-form value for a hostile id, so this is a verified property rather than a hope about a contextual escaper.
+that goes through the template the same way. **Ids in URLs** ride in **query values**, and the id is
+`url.QueryEscape`d **exactly once, here in Go** — the same escaped string is then handed to every URL
+attribute a link carries, `href` and htmx's `hx-get` alike. `html/template`'s contextual escaper cannot be
+relied on to do it: it URL-encodes only its fixed set of URL attributes (`href`, `action`, `src`, …), and it
+merely **HTML-escapes** a custom attribute such as `hx-get`. An id left raw for the escaper therefore leaves
+`/`, `#` and `:` unescaped in `hx-get`, and an id containing `#` starts a URL fragment there — the server
+never sees the rest, and the request reads the wrong record. (This corrected an earlier claim in this
+spec that `html/template`'s URL-context escaper encodes the id on its own: that is true for `href` and false
+for `hx-get`.) Escaping once in Go and reusing that one string for both attributes removes the divergence: a
+pre-escaped value survives a URL attribute and an HTML attribute intact and round-trips through
+`r.URL.Query()`. The template's `urlquery` is still deliberately **not** used (it would be a second encoder),
+and the id is escaped in exactly one place — `recordHref`/`memoryHref` in `internal/serve/render.go` — so no
+view can escape it twice or not at all. An id's `..` is left literal, which is harmless precisely because an
+id is only ever a query value — never a path segment or a filename (§3 record 5). A test pins the exact
+rendered `href` and the `hx-get` for a hostile id, so this is a verified property rather than a hope about a
+contextual escaper.
 
 **Styling is the banner's language.** `app.css` carries the banner's tokens — `Observed` gold `#D9A441` with a
 solid rule, `Reconstructed` `#8593A5` dashed, `Internal` `#47505E`/`#707B8A` dotted — over the same dark
