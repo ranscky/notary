@@ -146,6 +146,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	data.Filter = f
 	data.Rows = rows
+	// An empty window is not a dead end: when the ledger holds records the
+	// window missed, the page offers the ledger's own range. This is computed
+	// only here, on the empty path, because it reads every stored row.
+	if len(rows) == 0 {
+		wider, werr := s.widerWindow()
+		if werr != nil {
+			http.Error(w, werr.Error(), http.StatusInternalServerError)
+			return
+		}
+		data.Wider = wider
+	}
 	// The index view reveals too -- its filter form carries reveal=1 -- so a
 	// revealing records request writes the same one-line audit note, naming the
 	// records view. It is logged with the other views' reveals, so no reveal

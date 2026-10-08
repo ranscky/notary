@@ -73,6 +73,11 @@ var (
 	rowDataAttrRe    = regexp.MustCompile(`data-([a-z-]+)="([^"]*)"`)
 	contentTextRe    = regexp.MustCompile(`<span class="content-text">([^<]*)</span>`)
 	recordHrefRe     = regexp.MustCompile(`href="(/record\?[^"]*)"`)
+	recordsHeadRe    = regexp.MustCompile(`(?s)<thead>.*?</thead>`)
+	// widerHrefRe pulls the empty state's offered range out of the page, so a
+	// test can follow the link the page actually rendered rather than one the
+	// test rebuilt and hoped was the same.
+	widerHrefRe = regexp.MustCompile(`href="(/\?from=[^"]*)"`)
 )
 
 // parseRows pulls the records rows out of a rendered page.
@@ -258,33 +263,32 @@ func TestRecordsViewEscapesAHostileID(t *testing.T) {
 	assert.Equal(t, record.RecordID(hostile), rec.ID)
 }
 
-// TestRecordsViewLinksMemoryOnlyWhenTheRecordNamesOne pins the rendered-HTML
+// TestRecordPageLinksMemoryOnlyWhenTheRecordNamesOne pins the rendered-HTML
 // behaviour that replaced the old pre-joined-MemoryHref assertion: a record
 // whose subject names no memory (the store's memory_id DEFAULT "") renders NO
 // /memory link at all, while a record that names one renders a link to it.
 //
+// It asserts this on the RECORD page rather than the records table, because the
+// table no longer carries a memory column: Memory, reason kind and the raw scope
+// moved behind the per-record page, which links the memory (and says so in words
+// when there is none). That is the page a reviewer reaches in one click from the
+// phrasing column, so the memory is still one click from the front page.
+//
 // It also asserts the unit-level fact behind it -- the no-memory row's
 // Line.MemoryID is empty -- because that is what the template branches on.
-func TestRecordsViewLinksMemoryOnlyWhenTheRecordNamesOne(t *testing.T) {
+func TestRecordPageLinksMemoryOnlyWhenTheRecordNamesOne(t *testing.T) {
 	f := newFixture(t)
-	rr := get(t, f.server.Handler(), "/")
-	require.Equal(t, http.StatusOK, rr.Code)
+	h := f.server.Handler()
 
-	var sawNoMemory, sawMemory bool
-	for _, block := range recordRowReMerge.FindAllString(rr.Body.String(), -1) {
-		switch {
-		case strings.Contains(block, `data-id="fixture-internal"`):
-			sawNoMemory = true
-			assert.NotContains(t, block, "/memory?id=",
-				"a record naming no memory must render no memory link")
-		case strings.Contains(block, `data-id="fixture-observed"`):
-			sawMemory = true
-			assert.Contains(t, block, "/memory?id=mem-alpha",
-				"a record naming a memory must link to it")
-		}
-	}
-	require.True(t, sawNoMemory, "the fixture must contain the no-memory record")
-	require.True(t, sawMemory, "the fixture must contain a memory-naming record")
+	noMemory := get(t, h, "/record?id=fixture-internal").Body.String()
+	assert.NotContains(t, noMemory, "/memory?id=",
+		"a record naming no memory must render no memory link")
+	assert.Contains(t, noMemory, "names no memory",
+		"a record naming no memory must say so in words, not render an empty cell")
+
+	withMemory := get(t, h, "/record?id=fixture-observed").Body.String()
+	assert.Contains(t, withMemory, "/memory?id=mem-alpha",
+		"a record naming a memory must link to it")
 
 	rows, err := f.server.loadRecords(defaultFilter())
 	require.NoError(t, err)
@@ -293,6 +297,33 @@ func TestRecordsViewLinksMemoryOnlyWhenTheRecordNamesOne(t *testing.T) {
 			assert.Empty(t, r.Line.MemoryID, "the no-memory record's Line.MemoryID must be empty")
 		}
 	}
+}
+
+// TestRecordsTableDropsTheDetailColumns pins the table's shape: the records view
+// leads with the columns a reviewer scans and leaves memory, reason kind and the
+// raw scope to the record page. The assertion is on the rendered header, so a
+// column added back is a failing test rather than a quiet regression -- the
+// reason this table was trimmed at all is that nine columns wrapped every row.
+func TestRecordsTableDropsTheDetailColumns(t *testing.T) {
+	f := newFixture(t)
+	body := get(t, f.server.Handler(), "/").Body.String()
+
+	head := recordsHeadRe.FindString(body)
+	require.NotEmpty(t, head, "the records view must render a table header")
+	for _, col := range []string{"Seq", "Event time", "Event", "Tier", "Phrasing", "Content"} {
+		assert.Contains(t, head, "<th>"+col+"</th>", "the table must keep the %s column", col)
+	}
+	for _, col := range []string{"Reason", "Memory", "Scope"} {
+		assert.NotContains(t, head, "<th>"+col+"</th>",
+			"the %s column moved to the record page and must not be back in the table", col)
+	}
+
+	// The detail is genuinely still reachable: the record page the row links to
+	// carries all three.
+	rec := get(t, f.server.Handler(), "/record?id=fixture-observed").Body.String()
+	assert.Contains(t, rec, "Reason", "the record page must still show the reason kind")
+	assert.Contains(t, rec, "Scope", "the record page must still show the scope")
+	assert.Contains(t, rec, "mem-alpha", "the record page must still show the memory")
 }
 
 // TestNonGETMethodsAreRefusedWithNoBody pins the method guard: anything but
@@ -378,6 +409,58 @@ func TestAnEmptyRangeSaysSoInWords(t *testing.T) {
 	from := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	assert.Contains(t, body, from.Format(time.RFC3339), "the empty message must name the range it searched")
 	assert.Contains(t, body, "widen", "the empty message must say how to widen it")
+}
+
+// TestAnEmptyWindowOffersTheLedgersOwnRange pins the escape an empty window
+// needs when the ledger is not empty: the page names the extent the ledger
+// actually holds and offers a link to it, and following that link -- the one the
+// page rendered, not one the test rebuilt -- shows the records.
+//
+// This is the case that made the console's first page look broken in use: a
+// 30-day window against a ledger whose newest record is older than that renders
+// no rows at all, which reads as "nothing here" rather than "wrong window". The
+// link is what turns that into one click.
+func TestAnEmptyWindowOffersTheLedgersOwnRange(t *testing.T) {
+	f := newFixture(t)
+	h := f.server.Handler()
+
+	// A window far from the fixture's records, so the ledger has records the
+	// window misses.
+	body := get(t, h, "/?from=2020-01-01&to=2020-01-02").Body.String()
+
+	assert.Contains(t, body, "This ledger holds", "the empty state must say the ledger is not empty")
+	m := widerHrefRe.FindStringSubmatch(body)
+	require.NotNil(t, m, "the empty state must offer a link to a range that shows the records")
+
+	// The offered href is HTML-escaped in the attribute (& as &amp;), which is
+	// correct markup and not what a request carries: unescape before using it.
+	offered := html.UnescapeString(m[1])
+	offeredRR := get(t, h, offered)
+	require.Equal(t, http.StatusOK, offeredRR.Code,
+		"the offered range must be one the view accepts, not one it refuses as over-cap")
+
+	rows := parseRows(t, offeredRR.Body.String())
+	require.NotEmpty(t, rows, "following the offered link must show the records the window missed")
+
+	// It is the ledger's own extent, so the records the fixture holds are all
+	// there -- including the ones the empty window excluded.
+	want, err := f.server.loadRecords(filter{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)})
+	require.NoError(t, err)
+	require.Len(t, rows, len(want), "the offered range must cover every record the ledger holds")
+}
+
+// TestAnEmptyLedgerOffersNothing pins the other half: a ledger with no records at
+// all has no extent to offer, so the empty state must not dangle a link to a
+// range that would show nothing.
+func TestAnEmptyLedgerOffersNothing(t *testing.T) {
+	srv := newEmptyServer(t)
+	body := get(t, srv.Handler(), "/").Body.String()
+
+	assert.Contains(t, body, "No records", "an empty ledger still renders its empty state")
+	assert.NotContains(t, body, "This ledger holds",
+		"a ledger with no records must not claim to hold some")
+	assert.Nil(t, widerHrefRe.FindStringSubmatch(body),
+		"a ledger with no records must offer no range")
 }
 
 // TestAnEmptyLedgerRendersWithoutError pins that a ledger with no records at

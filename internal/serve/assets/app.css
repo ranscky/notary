@@ -126,6 +126,22 @@ table.records th, table.records td {
 table.records th { color: var(--muted); font-weight: 600; }
 .record-row:hover { background: var(--panel); }
 
+/* Six columns, each one short enough to scan: the seq and the instant never
+   wrap, and the two prose columns get the room. Memory, reason kind and the
+   raw scope live on the record page the phrasing column links to, so dropping
+   them here loses nothing a reviewer cannot reach in one click. */
+table.records td.seq { white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.records td.at { white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.records td.event { white-space: nowrap; }
+table.records td.tier { white-space: nowrap; }
+table.records td.phrasing { min-width: 16rem; }
+table.records td.content { min-width: 14rem; }
+/* Break long words only when there is no other choice, so an id or a URL is not
+   split mid-token while a sentence still wraps normally. */
+table.records td { overflow-wrap: break-word; word-break: normal; }
+
+.empty-wider { color: var(--muted); }
+
 /* Tier badges: name as text AND colour; the rule style is the banner's. */
 .badge {
   display: inline-block;

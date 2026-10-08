@@ -47,6 +47,12 @@ type indexData struct {
 	Rows []recordRow
 	// Err is the filter's usage error, empty when the filter was usable.
 	Err string
+	// Wider is set ONLY when the window rendered no rows but the ledger holds
+	// records: it is the ledger's own extent, so the empty state can offer a
+	// range that will show them instead of leaving a blank table and a
+	// suggestion to guess. It is nil for an empty ledger, where there is
+	// nothing to show, and nil whenever the window did render rows.
+	Wider *widerRange
 }
 
 // Clean, Broken and NotVerified project chainView's three-way verdict into the

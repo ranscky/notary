@@ -244,3 +244,111 @@ func (s *Server) rowFor(rec record.Record, reveal bool) (recordRow, error) {
 		Tier: badgeFor(line.Tier),
 	}, nil
 }
+
+// widerRange is the range the records view offers when the requested window came
+// back empty but the ledger is not: the href to ask for it, the ledger's own
+// extent that the page names in words, and the bounds the href actually covers.
+//
+// From/To are the OFFERED bounds and may be narrower than Earliest/Latest: a
+// ledger wider than the view's span limit is offered its most recent stretch,
+// and Clamped records that so the page can say so rather than implying the whole
+// ledger is about to appear.
+type widerRange struct {
+	// Href is the query string that requests the offered range. It is built
+	// with url.Values.Encode over date values only, so it carries no raw id,
+	// and it is handed to the template whole.
+	Href string
+	// Earliest and Latest are the ledger's true extent, for the sentence.
+	Earliest time.Time
+	Latest   time.Time
+	// From and To are the bounds Href requests.
+	From time.Time
+	To   time.Time
+	// Count is how many records the ledger holds.
+	Count int
+	// Clamped reports that From/To are narrower than Earliest/Latest because
+	// the ledger's span exceeds the view's limit.
+	Clamped bool
+}
+
+// ledgerExtent is the range of event times a ledger holds, and how many records
+// it holds there.
+type ledgerExtent struct {
+	Earliest time.Time
+	Latest   time.Time
+	Count    int
+}
+
+// extent reads the ledger's own extent: the earliest and latest event time over
+// its decodable records, and how many it holds.
+//
+// It walks every stored row, so it is called ONLY on the records view's empty
+// path -- a window that returned rows never needs it, and the common case must
+// not pay for the rare one. It reads through the store's seq-ordered accessor,
+// the same one `notary verify` and the gap report use, so a corrupt row cannot
+// hide the records around it: such a row has no identity and no event time to
+// bound, so it is skipped, and a ledger whose rows are ALL undecodable reports
+// ok false rather than a zero extent that would read as "records from year 1".
+func (s *Server) extent() (ledgerExtent, bool, error) {
+	entries, err := s.store.SeqEntries()
+	if err != nil {
+		return ledgerExtent{}, false, fmt.Errorf("serve: read ledger extent: %w", err)
+	}
+	var ext ledgerExtent
+	for _, e := range entries {
+		if e.DecodeErr != nil {
+			continue
+		}
+		if ext.Count == 0 || e.Rec.At.Before(ext.Earliest) {
+			ext.Earliest = e.Rec.At
+		}
+		if ext.Count == 0 || e.Rec.At.After(ext.Latest) {
+			ext.Latest = e.Rec.At
+		}
+		ext.Count++
+	}
+	return ext, ext.Count > 0, nil
+}
+
+// widerWindow returns the range to offer when the requested window held no
+// records: the ledger's own extent, which is the range that shows the reviewer
+// what is actually there. A nil result means there is nothing to offer -- the
+// ledger is empty, or none of its rows decode -- and the page then says only
+// that the window was empty.
+//
+// The offered range is clamped to export.DefaultMaxSpan, the SAME cap the
+// filter enforces, because offering a range the page would immediately refuse
+// as over-cap would be a dead end: the reviewer follows the link and gets an
+// error. A ledger wider than the cap is therefore offered its most recent
+// stretch, and Clamped tells the page to say so. This is the one place the
+// console reads every stored row on a render, which is why it lives on the
+// empty path only.
+func (s *Server) widerWindow() (*widerRange, error) {
+	ext, ok, err := s.extent()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+
+	from, to := ext.Earliest, ext.Latest
+	clamped := false
+	if span := to.Sub(from); span > export.DefaultMaxSpan {
+		from = to.Add(-export.DefaultMaxSpan)
+		clamped = true
+	}
+
+	q := url.Values{}
+	q.Set("from", from.Format(time.RFC3339))
+	q.Set("to", to.Format(time.RFC3339))
+	return &widerRange{
+		Href:     "/?" + q.Encode(),
+		Earliest: ext.Earliest,
+		Latest:   ext.Latest,
+		From:     from,
+		To:       to,
+		Count:    ext.Count,
+		Clamped:  clamped,
+	}, nil
+}
