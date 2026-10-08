@@ -853,6 +853,67 @@ func TestVerifyViewRendersThreeDistinctStates(t *testing.T) {
 	assert.NotEqual(t, brokenBody, nvBody, "broken and not-verified must render differently")
 }
 
+// TestVerifyViewAttributesAGapLogBreakToTheGapLog pins that /verify renders a
+// gap-log integrity break exactly as `notary verify` prints it -- `seq N: field
+// — detail`, with NO `record` prefix -- because the break belongs to the gap
+// log, not to a record. ledger.GapIntegrityBreaks leaves Break.RecordID empty
+// for such a break, and the CLI's printing loop branches on exactly that: a
+// non-empty RecordID is prefixed `record <id> (seq N): ...`, an empty one is
+// printed as `seq N: field — detail`. The verify template must mirror that
+// branch, or a corrupt gap log renders a blank `record  (seq N): ...` that
+// reads as though a record by that name broke, misattributing the gap log's own
+// fault to a record.
+//
+// TestVerifyViewRendersThreeDistinctStates only ever exercises a "hash" break
+// WITH a record id (an edited record), so this attribution gap was invisible to
+// it.
+func TestVerifyViewAttributesAGapLogBreakToTheGapLog(t *testing.T) {
+	f := newFixture(t)
+
+	// The same tamper Task 3's status_test.go uses: write a gap entry, then
+	// rewrite its Detail without recomputing its hash. The line still decodes,
+	// so gap.Read reads it back, but its stored hash no longer matches -- a
+	// gap-log integrity break whose RecordID is empty. The entry matches a
+	// stored record (fixture-observed), so no cross-check "gap" break joins it.
+	writeGapLog(t, f.gapPath, gap.Entry{
+		At:            serveFixedNow,
+		Kind:          record.EventMemorySurfaced,
+		Scope:         record.Scope{UserID: "u1", AgentID: "a1"},
+		CorrelationID: "fixture-observed",
+		Detail:        "ok",
+	})
+	raw, err := os.ReadFile(f.gapPath)
+	require.NoError(t, err)
+	tampered := bytes.Replace(raw, []byte(`"detail":"ok"`), []byte(`"detail":"tampered"`), 1)
+	require.NotEqual(t, raw, tampered, "the fixture detail must appear verbatim for the rewrite to bite")
+	require.NoError(t, os.WriteFile(f.gapPath, tampered, 0o600))
+
+	rr := get(t, f.server.Handler(), "/verify")
+	require.Equal(t, http.StatusOK, rr.Code)
+	body := rr.Body.String()
+
+	require.Equal(t, 1, strings.Count(body, `<li class="break">`),
+		"the tampered gap log must render exactly one break line")
+	m := regexp.MustCompile(`(?s)<li class="break">(.*?)</li>`).FindStringSubmatch(body)
+	require.Len(t, m, 2, "the broken page must render a break line to inspect")
+	li := m[1]
+
+	// The one break is the gap log's own; build the CLI's own line for it and
+	// require the template to have rendered exactly that.
+	view, err := f.server.loadChain()
+	require.NoError(t, err)
+	require.Len(t, view.Breaks, 1)
+	b := view.Breaks[0]
+	require.Empty(t, b.RecordID, "a gap-log integrity break carries no record id")
+	want := "seq " + strconv.FormatUint(b.Seq, 10) + ": " + b.Field + " — " + b.Detail
+	assert.Equal(t, want, li,
+		"the break must render in the CLI's `seq N: field — detail` shape")
+	assert.NotContains(t, li, "record",
+		"a gap-log break must not carry a record prefix")
+	assert.Regexp(t, `^seq \d+: hash — gap log line 1: `, li,
+		"the break must name the gap-log line and no record")
+}
+
 // TestStoredTextCannotBecomeMarkup puts a script tag, a closing textarea tag
 // and a newline into a memory's content, a memory id and a gap entry's Detail,
 // and asserts every page that shows them renders them escaped -- on the whole

@@ -9,7 +9,7 @@
 <section class="verify-broken">
 <p><strong>Broken — {{len .Chain.Breaks}} break(s) found.</strong></p>
 <ul class="breaks">
-{{range .Chain.Breaks}}<li class="break">record {{.RecordID}} (seq {{.Seq}}): {{.Field}} — {{.Detail}}</li>{{end}}
+{{range .Chain.Breaks}}<li class="break">{{if .RecordID}}record {{.RecordID}} (seq {{.Seq}}): {{.Field}} — {{.Detail}}{{else}}seq {{.Seq}}: {{.Field}} — {{.Detail}}{{end}}</li>{{end}}
 </ul>
 <p>Re-run <code>notary verify</code> to check this against the ledger directly.</p>
 </section>

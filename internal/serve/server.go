@@ -42,8 +42,10 @@ type Options struct {
 	Ledger *ledger.Ledger
 
 	// Store is the underlying store, the read side of the same ledger. It is
-	// carried separately so a later view can read what the ledger's own
-	// methods do not expose (the chain entries the verify view walks).
+	// carried separately because the gap cross-check reads it directly:
+	// ledger.CollectBreaks and ledger.OutstandingGaps each take the ledger AND
+	// this store (Ledger deliberately does not expose its own store), so the
+	// verify and gaps views need the store to run that check.
 	Store store.Store
 
 	// GapLogPath names the gap log the gaps view reads (through gap.Read and

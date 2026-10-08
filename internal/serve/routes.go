@@ -20,6 +20,14 @@ import (
 // a Ctrl-C that appears not to work.
 const shutdownTimeout = 5 * time.Second
 
+// headerReadTimeout bounds how long a client may take to send a request's
+// headers, so a stalled or malicious peer cannot hold a connection open at the
+// header stage forever. It matches `notary proxy`'s own posture (the repo's
+// other HTTP server, which sets ReadHeaderTimeout too). Only the header read is
+// bounded: no read or write timeout is set, because a long but legitimate view
+// render must never be truncated.
+const headerReadTimeout = 5 * time.Second
+
 // Handler returns the console's HTTP surface: one ServeMux wrapped by two
 // guards, in this order.
 //
@@ -463,7 +471,10 @@ func (s *Server) Listen(port int) (net.Listener, error) {
 // could not be run or could not be shut down. A cancelled context is a clean
 // stop, not an error: that is what Ctrl-C does.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
-	srv := &http.Server{Handler: s.Handler()}
+	srv := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: headerReadTimeout,
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {

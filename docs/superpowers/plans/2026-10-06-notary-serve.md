@@ -329,7 +329,7 @@ git add internal/serve/ && git commit -m "feat(serve): the record, memory, gaps 
 notary serve: dashboard on http://127.0.0.1:<port> (read-only; Ctrl-C to stop)
 ```
 
-to **stderr** (stdout stays empty), and `Serve`s until `cmd.Context()` is done. `cmd.Context()` is nil for a command not run through `Execute`, so fall back to `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`. Register the command in `newRootCmd` and add `"serve"` to `rootSubcommands` in `root_test.go` — the test failing first is the expected red.
+to **stderr** (stdout stays empty), and `Serve`s until `cmd.Context()` is done. `cmd.Context()` is nil for a command not run through `Execute`, so fall back to `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)`. **[Superseded:** the shipped code wraps the context with `signal.NotifyContext` **unconditionally**, not only when `cmd.Context()` is nil: under `Execute` cobra supplies a plain `context.Background()`, so a nil check would never fire and SIGINT would be left to the runtime default (a hard kill). `runServe` falls back to `context.Background()` only when `cmd.Context()` is nil, then always wraps the result, so a signal is always a clean stop.**]** Register the command in `newRootCmd` and add `"serve"` to `rootSubcommands` in `root_test.go` — the test failing first is the expected red.
 
 - [ ] **Step 1: Write the failing tests**
 
