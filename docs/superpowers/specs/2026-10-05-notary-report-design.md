@@ -132,7 +132,9 @@ The checks, each of which is a fact the code can establish:
   read-only volume fails exactly when it matters.
 - `NOTARY_TRUSTED_KEYS_PATH` resolves and parses into a keyring (`sign.LoadTrustedKeys`).
 - `NOTARY_SIGNING_KEY` is set and loads as a signer (`sign.NewSigner`), *when the command being diagnosed
-  needs one* — reported as "not needed for the read paths" rather than as a failure when it is absent.
+  needs one* — reported as "most read paths need none, but the commands that sign something refuse to start
+  without one" rather than as a failure when it is absent, naming `reconcile`, `proxy` and `export` (which
+  refuses even with no `--checkpoint-out`, because it signs the checkpoints it may write).
 - `NOTARY_MEM0_BASE_URL` parses as an absolute `http`/`https` URL with a host — the same validation the proxy
   learned to do.
 - `NOTARY_MEM0_API_KEY` presence, reported as required only for the commands that make a Mem0 call.
@@ -143,7 +145,8 @@ The checks, each of which is a fact the code can establish:
 `doctor` exits non-zero when any finding is an error, so it can gate a pipeline; warnings alone do not.
 
 **`--generate-key`** writes a fresh ed25519 seed. It is explicit because silence is the safety property, and
-it is the only thing in the repository that creates key material. Default behaviour prints the
+it is the only **command** in the repository that creates key material — `scripts/demo.sh` mints a throwaway
+key of its own, into the environment and to no file. Default behaviour prints the
 `export NOTARY_SIGNING_KEY=…` line to **stdout** and writes no file — a caller can capture it however it
 likes. `--key-out PATH` writes the seed to a file instead, `0600`, and **refuses a path inside the repository**
 (the guardrail's rule, enforced rather than documented). The generated material is never printed as part of a
@@ -403,3 +406,16 @@ character) and asserts nothing is written outside `--out`.
    no shared test between them, so a change to `export.Line`'s rendering must be verified against both. The
    data being single-sourced is what keeps that cost bounded: neither renderer invents a field, so the two can
    differ in HTML but not in what they claim about a record.
+8. **The signing-key sentence in §4 was false, and the code and this document now agree.** §4 said an absent
+   signing key is "reported as 'not needed for the read paths' rather than as a failure", and its
+   `--generate-key` text called it "the only thing in the repository that creates key material". The phase's
+   final review checked both against the code and both are wrong: `export` is a read path and refuses to start
+   without a key (`cmd/notary/export.go:147`, before anything is opened, regardless of `--checkpoint-out`),
+   and `scripts/demo.sh` mints a throwaway key of its own. **Resolved: the text is corrected in place above
+   and the code was corrected with it** — the help, the finding and the doc comment now name `reconcile`,
+   `proxy` and `export`, and say "the only **command**", and the test that pinned the false phrase
+   (`internal/doctor/doctor_test.go`) was replaced by one that *forbids* it. This entry exists because a
+   corrected implementation and an uncorrected spec would otherwise contradict each other, which is precisely
+   the defect §4's sentence was an instance of: a claim that outlived the thing it described. Worth noting for
+   whoever reads this later: the false sentence was in the phase's *specification*, was copied into a help
+   text, was pinned by a test, and survived the review of the very task that wrote it.

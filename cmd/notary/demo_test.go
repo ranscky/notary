@@ -88,7 +88,7 @@ func TestDemoScriptRunsTheWholeSurfaceOffline(t *testing.T) {
 	assert.Contains(t, got, "ok: 9 records verified",
 		"the demo must verify the freshly seeded ledger before it breaks anything")
 
-	// The whole surface answered: each command's own success line.
+	// The read-path surface answered: each command's own success line.
 	for _, want := range []string{
 		"no outstanding gaps",
 		"export: wrote 9 record(s) to stdout",
