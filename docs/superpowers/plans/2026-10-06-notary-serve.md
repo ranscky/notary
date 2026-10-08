@@ -119,7 +119,7 @@ git commit -m "refactor(ledger): one definition of what is outstanding, for gaps
 **Interfaces:**
 - Consumes: `ledger.Ledger` reads (`ListRecords`, `GetRecord`, `ListRecordsByMemory`), `export.Render`, `export.ScopeMatches`, `export.DefaultMaxSpan`, `record.Scope`, `record.VisibilityTier`, `store.ErrNotFound`.
 - Produces:
-  - `type Options struct { Ledger *ledger.Ledger; Store store.Store; GapLogPath string; Verifier *sign.Verifier; KeyringPath string; Reveal io.Writer; Now func() time.Time }` and `func New(opts Options) *Server`
+  - `type Options struct { Ledger *ledger.Ledger; Store store.Store; GapLogPath string; Verifier *sign.Verifier; KeyringPath string; Reveal io.Writer; Now func() time.Time }` and `func New(opts Options) *Server` **[Superseded:** `Options` no longer carries `Verifier *sign.Verifier`; it carries `Keyring map[string]ed25519.PublicKey` (with `KeyringPath` kept separately, display-only), and `serve.New` derives the verifier itself, and only when `len(Keyring) > 0`, so an empty keyring means the chain check does not run rather than accusing a healthy ledger.**]**
   - `type tierBadge struct { Name, Class string }` and `func badgeFor(t record.VisibilityTier) tierBadge`
   - `type recordRow struct { Line export.Line; Tier tierBadge; RecordHref, MemoryHref string }`
   - `type filter struct { From, To time.Time; Scope record.Scope; Reveal bool }`
@@ -320,7 +320,7 @@ git add internal/serve/ && git commit -m "feat(serve): the record, memory, gaps 
 - Modify: `docs/superpowers/specs/2026-09-28-notary-v1-architecture-design.md` (§9, §13, §14), `README.md`, `.clinerules`
 
 **Interfaces:**
-- Consumes: `serve.New`, `serve.Options`, `Server.Listen`, `Server.Serve`; `config.Config` (`DBPath`, `GapLogPath`, `TrustedKeysPath`); `sign.LoadTrustedKeys`, `sign.NewVerifier`; `store.Open`, `ledger.New`.
+- Consumes: `serve.New`, `serve.Options`, `Server.Listen`, `Server.Serve`; `config.Config` (`DBPath`, `GapLogPath`, `TrustedKeysPath`); `sign.LoadTrustedKeys`, `sign.NewVerifier`; `store.Open`, `ledger.New`. **[Superseded:** the command no longer calls `sign.NewVerifier`; it passes `serve.Options.Keyring` (a `map[string]ed25519.PublicKey`) and `serve.New` derives the verifier itself, only when `len(Keyring) > 0`.**]**
 - Produces: `func newServeCmd() *cobra.Command` and `func runServe(cmd *cobra.Command, cfg *config.Config) error`.
 
 **Notes the implementer needs:** `--port` is the **only** flag, `Int`, default `4317`. No `--host`, no `--addr`, no `--include-sensitive`. `runServe` opens the store, builds `ledger.New(st, nil, nil)` (**nil signer — the structural read-only guarantee**), loads the keyring only when `cfg.TrustedKeysPath != ""` (a load failure is a plain-language error naming the path; an empty keyring means the check is not run, never a failure), builds `serve.Options` with `Reveal: cmd.ErrOrStderr()` and `KeyringPath: cfg.TrustedKeysPath`, then `Listen(port)`, prints

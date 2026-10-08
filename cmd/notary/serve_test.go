@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -157,6 +158,45 @@ func TestServeCmdStartsTheDashboardOnALoopbackPort(t *testing.T) {
 	}
 
 	assert.Empty(t, out.String(), "serve must write nothing to stdout")
+}
+
+// TestServeCmdStopsOnAnInterrupt pins the graceful-stop path -- the one path
+// production takes on Ctrl-C and that no other test covered. It sets the
+// command's context the way cobra does (a plain context.Background(), NOT a
+// signal-aware one), starts the dashboard on --port 0, waits for the printed
+// URL so the server is genuinely up, then delivers SIGINT to this process. If
+// runServe installs its own signal.NotifyContext, the signal cancels that
+// context and runServe returns nil. Without that wiring the signal takes the
+// runtime default action and kills the test process -- so this is a real
+// guard, not a restatement of the code.
+func TestServeCmdStopsOnAnInterrupt(t *testing.T) {
+	dbPath := serveFixture(t)
+
+	cmd, _, errOut := newTestServeCmd(t)
+	require.NoError(t, cmd.Flags().Set("port", "0"))
+
+	// The production shape: cobra sets a non-nil, non-signal-aware context, so
+	// the command must not rely on the context already reacting to signals.
+	cmd.SetContext(context.Background())
+
+	ch := make(chan error, 1)
+	go func() { ch <- runServe(cmd, &config.Config{DBPath: dbPath}) }()
+
+	// Only signal once the server is up. The URL is printed after the signal
+	// handler is installed, so observing it means the handler is in place --
+	// which is what keeps this from racing the handler's installation.
+	waitForServeURL(t, errOut)
+
+	p, err := os.FindProcess(os.Getpid())
+	require.NoError(t, err)
+	require.NoError(t, p.Signal(os.Interrupt), "delivering SIGINT to this process")
+
+	select {
+	case err := <-ch:
+		assert.NoError(t, err, "SIGINT must be a clean stop, not an error")
+	case <-time.After(10 * time.Second):
+		t.Fatal("runServe did not return after SIGINT")
+	}
 }
 
 // TestServeCmdRefusesAnOccupiedPort pins the bind failure's message: it names

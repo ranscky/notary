@@ -52,6 +52,11 @@ const serveDefaultPort = 4317
 // construction and not of anyone remembering not to call Append -- the same
 // structural trick `explain` uses, and the reason this command can never write
 // the chain it displays.
+//
+// It runs until stopped: runServe installs a signal-aware context around
+// whatever context cmd carries, so SIGINT/SIGTERM (Ctrl-C) shuts the dashboard
+// down gracefully rather than killing the process. See runServe for why that
+// wrapping is unconditional.
 func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -110,10 +115,19 @@ func newServeCmd() *cobra.Command {
 // untouched: the dashboard speaks HTTP, and nothing this command prints
 // belongs on stdout.
 //
-// cmd.Context() is nil for a command not run through Execute -- the test seam
-// constructs one directly and sets its own context -- so when it is nil the
-// command installs its own interrupt handler (SIGINT/SIGTERM via
-// signal.NotifyContext), which is what makes Ctrl-C a clean stop.
+// The context is made signal-aware here, unconditionally, because
+// cmd.Context() is NOT: under Execute cobra sets a plain
+// context.Background(), not one that reacts to signals, and the test seam
+// sets its own context directly. So runServe wraps whatever context it is
+// given with signal.NotifyContext (SIGINT/SIGTERM), falling back to a
+// background context only when cmd.Context() is nil. That wrapping is the
+// whole graceful-stop mechanism -- a signal cancels the context, Serve's
+// ctx.Done() branch shuts the server down, and runServe returns nil -- which
+// is why Ctrl-C is a clean stop rather than a hard kill. It is installed
+// after the listener is up, so a start-up failure never touches the signal
+// machinery, and before the URL is printed, so a reader who has seen the URL
+// can already stop us. This mirrors `notary proxy`, the repository's other
+// long-running command.
 func runServe(cmd *cobra.Command, cfg *config.Config) error {
 	port, err := cmd.Flags().GetInt("port")
 	if err != nil {
@@ -157,24 +171,35 @@ func runServe(cmd *cobra.Command, cfg *config.Config) error {
 		return err
 	}
 
-	// Report the port the listener actually bound -- never the flag -- so
-	// `--port 0` prints the real one a browser should open. The line goes to
-	// stderr; stdout stays empty.
-	realPort := ln.Addr().(*net.TCPAddr).Port
-	fmt.Fprintf(cmd.ErrOrStderr(),
-		"notary serve: dashboard on http://127.0.0.1:%d (read-only; Ctrl-C to stop)\n", realPort)
-
-	// cmd.Context() is nil for a command not run through Execute, so fall back
-	// to our own interrupt handler -- SIGINT or SIGTERM cancels the context,
-	// which Serve treats as a clean stop. The handler is installed only after
-	// the listener is up, so a start-up failure never touches the signal
-	// machinery.
+	// The signal-aware context is the whole graceful-stop mechanism: SIGINT or
+	// SIGTERM cancels it, and Serve's ctx.Done() branch then shuts the server
+	// down and returns nil. It is installed unconditionally, because
+	// cmd.Context() is NOT signal-aware -- under Execute cobra supplies a plain
+	// context.Background(), and the test seam supplies its own -- so a nil
+	// check would leave SIGINT to the runtime default and kill the process.
+	// It is installed after the listener is up (a start-up failure never
+	// touches the signal machinery) and before the URL is printed (so a reader
+	// who has seen the URL can already stop us).
 	ctx := cmd.Context()
 	if ctx == nil {
-		var stop context.CancelFunc
-		ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
+		ctx = context.Background()
 	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Report the port the listener actually bound -- never the flag -- so
+	// `--port 0` prints the real one a browser should open. The port is read
+	// through net.SplitHostPort rather than asserting the listener's concrete
+	// type to *net.TCPAddr: Listen returns a TCP listener today, but a type
+	// assertion would panic on any other listener, and library code must never
+	// panic. The line goes to stderr; stdout stays empty.
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("serve: reading the listener's port: %w", err)
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"notary serve: dashboard on http://127.0.0.1:%s (read-only; Ctrl-C to stop)\n", portStr)
 
 	return srv.Serve(ctx, ln)
 }
