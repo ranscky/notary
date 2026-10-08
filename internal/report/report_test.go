@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"html"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -86,23 +88,16 @@ func (f *fakeReader) ListRecordsByMemory(memoryID string) ([]record.Record, erro
 	return out, nil
 }
 
-// newTestRecord builds a valid record: a kept memory with reason
-// stored_by_mem0, a pair export.Phrase has a specified sentence for, so a test
-// can compare a page against the phrasing an export would print. The chain
-// fields are derived from the id, so two fixture records never collide.
-func newTestRecord(t *testing.T, id string, seq uint64, memoryID string, at time.Time) record.Record {
+// recordWith builds a valid fixture record from an event and a reason, filling
+// the chain fields from the id so two fixture records never collide.
+func recordWith(t *testing.T, id string, seq uint64, memoryID string, at time.Time, event record.EventType, reason record.Reason) record.Record {
 	t.Helper()
-	ev, err := record.NewObservedEvidence(record.SourceMem0Response, []byte(`{"outcome":"ok"}`))
-	require.NoError(t, err)
-	reason, err := record.NewObservedReason(record.ReasonStoredByMem0, ev)
-	require.NoError(t, err)
-
 	rec := record.Record{
 		ID:             record.RecordID(id),
 		Seq:            seq,
 		At:             at,
 		RecordedAt:     at.Add(3 * time.Second),
-		Event:          record.EventMemoryKept,
+		Event:          event,
 		Reason:         reason,
 		Subject:        record.Subject{MemoryID: memoryID, Scope: record.Scope{UserID: "u1"}, ContentHash: record.ContentHash(id)},
 		IdempotencyKey: record.IdemKey("idem-" + id),
@@ -113,6 +108,57 @@ func newTestRecord(t *testing.T, id string, seq uint64, memoryID string, at time
 	}
 	require.NoError(t, rec.Validate(), "the fixture must be a valid record")
 	return rec
+}
+
+// observedReason builds an Observed reason from a raw payload, which
+// record.NewObservedEvidence canonicalises.
+func observedReason(t *testing.T, kind record.ReasonKind, raw string) record.Reason {
+	t.Helper()
+	ev, err := record.NewObservedEvidence(record.SourceMem0Response, []byte(raw))
+	require.NoError(t, err)
+	reason, err := record.NewObservedReason(kind, ev)
+	require.NoError(t, err)
+	return reason
+}
+
+// newTestRecord builds a valid record: a kept memory with reason
+// stored_by_mem0, a pair export.Phrase has a specified sentence for, so a test
+// can compare a page against the phrasing an export would print. The chain
+// fields are derived from the id, so two fixture records never collide.
+func newTestRecord(t *testing.T, id string, seq uint64, memoryID string, at time.Time) record.Record {
+	t.Helper()
+	return recordWith(t, id, seq, memoryID, at, record.EventMemoryKept,
+		observedReason(t, record.ReasonStoredByMem0, `{"outcome":"ok"}`))
+}
+
+// observedRecord builds a record whose reason carries Observed evidence with
+// the given raw payload.
+func observedRecord(t *testing.T, id string, seq uint64, memoryID string, at time.Time, raw string) record.Record {
+	t.Helper()
+	return recordWith(t, id, seq, memoryID, at, record.EventMemoryKept,
+		observedReason(t, record.ReasonStoredByMem0, raw))
+}
+
+// reconstructedRecord builds a record whose reason carries Reconstructed
+// evidence: a non-empty basis, a rule and its version, and a confidence.
+func reconstructedRecord(t *testing.T, id string, seq uint64, memoryID string, at time.Time) record.Record {
+	t.Helper()
+	ev, err := record.NewReconstructedEvidence(
+		[]record.RecordID{"rec-basis-1", "rec-basis-2"}, "kept-by-content-match", "v2", 0.75)
+	require.NoError(t, err)
+	reason, err := record.NewReconstructedReason(record.ReasonKeptByContentMatch, ev)
+	require.NoError(t, err)
+	return recordWith(t, id, seq, memoryID, at, record.EventMemoryKept, reason)
+}
+
+// internalRecord builds a record whose reason carries an InternalNote.
+func internalRecord(t *testing.T, id string, seq uint64, memoryID string, at time.Time) record.Record {
+	t.Helper()
+	note, err := record.NewInternalNote("the sweep removed a memory no search covered")
+	require.NoError(t, err)
+	reason, err := record.NewInternalReason(record.ReasonRemovedByMem0, note)
+	require.NoError(t, err)
+	return recordWith(t, id, seq, memoryID, at, record.EventMemoryDropped, reason)
 }
 
 // withContent returns rec carrying text, marked sensitive when sensitive.
@@ -253,17 +299,45 @@ func reachableFromIndex(t *testing.T, dir string) map[string]bool {
 	return seen
 }
 
-// chainBlock returns the record page's collapsed chain-fields block. It is
-// sliced out so a test can compare the fields a verifier checks across two
-// renders byte for byte, rather than only asserting that each contains a hash.
+// detailsBlock returns a page's collapsed `<details class="…">` block, closing
+// tag included. It is sliced out so a test can assert what a collapsed block
+// carries -- and, just as important, that something is not inside it -- without
+// asserting on the rest of the page.
+func detailsBlock(t *testing.T, body, class string) string {
+	t.Helper()
+	open := `<details class="` + class + `">`
+	start := strings.Index(body, open)
+	require.NotEqual(t, -1, start, "the page carries no %s block", class)
+	end := strings.Index(body[start:], "</details>")
+	require.NotEqual(t, -1, end, "the %s block is not closed", class)
+	return body[start : start+end+len("</details>")]
+}
+
+// chainBlock returns the record page's collapsed chain-fields block, so a test
+// can compare the fields a verifier checks across two renders byte for byte,
+// rather than only asserting that each contains a hash.
 func chainBlock(t *testing.T, body string) string {
 	t.Helper()
-	const open, close = `<details class="chain">`, `</details>`
-	start := strings.Index(body, open)
-	require.NotEqual(t, -1, start, "the record page carries no chain block")
-	end := strings.Index(body[start:], close)
-	require.NotEqual(t, -1, end, "the chain block is not closed")
-	return body[start : start+end+len(close)]
+	return detailsBlock(t, body, "chain")
+}
+
+// canonicalIn returns the text a page carries inside its evidence block,
+// exactly as the page writes it -- escaped by the template engine, and by
+// nothing else. A test compares it against the bytes the renderer was given, so
+// a re-encoding, a pretty-printer or a raw splice all fail here.
+//
+// Extraction stops at the first `</pre>`, which is the block's own closing tag:
+// a reason whose own bytes carried a closing tag that reached the page raw
+// would truncate the text and fail the comparison rather than pass it.
+func canonicalIn(t *testing.T, block string) string {
+	t.Helper()
+	const open, close = `<pre class="canonical">`, `</pre>`
+	start := strings.Index(block, open)
+	require.NotEqual(t, -1, start, "the evidence block carries no encoding")
+	rest := block[start+len(open):]
+	end := strings.Index(rest, close)
+	require.NotEqual(t, -1, end, "the evidence block is not closed")
+	return rest[:end]
 }
 
 func TestReportRendersAnIndexAndAPagePerMemoryAndRecord(t *testing.T) {
@@ -506,6 +580,169 @@ func TestReportMemoryPageMatchesThePhrasingExportProduces(t *testing.T) {
 	assert.Contains(t, files[page("record", 0, "rec-p")], sentence)
 }
 
+// TestReportRecordPageCarriesTheEvidenceVerbatim is spec §12.4's test.
+//
+// The record page reads ONE field outside export.Line: the reason's evidence.
+// It may, because Line does not describe that field at all, so the report and
+// an exported line cannot describe it differently -- which is the whole point of
+// rendering from Line. What must hold is that the bytes on the page are the
+// bytes the record's hash covers. They are the reason's own canonical encoding,
+// Reason.Encode(), which record.CanonicalBytes writes into the hashed bytes
+// verbatim and which carries the payload as raw JSON, so pretty-printing,
+// re-indenting or re-encoding it would display something the hash does not
+// attest to -- worse, in an evidence artefact, than showing nothing.
+//
+// The encoding is also complete in a way the payload alone is not: an Observed
+// reason shows its source AND its payload, a Reconstructed one its basis, rule,
+// rule version and confidence, and an Internal one its note. The payload is the
+// only exported accessor on any of the three evidence types, so the narrower
+// rendering showed nothing at all for two of the three kinds.
+func TestReportRecordPageCarriesTheEvidenceVerbatim(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+
+	// One slice, one record per evidence kind. The observed payload is chosen
+	// so canonicalisation changes it (keys reordered, whitespace dropped,
+	// markup escaped to \u003c) and so the engine has JSON quotes to escape.
+	observed := observedRecord(t, "rec-observed", 0, "mem-ev", base,
+		`{"note":"<script>alert(1)</script></pre> & 1+1=2 'q'","n":[1,2,{"deep":true}]}`)
+	reconstructed := reconstructedRecord(t, "rec-recon", 1, "mem-ev", base.Add(time.Minute))
+	internal := internalRecord(t, "rec-internal", 2, "mem-ev", base.Add(2*time.Minute))
+
+	_, files, res := render(t, &fakeReader{records: []record.Record{observed, reconstructed, internal}},
+		report.Request{From: sliceFrom, To: sliceTo})
+
+	assert.Equal(t, report.Result{Memories: 1, Records: 3, Pages: 5}, res)
+
+	// encodedOf is the bytes the page must carry, read the way the renderer
+	// reads them: the reason's own canonical encoding.
+	encodedOf := func(t *testing.T, rec record.Record) string {
+		t.Helper()
+		raw, err := rec.Reason.Encode()
+		require.NoError(t, err, "the fixture's reason must encode")
+		return string(raw)
+	}
+	// blockOf asserts the page carries the evidence inside a collapsed block and
+	// returns what that block holds, decoded back out of the engine's escaping.
+	// It takes the test it was called from, so a failed assertion stops the
+	// subtest rather than the whole test.
+	blockOf := func(t *testing.T, seq uint64, id string) string {
+		t.Helper()
+		block := detailsBlock(t, files[page("record", seq, id)], "evidence")
+		text := canonicalIn(t, block)
+		require.NotEmpty(t, text, "%s: the evidence block must never be empty", id)
+		return html.UnescapeString(text)
+	}
+
+	t.Run("an observed reason shows its source and its payload", func(t *testing.T) {
+		got := blockOf(t, 0, "rec-observed")
+		assert.Equal(t, encodedOf(t, observed), got,
+			"the block must carry Reason.Encode()'s bytes, not a re-encoding of them")
+		assert.Contains(t, got, `"source":"mem0_response"`)
+		// The payload lands inside the envelope as the bytes the hash covers.
+		ev, ok := observed.Reason.Observed()
+		require.True(t, ok, "the fixture must carry observed evidence")
+		assert.True(t, strings.Contains(got, string(ev.Payload())),
+			"the canonical payload must appear byte-for-byte inside the encoding")
+		// Canonicalisation has already escaped the fixture's markup, so the
+		// bytes on the page carry no raw tag.
+		assert.Contains(t, got, `\u003cscript\u003e`)
+		assert.NotContains(t, got, "<script")
+	})
+
+	t.Run("a reconstructed reason shows its basis, rule, rule version and confidence", func(t *testing.T) {
+		got := blockOf(t, 1, "rec-recon")
+		assert.Equal(t, encodedOf(t, reconstructed), got)
+		assert.Contains(t, got, `"basis":["rec-basis-1","rec-basis-2"]`)
+		assert.Contains(t, got, `"rule":"kept-by-content-match"`)
+		assert.Contains(t, got, `"rule_version":"v2"`)
+		assert.Contains(t, got, `"confidence":0.75`)
+	})
+
+	t.Run("an internal reason shows its note", func(t *testing.T) {
+		got := blockOf(t, 2, "rec-internal")
+		assert.Equal(t, encodedOf(t, internal), got)
+		assert.Contains(t, got, "the sweep removed a memory no search covered")
+	})
+
+	t.Run("the encoding is escaped by the engine, and is one line", func(t *testing.T) {
+		block := detailsBlock(t, files[page("record", 0, "rec-observed")], "evidence")
+		text := canonicalIn(t, block)
+		assert.NotContains(t, text, `"`, "the encoding's quotes must be escaped, not emitted raw")
+		assert.Contains(t, text, "&#34;", "the escaped encoding must carry the entity, not a bare quote")
+		// The canonical encoding is a single line: a pretty-printer would
+		// break this, and its output would not be the bytes the hash covers.
+		assert.NotContains(t, text, "\n")
+		// A closing tag inside the reason cannot close the block: the block has
+		// exactly the one <pre> the template wrote.
+		assert.Equal(t, 1, strings.Count(block, "</pre>"))
+		// And no file anywhere in the report carries raw markup.
+		for name, body := range files {
+			assert.NotContains(t, body, "<script", "%s carries unescaped markup", name)
+		}
+	})
+
+	t.Run("a record carrying no evidence is refused, so no page can carry an empty block", func(t *testing.T) {
+		// The only way to carry no evidence is the zero Reason, and it is not a
+		// Reason this project admits: export.Render refuses it at the tier check
+		// before the evidence is reached, so the report writes no page for it --
+		// and therefore no empty evidence block. A record that DOES render has a
+		// valid reason, whose canonical encoding is never empty (Encode writes
+		// the version tag, kind and tier unconditionally), which is why the
+		// template's guard is the structural half of "absent, not empty" and no
+		// fixture can exercise a block that exists but holds nothing.
+		noEvidence := record.Record{
+			ID:         "rec-no-evidence",
+			Seq:        0,
+			At:         base,
+			RecordedAt: base,
+			Event:      record.EventMemoryKept,
+			// Reason is the zero value: no observed, reconstructed or internal
+			// evidence of any kind.
+			Subject: record.Subject{MemoryID: "mem-none", ContentHash: record.ContentHash("rec-no-evidence")},
+		}
+		require.Error(t, noEvidence.Validate(), "and it is not even a valid record")
+
+		_, out := tempRoot(t)
+		_, err := report.New(&fakeReader{records: []record.Record{noEvidence}}).Render(
+			context.Background(), report.Request{From: sliceFrom, To: sliceTo}, out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "rec-no-evidence", "the refusal must name the record")
+		assert.NoDirExists(t, out, "a refused render writes nothing")
+	})
+
+	t.Run("a reason that cannot be encoded is a render error, not a skipped block", func(t *testing.T) {
+		// This path IS reachable, and only through a Reader that is not the
+		// store. NewReconstructedEvidence does not validate its confidence, so a
+		// NaN one builds a reason that passes Reason.Validate and export.Render
+		// -- and then fails Reason.Encode, because encoding/json refuses NaN.
+		// record.ComputeHash fails on the same record (it hashes the encoding),
+		// so such a record can never have been appended to a ledger; a report
+		// that rendered it would describe a record the chain never attested to.
+		ev, err := record.NewReconstructedEvidence(
+			[]record.RecordID{"rec-basis-1"}, "kept-by-content-match", "v2", math.NaN())
+		require.NoError(t, err, "the confidence is not validated, which is how this is constructible")
+		reason, err := record.NewReconstructedReason(record.ReasonKeptByContentMatch, ev)
+		require.NoError(t, err)
+		unencodable := recordWith(t, "rec-nan", 0, "mem-ev", base, record.EventMemoryKept, reason)
+		require.NoError(t, unencodable.Validate(), "it is a valid record: the failure is in the encoding")
+
+		// The line renders, so the failure is genuinely the evidence read's.
+		_, err = export.Render(unencodable, false)
+		require.NoError(t, err, "export.Render must succeed, or this test proves nothing")
+		_, err = unencodable.Reason.Encode()
+		require.Error(t, err, "the reason must not encode")
+		_, err = record.ComputeHash(unencodable)
+		require.Error(t, err, "and so it cannot be hashed, and cannot be a stored record")
+
+		_, out := tempRoot(t)
+		_, err = report.New(&fakeReader{records: []record.Record{unencodable}}).Render(
+			context.Background(), report.Request{From: sliceFrom, To: sliceTo}, out)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "rec-nan", "the failure must name the record")
+		assert.Contains(t, err.Error(), "record: encode reason", "and must carry the cause, wrapped")
+		assert.NoDirExists(t, out, "a failed render writes nothing")
+	})
+}
 func TestReportRecordsTheCommandThatProducedIt(t *testing.T) {
 	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
 	reader := &fakeReader{records: []record.Record{newTestRecord(t, "rec-c", 0, "mem-c", base)}}

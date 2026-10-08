@@ -7,14 +7,24 @@
 //
 // Four properties shape it:
 //
-//   - Every page is rendered from export.Line, never from a second reading of
-//     the stored record. export.Render already decides the phrasing, the
-//     visibility tier, the content-withholding rule and every hash, so a page
-//     and an exported line cannot describe the same record differently. The
-//     package therefore imports internal/export and never internal/phrase: a
-//     report can reach no language model (design D10). A field export.Line does
-//     not carry is a field no page carries, deliberately: re-deriving it from
-//     the record is exactly how the two renderings would drift apart.
+//   - Every page is rendered from export.Line. export.Render already decides
+//     the phrasing, the visibility tier, the content-withholding rule and every
+//     hash, so a page and an exported line cannot describe the same record
+//     differently. The package therefore imports internal/export and never
+//     internal/phrase: a report can reach no language model (design D10).
+//
+//     The one field read from the record instead is the reason's evidence, and
+//     spec §12.4 is why it may be: export.Line carries ReasonKind and describes
+//     no evidence at all, so the rule's purpose -- one field, one description --
+//     is not touched, and the rule's opposite -- re-deriving a field the line
+//     does carry -- is what the report never does. What the page shows is the
+//     reason's own canonical encoding, Reason.Encode, verbatim: those are the
+//     bytes the record's hash was computed over (record.CanonicalBytes writes
+//     that encoding into the hashed bytes), and the encoding is complete -- it
+//     carries the source and payload of an Observed reason, the basis, rule,
+//     rule version and confidence of a Reconstructed one, and the note of an
+//     Internal one.
+//
 //   - A page's NAME is derived, never taken from an id. Record ids in this
 //     codebase carry '#' and ':' and '/' (corr-search-1#1,
 //     add_resolved:stored_by_mem0:<event-id>), and ids from outside carry '..'
@@ -24,11 +34,13 @@
 //     record.ContentHash(id) -- the project's existing, domain-separated,
 //     length-prefixed digest, reused rather than reinvented -- and the id is
 //     only ever displayed, escaped, by the template engine.
+//
 //   - It is a read path and one directory of output. It never touches the
 //     ledger or the gap log, never walks the chain, never verifies anything,
 //     never holds a key and never signs. The chain state arrives in Request
 //     already computed by the caller through the same break collection
 //     `notary verify` uses, so a page and the command cannot disagree.
+//
 //   - It is deterministic. Nothing here calls time.Now: the run is dated from
 //     Request.VerifiedAt, so two renders of one Request write byte-identical
 //     pages, and a report can be regenerated and compared.
@@ -258,11 +270,11 @@ func (rp *Reporter) Render(ctx context.Context, req Request, dir string) (Result
 	if err != nil {
 		return res, err
 	}
-	lines, err := toLines(ctx, records, req.IncludeSensitive)
+	rendered, err := renderRecords(ctx, records, req.IncludeSensitive)
 	if err != nil {
 		return res, err
 	}
-	pages, built, err := buildPages(req, dir, lines)
+	pages, built, err := buildPages(req, dir, rendered)
 	if err != nil {
 		return res, err
 	}
@@ -350,11 +362,27 @@ func (rp *Reporter) read(req Request) ([]record.Record, error) {
 	return records, nil
 }
 
-// toLines renders every record as its export.Line, in order. Every page is
-// built from these lines and nothing else: a page cannot describe a record
-// differently from an exported line, because it is the exported line.
-func toLines(ctx context.Context, records []record.Record, includeSensitive bool) ([]export.Line, error) {
-	lines := make([]export.Line, 0, len(records))
+// renderedRecord is one record as the pages need it: its exported line, which
+// every page renders, plus the one field the line does not carry -- the reason's
+// evidence (spec §12.4). Pairing them here rather than reading the record again
+// at the template keeps the two facts about one record travelling together.
+type renderedRecord struct {
+	line     export.Line
+	evidence *evidenceView
+}
+
+// renderRecords renders every record as its export.Line, in order, and reads
+// from each the one thing a line does not carry: the evidence its reason holds.
+//
+// A page cannot describe a record differently from an exported line, because
+// every field it shows IS the exported line; the evidence is the single
+// exception, and spec §12.4 is why it may be: Line describes no evidence field,
+// so there is no field on which the report and an export could disagree.
+//
+// A reason that cannot be encoded fails the whole render rather than losing its
+// evidence block: see evidenceOf.
+func renderRecords(ctx context.Context, records []record.Record, includeSensitive bool) ([]renderedRecord, error) {
+	rendered := make([]renderedRecord, 0, len(records))
 	for _, rec := range records {
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("report: %w", err)
@@ -363,9 +391,67 @@ func toLines(ctx context.Context, records []record.Record, includeSensitive bool
 		if err != nil {
 			return nil, fmt.Errorf("report: render record %q: %w", rec.ID, err)
 		}
-		lines = append(lines, line)
+		evidence, err := evidenceOf(rec)
+		if err != nil {
+			return nil, err
+		}
+		rendered = append(rendered, renderedRecord{line: line, evidence: evidence})
 	}
-	return lines, nil
+	return rendered, nil
+}
+
+// evidenceView is the evidence a record's reason carries: the reason's own
+// canonical encoding, as Reason.Encode returns it.
+//
+// The bytes are passed through with nothing added, removed or re-encoded. They
+// are the bytes the record's hash was computed over -- record.CanonicalBytes
+// writes Reason.Encode's output into the hashed bytes -- so pretty-printing,
+// re-indenting or re-encoding them would put something on the page that the
+// hash does not attest to, which in an evidence artefact is worse than showing
+// nothing. The encoding carries the payload as raw JSON
+// (observedEnvelope.Payload is a json.RawMessage), so the payload's own bytes
+// survive inside it unmodified too. The template engine escapes the text, and
+// the page collapses it, because it is unbounded.
+//
+// It is also complete, which ObservedEvidence.Payload() was not: Encode is the
+// whole self-describing reason -- version tag, kind, tier, and the payload for
+// that tier -- so an Observed reason shows its source AND its payload, a
+// Reconstructed one shows its basis, rule, rule version and confidence, and an
+// Internal one shows its note. Payload is the only exported accessor on any of
+// the three evidence types, so reading the canonical encoding is also the only
+// way to show two of the three kinds at all.
+type evidenceView struct {
+	// Canonical is the reason's canonical encoding, verbatim.
+	Canonical string
+}
+
+// evidenceOf returns the evidence to show for a record, or nil when there is
+// nothing to show.
+//
+// A reason that cannot be encoded is an error, not a missing block: Encode
+// validates first, and a reason failing that validation is a fact about the
+// data rather than a rendering detail, so the report refuses the record instead
+// of describing it with its why removed. The path is reachable only through a
+// Reader that is not the store: Encode also fails when encoding/json cannot
+// marshal the reason (a NaN confidence, which NewReconstructedEvidence does not
+// reject), and such a record cannot be hashed either -- record.ComputeHash
+// hashes the encoding -- so no ledger can hold one. A record read from a ledger
+// therefore always has an encoding, and a report that meets one that does not
+// is looking at something the chain never attested to.
+//
+// The block's presence is otherwise structural: Encode writes the version tag,
+// kind and tier unconditionally, so a valid reason never encodes to nothing,
+// and the nil case keeps an empty block off the page rather than expressing a
+// state a ledger can produce.
+func evidenceOf(rec record.Record) (*evidenceView, error) {
+	encoded, err := rec.Reason.Encode()
+	if err != nil {
+		return nil, fmt.Errorf("report: encode the reason of record %q: %w", rec.ID, err)
+	}
+	if len(encoded) == 0 {
+		return nil, nil
+	}
+	return &evidenceView{Canonical: string(encoded)}, nil
 }
 
 // pageFile is one file a Render writes.
@@ -388,7 +474,7 @@ type pageFile struct {
 // would silently overwrite one page with another. That cannot happen for a
 // ledger, whose Seq is unique, and it is refused rather than assumed because a
 // lost page in an evidence artefact is not a failure a reader could notice.
-func buildPages(req Request, dir string, lines []export.Line) ([]pageFile, Result, error) {
+func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile, Result, error) {
 	var res Result
 
 	used := map[string]string{}
@@ -400,11 +486,12 @@ func buildPages(req Request, dir string, lines []export.Line) ([]pageFile, Resul
 		return nil
 	}
 
-	// lines is Seq-ordered, so the first time a memory appears is its first
+	// rendered is Seq-ordered, so the first time a memory appears is its first
 	// record: the Seq its page is named from.
 	memoryPages := map[string]string{}
 	var memoryOrder []string
-	for _, line := range lines {
+	for _, rec := range rendered {
+		line := rec.line
 		if line.MemoryID == "" || memoryPages[line.MemoryID] != "" {
 			continue
 		}
@@ -416,14 +503,15 @@ func buildPages(req Request, dir string, lines []export.Line) ([]pageFile, Resul
 		memoryOrder = append(memoryOrder, line.MemoryID)
 	}
 
-	views := make([]recordView, len(lines))
+	views := make([]recordView, len(rendered))
 	byMemory := map[string][]recordView{}
-	for i, line := range lines {
+	for i, rec := range rendered {
+		line := rec.line
 		name := recordPageName(line.Seq, line.ID)
 		if err := claim(name, fmt.Sprintf("record %q", line.ID)); err != nil {
 			return nil, res, err
 		}
-		views[i] = newRecordView(line, name, memoryPages[line.MemoryID])
+		views[i] = newRecordView(rec, name, memoryPages[line.MemoryID])
 		byMemory[line.MemoryID] = append(byMemory[line.MemoryID], views[i])
 	}
 
@@ -564,10 +652,10 @@ func memoryPageName(firstSeq uint64, id string) string {
 }
 
 // recordView is one record as the pages render it. Every field is taken from
-// the export.Line or computed from it; nothing is re-derived from the stored
-// record, so no page can describe a record differently from an exported line.
-// The only fields that are not Line data are the two page names, which are
-// navigation rather than claims.
+// the export.Line or computed from it, so no page can describe a record
+// differently from an exported line. The fields that are not Line data are the
+// two page names, which are navigation rather than claims, and Evidence, which
+// the line does not describe at all (spec §12.4).
 type recordView struct {
 	// Line is the record's exported form: the phrasing, the tier, the content
 	// decision and every hash, exactly as an export would carry them.
@@ -576,6 +664,11 @@ type recordView struct {
 	// MemoryPage is its memory's page, empty for a record that names no memory.
 	Page       string
 	MemoryPage string
+
+	// Evidence is the evidence the record's reason carries, or nil when this
+	// package can read none -- which is what makes the block absent rather than
+	// an empty one on the page.
+	Evidence *evidenceView
 
 	// At and RecordedAt are Line.At and Line.RecordedAt in RFC3339Nano, the
 	// rendering a range and a record's own canonical encoding use. They are
@@ -598,13 +691,15 @@ type recordView struct {
 	ContentEmpty bool
 }
 
-// newRecordView renders one Line for the pages, with its own page's name and
+// newRecordView renders one record for the pages, with its own page's name and
 // its memory's.
-func newRecordView(line export.Line, page, memoryPage string) recordView {
+func newRecordView(rec renderedRecord, page, memoryPage string) recordView {
+	line := rec.line
 	view := recordView{
 		Line:       line,
 		Page:       page,
 		MemoryPage: memoryPage,
+		Evidence:   rec.evidence,
 		At:         line.At.UTC().Format(time.RFC3339Nano),
 		RecordedAt: line.RecordedAt.UTC().Format(time.RFC3339Nano),
 		ScopeText: scopeText(

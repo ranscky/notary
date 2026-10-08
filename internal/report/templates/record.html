@@ -20,6 +20,13 @@
 <h2>Content</h2>
 {{template "content" .Record}}
 
+{{with .Record.Evidence}}<h2>Evidence</h2>
+<details class="evidence">
+<summary>the reason's canonical encoding, shown verbatim: the bytes this record's hash covers</summary>
+<pre class="canonical">{{.Canonical}}</pre>
+</details>
+{{end}}
+
 <h2>Chain fields</h2>
 <details class="chain">
 <summary>prev_hash, hash, signature and signer_key_id</summary>
