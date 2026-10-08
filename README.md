@@ -5,7 +5,7 @@
 ![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-modernc.org%2Fsqlite-003B57?logo=sqlite&logoColor=white)
 ![cgo](https://img.shields.io/badge/cgo-not_required-brightgreen)
-![Dependencies](https://img.shields.io/badge/direct_dependencies-4-blue)
+![Dependencies](https://img.shields.io/badge/direct_dependencies-5-blue)
 ![tests](https://github.com/ranscky/notary/actions/workflows/test.yml/badge.svg)
 ![Scope](https://img.shields.io/badge/scope-ledger_reconciler_export_replay_explain_proxy_serve_report_doctor_(phases_1--12)-orange)
 
@@ -125,8 +125,9 @@ go run ./cmd/notary gaps
 it exits non-zero when any finding is an error, so it can gate a pipeline. It is also the one command that
 creates key material, and one call produces both halves of a fresh key pair — the private half printed as
 the `export` line to put in the environment, and `--trusted-keys-out` writing the matching public half, the
-one-base64-line-per-key file `NOTARY_TRUSTED_KEYS_PATH` names. So the trusted-keys file `verify`, `replay`
-and `report` read needs no external tool to produce it:
+one-base64-line-per-key file `NOTARY_TRUSTED_KEYS_PATH` names. `verify`, `replay` and `report` read that
+file (`report` only when it verifies — `--no-verify` spares it the keyring), `serve` uses it when one is
+configured, and `doctor` loads it as one of its checks — so producing it needs no external tool:
 
 ```bash
 go run ./cmd/notary doctor                                  # what is wrong here, and how to fix it
@@ -136,9 +137,9 @@ go run ./cmd/notary doctor --generate-key --trusted-keys-out trusted-keys.txt
 ```
 
 `verify` needs a ledger and a keyring of trusted public keys (base64 ed25519 public keys, one per line —
-the key ID is derived from the key, so the file can never disagree with itself). A signing key is needed
-only by `--write-checkpoint` and `--write-gap-checkpoint`, which sign a fresh attestation; plain `verify`,
-`--checkpoint` and `--gap-checkpoint` read and check, and never sign:
+the key ID is derived from the key, so the file can never disagree with itself). Within `verify`, a signing
+key is needed only by `--write-checkpoint` and `--write-gap-checkpoint`, which sign a fresh attestation;
+plain `verify`, `--checkpoint` and `--gap-checkpoint` read and check, and never sign:
 
 ```bash
 export NOTARY_DB_PATH=notary.db
@@ -149,10 +150,11 @@ go run ./cmd/notary verify --write-checkpoint cp.json # attest the head
 go run ./cmd/notary verify --checkpoint cp.json       # detect a removed tail
 ```
 
-`report` renders a slice of the ledger as a folder of static, self-contained HTML pages — an index, one page
-per memory, one per record, and the chain state — to open from disk, attach to a ticket or hand to an
-auditor. It is bounded by construction: exactly one subject, either `--memory <mem0-id>` or `--from`/`--to`
-narrowed by the four scope flags, and there is no `--all`:
+`report` renders a slice of the ledger as a folder of static HTML pages — an index, one page per memory, one
+per record, and the chain state — offline and free of any request, to open from disk or hand to an auditor.
+The folder travels as a whole: each page links the assets and its sibling pages relatively, so one page
+lifted out of it renders unstyled and its links dangle. It is bounded by construction: exactly one subject,
+either `--memory <mem0-id>` or `--from`/`--to` narrowed by the four scope flags, and there is no `--all`:
 
 ```bash
 export NOTARY_DB_PATH=notary.db
@@ -248,7 +250,7 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain`, `proxy
 - Record schema, unforgeable tiers, canonical hashing, negative-compile fixtures
 - SQLite store, hash-chained writes, crash safety, idempotent append
 - Signing, keyring, signed head checkpoints, cross-domain replay protection
-- `notary verify` (chain, truncation, gap cross-check) and `notary gaps`
+- `notary verify` (chain walk, gap cross-check, the gap log's own integrity) and `notary gaps`
 - Gap log with its own chain and signed checkpoints
 - Fail-open-loud interceptor and the in-process Mem0 interceptor (`Add`, `Search`)
 - Gap reconciliation as a library API (`AuditWriter.ReplayGaps`) — **no CLI** yet, because a gap
@@ -324,12 +326,13 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain`, `proxy
 - **`notary doctor`** — says what this deployment is missing and the exact command that fixes each finding:
   the ledger and the gap log (opened for real, and created when absent, with the finding saying when this run
   is the one that created them), the trusted keyring, the signing key (a warning rather than an error when it
-  is absent, because the read paths do not need one), the Mem0 base URL, the Mem0 API key (required only by
-  the commands that call Mem0 — `reconcile` — since `proxy` forwards the caller's own credential), the
-  sensitivity rules when they are configured, and the ledger's chain state through the same shared break
-  collection `notary verify` uses, reported as **not checked** — never as broken — when no trusted keys are
-  configured. It exits non-zero when any finding is an error, so it can gate a pipeline; warnings alone do
-  not. `--out DIR` writes the same findings to `DIR/setup.html`. **`--generate-key` is the only command that
+  is absent: most read paths need none, and `export` is the exception, refusing to start without one — even
+  with no `--checkpoint-out` — because it writes signed checkpoints), the Mem0 base URL, the Mem0 API key
+  (required only by the commands that call Mem0 — `reconcile` — since `proxy` forwards the caller's own
+  credential), the sensitivity rules when they are configured, and the ledger's chain state through the same
+  shared break collection `notary verify` uses, reported as **not checked** — never as broken — when no
+  trusted keys are configured. It exits non-zero when any finding is an error, so it can gate a pipeline;
+  warnings alone do not. `--out DIR` writes the same findings to `DIR/setup.html`. **`--generate-key` is the only command that
   creates key material**, and no other command and no other flag ever does (the demo script below mints its
   own throwaway key, from `/dev/urandom`, and never writes it to disk): it prints a fresh ed25519 seed as an
   `export NOTARY_SIGNING_KEY=…` line to stdout and writes no file, `--key-out PATH` writes that private half
