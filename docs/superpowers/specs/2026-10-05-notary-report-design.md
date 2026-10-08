@@ -311,3 +311,20 @@ character) and asserts nothing is written outside `--out`.
    a tier *"is not a confidence score and not a severity"* — so ranking them into a "highest" was wrong on the
    project's own terms, and whichever end one picked would bias the view. Counts per tier assert nothing the
    record does not: a memory with three `Observed` claims and one `Reconstructed` one says exactly that.
+4. **Whether the record page could carry the evidence payload at all** — found while implementing the pages,
+   and it is a contradiction inside this document rather than a new question. §7's record row requires "the
+   evidence payload"; §9 and the plan require every page to render from `export.Line`, "never from a second
+   reading of the record". `Line` carries `ReasonKind` and nothing else of the reason
+   (`internal/export/line.go:35`), so the two clauses cannot both hold — the payload is reachable only through
+   `record.Reason`'s accessors (`Reason.Observed()`, `Reason.Reconstructed()`, `Reason.InternalNote()`). Those
+   payloads are the typed Mem0 protocol structures (`mem0.AddPayload`, `mem0.EventStatusResponse`,
+   `mem0.SearchPerformedPayload`): event ids, statuses and search parameters, **not memory text**, so
+   `--include-sensitive` is not implicated. **Resolved: §7 wins, and the rule it appeared to break was never
+   about this field.** The "render from `Line`" rule exists so that "the report and an exported line cannot
+   describe a record differently"; for a field the line does not describe, that divergence is impossible, and
+   the rule's purpose is served by reading the payload from the one place it exists. Refusing it would leave
+   the evidence artefact without the *why* — the same partial-representation defect §12.2 rejected for the
+   signature. The payload renders **verbatim**, because `ObservedEvidence.Payload()` returns the canonicalised
+   bytes the record hash was computed over, so pretty-printing would display something the hash does not cover;
+   escaped by the template engine, collapsed like the long hex, and absent rather than empty when a record
+   carries no such evidence.
