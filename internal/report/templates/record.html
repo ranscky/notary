@@ -20,9 +20,22 @@
 <h2>Content</h2>
 {{template "content" .Record}}
 
+{{/* The guard below emits no block when a record's reason has no encoding. It is
+     NOT covered code: a Reason carrying no evidence is the zero value, and
+     export.Render refuses that at its tier check before this point, so no page
+     can have a record page without a block and no fixture can exercise the
+     false branch. Encode writes the version tag, kind and tier unconditionally,
+     so a valid reason never encodes to nothing either. It stays as the
+     structural half of "absent, not empty" -- see evidenceOf's doc comment. */}}
 {{with .Record.Evidence}}<h2>Evidence</h2>
 <details class="evidence">
 <summary>the reason's canonical encoding, shown verbatim: the bytes this record's hash covers</summary>
+<p class="disclosure">
+This is the record's own stored reason, exactly as the ledger hashes it, and it is not filtered:
+unlike the content above, it is the same whether or not <code>--include-sensitive</code> was given.
+It can therefore quote memory text that the sensitivity rules did not mark, so where the content
+above says no content was stored, this block may still quote it.
+</p>
 <pre class="canonical">{{.Canonical}}</pre>
 </details>
 {{end}}

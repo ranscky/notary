@@ -3,13 +3,18 @@
 <h1>Notary report</h1>
 
 <p class="provenance">
-This slice was rendered by <code>{{.Command}}</code>{{with .RunAt}}, as of {{.}}{{end}}.
+Rendered by the equivalent command <code>{{.Command}}</code>{{with .RunAt}}, as of {{.}}{{end}} --
+the invocation rebuilt from this report's request rather than transcribed from the shell that ran,
+so the flag order is normalised and flags that changed no page are not shown.
 </p>
 
 <dl class="slice">
 <dt>Slice</dt><dd>{{.Subject}}</dd>
 <dt>Scope</dt><dd>{{.Scope}}</dd>
 <dt>Sensitive content</dt><dd>{{.Sensitivity}}</dd>
+<dt>Evidence</dt><dd>not filtered: every record page shows the record's own stored reason, exactly as
+the ledger hashes it, and that is the same whether or not <code>--include-sensitive</code> was given.
+It can therefore quote memory text that the sensitivity rules did not mark.</dd>
 </dl>
 
 <p class="counts">{{.Counts}}.</p>

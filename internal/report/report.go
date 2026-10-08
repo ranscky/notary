@@ -143,6 +143,12 @@ type Request struct {
 	// When it is false -- the safe default -- the text is withheld and the page
 	// says so, with the marker export.Render sets. It changes only what is
 	// printed, never a hash: rendering is a read path.
+	//
+	// It governs the record's Content field and nothing else. The evidence block
+	// is the record's own stored reason, printed as the ledger hashes it, and is
+	// the same either way -- which can include memory text the sensitivity rules
+	// did not mark, because reconcile records whole upstream objects (spec
+	// §12.5). Both the block and the index say so.
 	IncludeSensitive bool
 
 	// Verify reports whether a verification ran for this report, and Breaks is
@@ -163,20 +169,26 @@ type Request struct {
 }
 
 // validate refuses a request this renderer cannot honour: one that names no
-// subject or two, or a range that is half-bound or backwards. It refuses before
-// anything is read or written, so a refused request leaves no directory and no
-// page behind.
+// subject or two, a Scope with a memory id, or a range that is half-bound or
+// backwards. It refuses before anything is read or written, so a refused request
+// leaves no directory and no page behind.
 //
 // The command refuses the same shapes first, naming the flags the operator
 // typed; this is the package's own guard against a caller that reads a range
 // backwards or hands over a memory id and a window at once, which would
-// otherwise silently render one of the two slices the request names.
+// otherwise silently render one of the two slices the request names. A Scope
+// with a memory id is refused rather than ignored for the same reason: the read
+// would not apply it while the index printed the scope it was given, so the page
+// would assert a narrowing the slice never had.
 func (r Request) validate() error {
 	switch {
 	case r.MemoryID == "" && r.From.IsZero():
 		return errors.New("report: no subject: set MemoryID, or From and To")
 	case r.MemoryID != "" && (!r.From.IsZero() || !r.To.IsZero()):
 		return fmt.Errorf("report: MemoryID %q and a range name two subjects; set exactly one", r.MemoryID)
+	case r.MemoryID != "" && r.Scope != (record.Scope{}):
+		return fmt.Errorf("report: MemoryID %q with Scope (%s): Scope narrows a RANGE and would be ignored, because a memory id already names the slice; set Scope only with a range",
+			r.MemoryID, scopeText(r.Scope.UserID, r.Scope.AgentID, r.Scope.AppID, r.Scope.RunID))
 	case r.MemoryID == "" && r.To.IsZero():
 		return errors.New("report: a range needs both From and To")
 	case r.To.Before(r.From):
@@ -281,7 +293,13 @@ func (rp *Reporter) Render(ctx context.Context, req Request, dir string) (Result
 	res = built
 
 	// The tree is created only once the slice has been read and every page
-	// named, so a read failure leaves no empty directory behind.
+	// named, so a read failure leaves no empty directory behind. A context
+	// cancelled on arrival is checked here too, for the same reason: an
+	// interrupted run must not leave a directory an operator could mistake for
+	// a report, and the slice being empty is not an excuse to create one.
+	if err := ctx.Err(); err != nil {
+		return res, fmt.Errorf("report: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return res, fmt.Errorf("report: create output directory %s: %w", dir, err)
 	}
@@ -412,6 +430,15 @@ func renderRecords(ctx context.Context, records []record.Record, includeSensitiv
 // (observedEnvelope.Payload is a json.RawMessage), so the payload's own bytes
 // survive inside it unmodified too. The template engine escapes the text, and
 // the page collapses it, because it is unbounded.
+//
+// It is also NOT FILTERED, and that is disclosed rather than mitigated (spec
+// §12.5): a record whose stored Content is withheld still prints its reason, and
+// the reason can quote memory text the sensitivity rules never marked, because
+// reconcile's observed payloads are whole upstream objects rather than curated
+// fields. IncludeSensitive governs the Content field and does not reach here.
+// Gating this block would withhold the why for every record to conceal it for
+// some, so the record page and the index both state what the reader is holding;
+// narrowing what reconcile records is a named open item for its own phase.
 //
 // It is also complete, which ObservedEvidence.Payload() was not: Encode is the
 // whole self-describing reason -- version tag, kind, tier, and the payload for
@@ -799,13 +826,21 @@ func (r Request) subjectText() string {
 		r.From.UTC().Format(time.RFC3339Nano), r.To.UTC().Format(time.RFC3339Nano))
 }
 
-// sensitivityText says what was done about sensitive content, which is a
-// rendering decision and never a hash.
+// sensitivityText says what was done about a record's stored CONTENT, which is
+// a rendering decision and never a hash.
+//
+// It is deliberately narrow. The index used to promise that "a record marked
+// sensitive prints no text", which was false: the flag governs the record's
+// Content field, while the evidence block prints the record's own stored reason,
+// which nothing filters (spec §12.5). reconcile's observed payloads are whole
+// upstream objects and can carry memory text the sensitivity rules never marked,
+// so the sentence a reader meets on the index must promise only what the
+// artefact does -- and the index's separate Evidence row says the rest.
 func (r Request) sensitivityText() string {
 	if r.IncludeSensitive {
-		return "included (--include-sensitive)"
+		return "included (--include-sensitive): a record whose stored content is marked sensitive prints that content"
 	}
-	return "withheld: a record marked sensitive prints no text"
+	return "withheld: a record whose stored content is marked sensitive prints no content, and its record page says so"
 }
 
 // commandLine reconstructs the notary report invocation this Request describes,

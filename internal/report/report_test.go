@@ -321,6 +321,10 @@ func chainBlock(t *testing.T, body string) string {
 	return detailsBlock(t, body, "chain")
 }
 
+// flat collapses a page's whitespace, so an assertion can quote a sentence the
+// way a reader reads it rather than the way the template happens to wrap it.
+func flat(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 // canonicalIn returns the text a page carries inside its evidence block,
 // exactly as the page writes it -- escaped by the template engine, and by
 // nothing else. A test compares it against the bytes the renderer was given, so
@@ -482,7 +486,11 @@ func TestReportWithholdsSensitiveContentByDefault(t *testing.T) {
 	_, files, res := render(t, &fakeReader{records: []record.Record{rec}},
 		report.Request{From: sliceFrom, To: sliceTo})
 
-	// No generated file carries the withheld text.
+	// No generated file carries the withheld text -- for THIS fixture, whose
+	// reason is a small curated payload. A record whose evidence quotes the
+	// memory text is a different, disclosed case: see
+	// TestReportDisclosesUnfilteredEvidence, which is where the leak and the
+	// sentences that describe it are asserted.
 	for name, body := range files {
 		assert.NotContains(t, body, secret, "%s carries withheld content", name)
 	}
@@ -743,6 +751,148 @@ func TestReportRecordPageCarriesTheEvidenceVerbatim(t *testing.T) {
 		assert.NoDirExists(t, out, "a failed render writes nothing")
 	})
 }
+
+// TestReportDisclosesUnfilteredEvidence is spec §12.5's test, and it is a
+// SUBSTANCE test rather than a wording one: its fixture is a record whose
+// evidence carries the very text the report withholds elsewhere.
+//
+// The premise that evidence could never hold memory text was false. reconcile's
+// observed payloads are whole upstream objects -- buildKeptObserved marshals the
+// whole mem0.Memory listing entry, whose Memory field is the memory text -- so a
+// default report (IncludeSensitive false) prints, inside a record's collapsed
+// envelope, text that the same run withholds in the content section and counts
+// as redacted. The operator's ruling is to disclose it in the artefact and fix
+// it at the source in its own phase: the block is NOT filtered, and both the
+// block and the index say so in as many words.
+//
+// This test therefore asserts the leak is real, that it is confined to the
+// evidence block, and that the block and the index warn about it -- so a later
+// edit cannot quietly drop the sentence that makes the artefact honest.
+func TestReportDisclosesUnfilteredEvidence(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	const secret = "the butler did it"
+
+	// An observed reason whose payload quotes the memory text (the shape
+	// reconcile's kept-memory payload has), on a record whose stored content is
+	// marked sensitive and carries the same text.
+	rec := withContent(
+		observedRecord(t, "rec-leak", 0, "mem-leak", base, `{"memory":"`+secret+`"}`),
+		secret, true)
+
+	_, files, res := render(t, &fakeReader{records: []record.Record{rec}},
+		report.Request{From: sliceFrom, To: sliceTo})
+
+	recordPage := files[page("record", 0, "rec-leak")]
+	block := detailsBlock(t, recordPage, "evidence")
+
+	t.Run("the record's page prints the withheld text, and says why", func(t *testing.T) {
+		assert.Equal(t, 1, res.Redacted, "the content was withheld and counted")
+
+		// The content section withholds it and says so...
+		assert.Contains(t, recordPage, `class="withheld"`)
+		// ...while the evidence block prints it verbatim, because the block is
+		// the record's own bytes and nothing filters them.
+		assert.Contains(t, html.UnescapeString(canonicalIn(t, block)), secret)
+		// It is inside the block and nowhere else on the page.
+		assert.NotContains(t, strings.Replace(recordPage, block, "", 1), secret,
+			"the text must not appear outside the evidence block")
+
+		// The block states what the reader is holding, and the consequence.
+		disclosure := flat(block)
+		assert.Contains(t, disclosure, "not filtered")
+		assert.Contains(t, disclosure, "--include-sensitive")
+		assert.Contains(t, disclosure, "memory text that the sensitivity rules did not mark")
+	})
+
+	t.Run("the withheld text is reached through the evidence block alone", func(t *testing.T) {
+		// This is also the guard on the operator's ruling: filtering the block
+		// would make the first assertion below fail, so a later change cannot
+		// quietly start gating evidence behind --include-sensitive.
+		// The memory page carries the same record's content, withheld, and no
+		// evidence -- so the same text is absent there and present on the
+		// record page. That discrepancy is exactly what the disclosure exists
+		// to make legible.
+		for name, body := range files {
+			if name == page("record", 0, "rec-leak") {
+				continue
+			}
+			assert.NotContains(t, body, secret, "%s must not carry the withheld text", name)
+		}
+		assert.Contains(t, files[page("memory", 0, "mem-leak")], `class="withheld"`)
+	})
+
+	t.Run("the index promises only what the artefact does", func(t *testing.T) {
+		index := flat(files["index.html"])
+		// What is true: the sensitive record's CONTENT is withheld.
+		assert.Contains(t, index, "prints no content")
+		// What is also true, and used to be left unsaid.
+		assert.Contains(t, index, "not filtered")
+		assert.Contains(t, index, "--include-sensitive")
+		assert.Contains(t, index, "memory text that the sensitivity rules did not mark")
+		// And the absolute promise the old wording made is gone.
+		assert.NotContains(t, index, "prints no text")
+	})
+}
+
+func TestReportRefusesScopeWithAMemoryID(t *testing.T) {
+	// Scope narrows a RANGE, through export.ScopeMatches. With a memory id it
+	// would be silently ignored -- while the index printed the scope it was
+	// given, asserting a narrowing the read never applied. That is the same
+	// silent sameness the half-window refusal exists to stop, so it is refused
+	// too, naming the field.
+	_, out := tempRoot(t)
+	_, err := report.New(&fakeReader{}).Render(context.Background(),
+		report.Request{MemoryID: "mem-a", Scope: record.Scope{UserID: "u1"}}, out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Scope")
+	assert.Contains(t, err.Error(), "mem-a")
+	assert.Contains(t, err.Error(), "user u1", "the refusal names the narrowing it would ignore")
+	assert.NoDirExists(t, out)
+}
+
+func TestReportRendersNoInstantWhenTheRunHasNone(t *testing.T) {
+	// VerifiedAt is the only clock the report has, and a Request carrying none
+	// renders pages with no instant rather than a fabricated one: the renderer
+	// never calls time.Now, and a page must not invent the instant it claims.
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	_, files, _ := render(t, &fakeReader{records: []record.Record{
+		newTestRecord(t, "rec-no-instant", 0, "mem-t", base),
+	}}, report.Request{From: sliceFrom, To: sliceTo})
+
+	index := flat(files["index.html"])
+	assert.Contains(t, index, "notary report --out", "the command is still recorded")
+	assert.NotContains(t, index, "as of", "a run with no instant dates itself not at all")
+	assert.NotContains(t, index, "0001-01-01", "and never prints the zero time")
+}
+
+func TestReportCancelledRunWritesNothing(t *testing.T) {
+	// Cancellation is checked between records, before the tree is created, and
+	// between pages: a cancelled run leaves nothing behind, not even the output
+	// directory, so an operator who interrupted a report cannot mistake the
+	// remains for a complete one.
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct {
+		name    string
+		records []record.Record
+	}{
+		{"a slice with records", []record.Record{newTestRecord(t, "rec-c", 0, "mem-c", base)}},
+		{"an empty slice", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, out := tempRoot(t)
+			res, err := report.New(&fakeReader{records: tc.records}).Render(ctx,
+				report.Request{From: sliceFrom, To: sliceTo}, out)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, 0, res.Pages, "nothing was written")
+			assert.NoDirExists(t, out, "a cancelled run creates no directory")
+		})
+	}
+}
+
 func TestReportRecordsTheCommandThatProducedIt(t *testing.T) {
 	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
 	reader := &fakeReader{records: []record.Record{newTestRecord(t, "rec-c", 0, "mem-c", base)}}
@@ -755,6 +905,9 @@ func TestReportRecordsTheCommandThatProducedIt(t *testing.T) {
 		})
 		index := files["index.html"]
 		assert.Contains(t, index, "notary report --out "+out)
+		// The page must not claim to be a transcript: the renderer is handed no
+		// argv, so what it records is the equivalent command.
+		assert.Contains(t, flat(index), "equivalent command")
 		assert.Contains(t, index, "--memory mem-c")
 		assert.Contains(t, index, "--include-sensitive")
 		// No verification ran, and the page says so through the command it
