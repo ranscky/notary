@@ -20,6 +20,7 @@ import (
 
 	"notary/config"
 	"notary/internal/record"
+	"notary/internal/store"
 )
 
 // reportFrom and reportTo bound a range that holds every fixture record:
@@ -681,13 +682,15 @@ func TestReportCmdNeverCreatesAMissingLedger(t *testing.T) {
 			stdout, err := executeRootCmd(t, "report",
 				"--out", out, "--from", reportFrom, "--no-verify")
 
-			// The exemption half of the hazard is pinned by the assertions
-			// BELOW, not by the NotContains further down: with the annotation
-			// removed the root pre-run creates the ledger (and its directory),
-			// report then renders it happily, and the run does not fail at all
-			// -- so there is no error message for a NotContains to inspect.
-			// "It must have refused" plus "neither path exists" is what fails
-			// in that mutation.
+			// The exemption half of the hazard is pinned by the loop BELOW, and
+			// by nothing else in this test. Measured, with the annotation
+			// removed: the root pre-run's ensureLedgerFile creates the file --
+			// a 0-byte one, since it opens, pings and closes without migrating
+			// -- so the run does still fail, but with THIS command's empty-file
+			// refusal, and it renders nothing. Every assertion here and below
+			// passes in that mutation; only "neither path exists" fails,
+			// because the pre-run has just created the ledger and its
+			// directory.
 			require.Error(t, err, "a ledger that is not there must be refused, not created")
 			for _, path := range mustNotExist {
 				_, statErr := os.Stat(path)
@@ -696,12 +699,13 @@ func TestReportCmdNeverCreatesAMissingLedger(t *testing.T) {
 			}
 
 			assert.Contains(t, err.Error(), dbPath, "the error must name the path that was looked for")
-			// Knowingly unreachable in that mutation, and kept as a guard for a
-			// different future: were the root pre-run ever to start failing
-			// where today it succeeds, this refusal would be the pre-run's text
-			// rather than report's, and a reader must not mistake it for a
-			// ledger-shape finding. It cannot testify that the exemption is
-			// honoured -- nothing here can, except the pair above.
+			// Kept, and it cannot fire -- not in that mutation, where the error
+			// is this command's own empty-file refusal and never the pre-run's
+			// text, and not in any other, because no run here reaches the
+			// pre-run's failure. It is a guard for a future pre-run that fails
+			// where today it succeeds: then this error would be the pre-run's,
+			// and a reader must not mistake it for a ledger-shape finding. It
+			// cannot testify that the exemption is honoured.
 			assert.NotContains(t, err.Error(), "creating ledger",
 				"the root pre-run must not have run: report carries the exemption")
 			assert.NoDirExists(t, out, "and it must write no report for a ledger it could not read")
@@ -746,6 +750,49 @@ func TestReportCmdRefusesAnEmptyLedgerFile(t *testing.T) {
 	require.NoError(t, statErr, "the refusal must not remove the file")
 	assert.Zero(t, info.Size(),
 		"and must not write a byte into it: a report never modifies the ledger it reads")
+}
+
+// TestReportCmdAcceptsARealLedgerWithNoRecords is the other side of that
+// boundary, and the side the refusal rests on: a ledger that EXISTS and holds no
+// records is a truthful answer -- "nothing was recorded in this window" -- and
+// must be reported, not refused, which is exactly why the check keys on the
+// FILE and not on the absence of records.
+//
+// The case has to be spelled out because every other fixture in this package is
+// a ledger WITH records, so a refusal keyed on the record count -- "a report
+// with nothing to report is refused" -- would pass the whole suite without this
+// test. The file is what tells the two apart: a real ledger carries its schema
+// before its first record, so it is tens of kilobytes where a placeholder is 0.
+func TestReportCmdAcceptsARealLedgerWithNoRecords(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ledger.db")
+	// A real ledger, and nothing in it: store.Open creates the schema, and this
+	// fixture closes it without appending a single record.
+	st, err := store.Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+	info, err := os.Stat(dbPath)
+	require.NoError(t, err)
+	require.NotZero(t, info.Size(), "a real ledger carries its schema, so it is never 0 bytes")
+
+	t.Setenv(config.EnvDBPath, dbPath)
+	t.Setenv(config.EnvGapLogPath, filepath.Join(dir, "notary-gaps.log"))
+	t.Setenv(config.EnvTrustedKeysPath, "")
+	out := filepath.Join(dir, "report")
+
+	stdout, err := executeRootCmd(t, "report",
+		"--out", out, "--from", reportFrom, "--no-verify")
+
+	require.NoError(t, err, "an empty LEDGER is not an empty FILE: it is reported, not refused")
+	assert.FileExists(t, filepath.Join(out, "index.html"), "the report is written")
+	assert.FileExists(t, filepath.Join(out, "verify.html"), "and so is the chain-state page")
+	assert.Contains(t, stdout, "0 memories, 0 records",
+		"and the run says truthfully what the slice holds: nothing was recorded in this window")
+
+	// A read path leaves the ledger alone: the run appended no record to it.
+	_, ok, n := ledgerSnapshot(t, dbPath)
+	assert.False(t, ok, "the report must not have written a record")
+	assert.Zero(t, n, "nor appended one to the ledger it read")
 }
 
 // ---------------------------------------------------------------------------

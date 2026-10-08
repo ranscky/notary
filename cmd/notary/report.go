@@ -473,14 +473,25 @@ func checkReportOutDir(dir string, force bool) error {
 // schema alone is tens of kilobytes before a single record is appended.
 //
 // What it does NOT check -- and what therefore still reaches store.Open -- is
-// that the file holds a LEDGER. A path that exists, is not empty and is not a
-// SQLite database is neither refused nor read as one: opening it makes SQLite
-// replace its contents with a fresh empty database, which the report then
-// renders zero memories over, and the operator's file is gone. That is not this
-// command's to fix: verify, export, replay, explain and gaps open their ledger
-// through the same store.Open and share the residual, so "is this file a Notary
-// ledger?" is a decision for a phase with its own spec rather than for one
-// command's existence check. It is recorded rather than quietly accepted.
+// that the file holds a LEDGER. Two shapes survive it, and neither is refused
+// for being the wrong file:
+//
+//   - a file of exactly ONE byte that is not a database: SQLite initialises it
+//     into an empty one, the run exits 0, and the report says "0 memories, 0
+//     records" over a file that never held a ledger. That one byte is the whole
+//     of the edge -- every other non-empty size is refused by the driver itself
+//     ("file is not a database (26)"), with the operator's file left intact;
+//   - a SQLite database that is not this project's ledger: not refused, and not
+//     destroyed either, but silently given this project's schema -- a `records`
+//     table appears beside the operator's own -- after which the report renders
+//     nothing and exits 0.
+//
+// Both are the same question this check deliberately does not answer -- "is
+// this file a Notary ledger?" -- and that question is not one command's to
+// answer: verify, export, replay, explain and gaps open their ledger through
+// the same store.Open, and the root pre-run creates the ledger file itself. It
+// belongs to a phase decision with its own spec. It is recorded rather than
+// quietly accepted.
 func requireLedgerFile(path string) error {
 	info, err := os.Stat(path)
 	switch {
