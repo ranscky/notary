@@ -33,8 +33,10 @@
 <p class="disclosure">
 This is the record's own stored reason, exactly as the ledger hashes it, and it is not filtered:
 unlike the content above, it is the same whether or not <code>--include-sensitive</code> was given.
-It can therefore quote memory text that the sensitivity rules did not mark, so where the content
-above says no content was stored, this block may still quote it.
+Text the content section withholds can still appear inside this block -- content marked sensitive
+prints no text above, and this block may still quote it -- and so can memory text that no
+sensitivity rule marked at all, which is what reconcile's whole upstream objects carry. Read this
+block as the record's own bytes, never as the reader's clearance.
 </p>
 <pre class="canonical">{{.Canonical}}</pre>
 </details>

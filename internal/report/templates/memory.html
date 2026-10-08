@@ -3,7 +3,7 @@
 <p class="nav"><a href="{{.Home}}">Report index</a></p>
 <h1>Memory <code>{{.MemoryID}}</code></h1>
 
-<p class="counts">Records in this slice: {{len .Records}}.</p>
+<p class="counts">Records in this slice: {{len .Records}} ({{.Tiers.Text}}).</p>
 
 <ol class="timeline">
 {{range .Records}}<li class="timeline-record">

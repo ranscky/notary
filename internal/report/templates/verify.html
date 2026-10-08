@@ -1,0 +1,39 @@
+{{template "head" .}}
+<main>
+<p class="nav"><a href="{{.Home}}">Report index</a></p>
+<h1>Chain state: {{.Chain.State}}</h1>
+
+<p class="chain-summary{{if .Chain.Breaks}} break-count{{end}}">{{.Chain.Summary}}</p>
+<p class="chain-scope">{{.Chain.Scope}}</p>
+
+{{if not .Chain.Verified}}<p class="not-verified">
+No verification ran for this report: the run skipped the chain walk, which is what
+<code>--no-verify</code> asks for and what makes a report possible on a ledger big enough that the
+walk is slow. A skipped verification is not a passing one -- had a verification run and found a
+break, this page would name the record and the field.
+</p>{{end}}
+
+{{if .Chain.Breaks}}<h2>Every break</h2>
+<p>
+Each break names the record it was found on, the field that failed and what the check found, in
+the order the break collection reported them. A break whose record this report's slice holds is
+linked to that record's page.
+</p>
+<table class="breaks">
+<thead>
+<tr><th>Seq</th><th>Record</th><th>Field</th><th>What failed</th></tr>
+</thead>
+<tbody>
+{{range .Chain.Breaks}}<tr><td>{{.Seq}}</td><td>{{if .Page}}<a href="{{$.Base}}/{{.Page}}"><code>{{.RecordID}}</code></a>{{else if .RecordID}}<code>{{.RecordID}}</code>{{else}}<span class="no-record">no record id: the break names a chain position, not a surviving row</span>{{end}}</td><td><code>{{.Field}}</code></td><td>{{.Detail}}</td></tr>
+{{end}}</tbody>
+</table>
+{{end}}
+
+<h2>What this page is not</h2>
+<p>
+It is the finding of the run that wrote this report{{with .RunAt}}, as of {{.}}{{end}} -- not a property of these
+files. Nothing in this folder verifies anything by itself. To check the chain yourself, run
+<code>notary verify</code> against the ledger this report was made from.
+</p>
+</main>
+{{template "foot" .}}

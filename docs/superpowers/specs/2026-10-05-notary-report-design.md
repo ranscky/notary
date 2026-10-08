@@ -180,7 +180,11 @@ notary report --out DIR (--memory <mem0-id> | --from <RFC3339> [--to <RFC3339>])
   between "you asked for this folder" and "it merged into my documents folder".
 - **`--include-sensitive`** matches `export` and `explain`: off by default, and it changes only what is
   printed, never a hash.
-- **`--no-verify`** skips §6's chain-state page. It exists for a ledger large enough that a full walk is slow.
+- **`--no-verify`** skips the **verification**, not the page: it spares the walk of the chain and the need for
+  trusted keys (§5's "no key" note), and `verify.html` is still written to say that no verification ran.
+  It exists for a ledger large enough that a full walk is slow. A page that vanished instead would tell a
+  reader nothing, and Review Focus 5 is explicit that "not verified" must never render as "clean" — an empty
+  break list and a check that never happened are indistinguishable unless the artefact says which it is.
 - **`report`'s help text names where the setup page lives** (`notary doctor --out`), which is the whole
   discoverability cost of §3 decision 6 and cheaper than giving `report` a second, non-evidence product.
 

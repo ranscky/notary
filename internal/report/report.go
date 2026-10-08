@@ -5,7 +5,7 @@
 // command -- so every page carries fields the ledger already holds, phrased for
 // a human, and nothing this package invented.
 //
-// Four properties shape it:
+// Six properties shape it:
 //
 //   - Every page is rendered from export.Line. export.Render already decides
 //     the phrasing, the visibility tier, the content-withholding rule and every
@@ -41,6 +41,21 @@
 //     already computed by the caller through the same break collection
 //     `notary verify` uses, so a page and the command cannot disagree.
 //
+//   - It is offline and self-contained. The page templates and the two assets
+//     -- the stylesheet and the filter script -- are embedded in the binary and
+//     written beside the pages, linked relatively, so a report opens from a
+//     folder with the network off and makes no request of any kind. The one
+//     script is the index's filter, and it is progressive enhancement by
+//     construction: the renderer writes the whole table and the script only
+//     hides rows, so with the script absent or blocked the table is complete
+//     and every link on it works.
+//
+//   - It says what it may claim about the chain, and nothing more. Request's
+//     Verify and Breaks arrive already computed, and the page tells three states
+//     apart -- verified clean, breaks found, and no verification ran -- because
+//     an empty break list is what both a passing check and a skipped one look
+//     like (see Request.Verify). "Not verified" is never rendered as "clean".
+//
 //   - It is deterministic. Nothing here calls time.Now: the run is dated from
 //     Request.VerifiedAt, so two renders of one Request write byte-identical
 //     pages, and a report can be regenerated and compared.
@@ -75,6 +90,13 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
+// assetFS holds the two assets, named individually rather than through a
+// directory glob: a file added under assets/ is then a deliberate addition to
+// every report rather than something a glob picked up on its own.
+//
+//go:embed assets/report.css assets/report.js
+var assetFS embed.FS
+
 // The page templates, by file. Each file is parsed into one template named
 // after its base name, so a page's template name and its file name are the same
 // string: a page cannot be written under a template that does not render it.
@@ -86,11 +108,27 @@ const (
 	memoryFile = "memory.html"
 	// recordFile renders one record's story.
 	recordFile = "record.html"
+	// verifyFile renders the chain state in full: clean, or every break with
+	// the record and the field that failed. It is written in every run,
+	// including one that skipped verification -- where it says that no
+	// verification ran, rather than leaving a reader to read an absent page, or
+	// an empty list, as a pass.
+	verifyFile = "verify.html"
 
 	// memoryDir and recordDir hold the two page kinds, so the report's root
 	// stays a short list of links however long the slice is.
 	memoryDir = "memory"
 	recordDir = "record"
+	// assetsDir holds the two files every page's head links to, relatively:
+	// the stylesheet and the filter script. They travel inside the binary and
+	// are written beside the pages, so the report needs nothing but the folder
+	// it is in.
+	assetsDir = "assets"
+	// cssAsset and jsAsset are the assets' names inside assetsDir. They are
+	// named here and not only in a template, so the file a page links is the
+	// file a render writes.
+	cssAsset = "report.css"
+	jsAsset  = "report.js"
 
 	templateGlob = "templates/*.html"
 	templateRoot = "report"
@@ -214,7 +252,10 @@ type Result struct {
 	// stored record marked it sensitive and IncludeSensitive was false. A
 	// record that carried no content is not counted: nothing was hidden.
 	Redacted int
-	// Pages is every file written into the output directory.
+	// Pages is every file written into the output directory, assets included --
+	// the pages and the two files their heads link to. A count that missed the
+	// assets would be a number the command reports to an operator that does not
+	// match the folder they are holding.
 	Pages int
 }
 
@@ -250,11 +291,13 @@ func New(r Reader) *Reporter {
 // that names where the report was written is the index, which records the
 // command that produced it.
 //
-// Pages are written memory first, record second, index last, so a run that
-// fails part-way leaves pages but no index claiming a complete report. A
-// request the renderer refuses writes nothing at all, not even dir. On error
-// the returned Result is not zero: it carries the pages written before the
-// failure, so a caller must check the error before trusting it.
+// Files are written in a fixed order -- the assets first, then memory pages,
+// record pages, the chain-state page, and the index last -- so a run that fails
+// part-way leaves files but no index claiming a complete report, and a page that
+// was written never points at an asset that was not. A request the renderer
+// refuses writes nothing at all, not even dir. On error the returned Result is
+// not zero: it carries the files written before the failure, so a caller must
+// check the error before trusting it.
 //
 // A nil ctx is treated as "no cancellation" rather than dereferenced.
 func (rp *Reporter) Render(ctx context.Context, req Request, dir string) (Result, error) {
@@ -325,6 +368,24 @@ func (rp *Reporter) Render(ctx context.Context, req Request, dir string) (Result
 		res.Pages++
 	}
 	return res, nil
+}
+
+// assetPages returns the two files every page's head links to, read from the
+// binary's own embed FS: a report never reads a stylesheet or a script from the
+// filesystem it is writing into, and the bytes it writes are the bytes it was
+// built with. A file the binary did not embed is an error rather than a
+// silently missing asset.
+func assetPages() ([]pageFile, error) {
+	assets := make([]pageFile, 0, 2)
+	for _, name := range []string{cssAsset, jsAsset} {
+		full := path.Join(assetsDir, name)
+		body, err := assetFS.ReadFile(full)
+		if err != nil {
+			return nil, fmt.Errorf("report: read embedded asset %s: %w", full, err)
+		}
+		assets = append(assets, pageFile{name: full, content: body})
+	}
+	return assets, nil
 }
 
 // parseTemplates parses every embedded page template into one set, so the three
@@ -481,16 +542,24 @@ func evidenceOf(rec record.Record) (*evidenceView, error) {
 	return &evidenceView{Canonical: string(encoded)}, nil
 }
 
-// pageFile is one file a Render writes.
+// pageFile is one file a Render writes: a page, rendered from the embedded
+// templates, or an asset, written verbatim.
 type pageFile struct {
 	// name is the file's path relative to the report's root, slash-separated.
 	// It is derived in this package from a sequence number and a content
-	// digest -- never from an id -- so it carries no separator of its own.
+	// digest -- never from an id -- or it is one of the four fixed names the
+	// report writes, so it carries no separator of its own.
 	name string
-	// template names the embedded template that renders the page.
+	// template names the embedded template that renders the page. It is empty
+	// for an asset, whose bytes are content.
 	template string
 	// data is the template's data.
 	data any
+	// content is the file's bytes when the file is an asset: it goes to disk
+	// verbatim, so nothing in a stylesheet or a script is ever read as a
+	// template. A nil content means the file is a page and renders from
+	// template.
+	content []byte
 }
 
 // buildPages names every page one render writes, in write order: every memory
@@ -504,6 +573,14 @@ type pageFile struct {
 func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile, Result, error) {
 	var res Result
 
+	// The assets are embedded, not rendered: they are the same two files in
+	// every report, and the only thing that could fail here is the binary not
+	// carrying them, which is a build failure rather than a bad request.
+	assets, err := assetPages()
+	if err != nil {
+		return nil, res, err
+	}
+
 	used := map[string]string{}
 	claim := func(name, what string) error {
 		if prev, taken := used[name]; taken {
@@ -511,6 +588,11 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 		}
 		used[name] = what
 		return nil
+	}
+	for _, asset := range assets {
+		if err := claim(asset.name, fmt.Sprintf("the asset %q", asset.name)); err != nil {
+			return nil, res, err
+		}
 	}
 
 	// rendered is Seq-ordered, so the first time a memory appears is its first
@@ -542,7 +624,10 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 		byMemory[line.MemoryID] = append(byMemory[line.MemoryID], views[i])
 	}
 
-	var files []pageFile
+	// The assets come first: they are the two files every page's head links to,
+	// and writing them before any page means an interrupted run leaves no page
+	// pointing at a file that is not there.
+	files := append([]pageFile{}, assets...)
 	for _, id := range memoryOrder {
 		files = append(files, pageFile{
 			name:     memoryPages[id],
@@ -553,6 +638,7 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 				Home:     subBase + "/" + indexFile,
 				MemoryID: id,
 				Records:  byMemory[id],
+				Tiers:    countTiers(byMemory[id]),
 			},
 		})
 	}
@@ -575,6 +661,31 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 	}
 	res.Records = len(views)
 
+	// The chain state, computed once from the request, and the page that carries
+	// it in full. The page is written in EVERY run, including one that skipped
+	// verification: an absent page says nothing at all, and a reader could not
+	// tell "no verification ran" from "the file was lost". The breaks link to a
+	// record's page when this slice holds that record, because verification
+	// covers the whole ledger and a slice need not contain the broken record.
+	pageOf := make(map[record.RecordID]string, len(views))
+	for _, view := range views {
+		if _, seen := pageOf[view.Line.ID]; !seen {
+			pageOf[view.Line.ID] = view.Page
+		}
+	}
+	chain := newChainView(req, pageOf)
+	files = append(files, pageFile{
+		name:     verifyFile,
+		template: verifyFile,
+		data: verifyPage{
+			Title: "Notary report: chain state",
+			Base:  rootBase,
+			Home:  rootBase + "/" + indexFile,
+			RunAt: runAtText(req.VerifiedAt),
+			Chain: chain,
+		},
+	})
+
 	// The index is written last, and lists the slice it belongs to. A record
 	// that names no memory is listed separately rather than dropped: it has a
 	// page, and a page nothing links to is a page a reader cannot find.
@@ -584,6 +695,7 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 			ID:      id,
 			Page:    memoryPages[id],
 			Records: len(byMemory[id]),
+			Tiers:   countTiers(byMemory[id]),
 		})
 	}
 	var memoryless []recordRow
@@ -610,6 +722,7 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 			Scope:       scopeText(req.Scope.UserID, req.Scope.AgentID, req.Scope.AppID, req.Scope.RunID),
 			Sensitivity: req.sensitivityText(),
 			Counts:      countsText(len(memoryOrder), len(views), res.Redacted),
+			Chain:       chain,
 			Memories:    memoryRows,
 			Memoryless:  memoryless,
 		},
@@ -617,7 +730,7 @@ func buildPages(req Request, dir string, rendered []renderedRecord) ([]pageFile,
 	return files, res, nil
 }
 
-// writePage renders one page and writes it. The page is rendered into memory
+// writePage renders one file and writes it. A page is rendered into memory
 // first, so a template failure cannot leave a half-written page behind, and the
 // target is checked to be inside dir before anything is created there.
 func writePage(tmpl *template.Template, dir string, p pageFile) error {
@@ -626,8 +739,19 @@ func writePage(tmpl *template.Template, dir string, p pageFile) error {
 		return err
 	}
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, p.template, p.data); err != nil {
-		return fmt.Errorf("report: render %s: %w", p.name, err)
+	switch {
+	case p.content != nil:
+		buf.Write(p.content)
+	case p.template != "":
+		if err := tmpl.ExecuteTemplate(&buf, p.template, p.data); err != nil {
+			return fmt.Errorf("report: render %s: %w", p.name, err)
+		}
+	default:
+		// Unreachable through buildPages, which names one or the other for
+		// every file it returns. Refused rather than assumed, because a page
+		// with no template would otherwise be written empty from a library
+		// that never panics.
+		return fmt.Errorf("report: %s has neither a template nor content", p.name)
 	}
 	if err := os.WriteFile(target, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("report: write %s: %w", p.name, err)
@@ -764,6 +888,10 @@ type indexPage struct {
 	Sensitivity string
 	// Counts is the summary: the counts with their nouns.
 	Counts string
+	// Chain is what this run may claim about the chain, with the state, what it
+	// means and where the detail is. It is the same chainView verify.html
+	// renders in full, so the two pages cannot disagree.
+	Chain chainView
 
 	// Memories is one row per memory in the slice; Memoryless is one row per
 	// record that names no memory, which is why it has no memory page.
@@ -780,6 +908,9 @@ type memoryRow struct {
 	Page string
 	// Records is how many of the slice's records belong to this memory.
 	Records int
+	// Tiers is that count broken down by visibility tier -- spec §12.3's
+	// resolution, and the same breakdown the memory's own page carries.
+	Tiers tierCounts
 }
 
 // recordRow is one record the index lists outside the memory table.
@@ -804,6 +935,9 @@ type memoryPage struct {
 	// Records is the slice's records for this memory, in Seq order, each
 	// linking to its own page.
 	Records []recordView
+	// Tiers is those records broken down by visibility tier, so the same
+	// memory's counts read the same way on both pages.
+	Tiers tierCounts
 }
 
 // recordPage is record.html's data: one record's story.
@@ -815,6 +949,199 @@ type recordPage struct {
 	Home string
 	// Record is the record, as its exported line renders it.
 	Record recordView
+}
+
+// verifyPage is verify.html's data: the chain state in full.
+type verifyPage struct {
+	Title string
+	// Base is the link prefix for a page at the report's root; Home is the
+	// index's link, relative to this page.
+	Base string
+	Home string
+	// RunAt is the instant the chain state is attributed to, or "" when the run
+	// carries no instant. The renderer never calls time.Now, so the state is
+	// dated from the Request or not at all.
+	RunAt string
+	// Chain is what this run may claim about the chain.
+	Chain chainView
+}
+
+// The three states a chainView can be in.
+const (
+	// chainClean: a verification ran for this report and collected no break.
+	chainClean = "clean"
+	// chainBroken: the break collection reported at least one break.
+	chainBroken = "broken"
+	// chainNotVerified: no verification ran, so the chain's state is unknown
+	// here. It is a state of its own precisely so that it is never rendered as
+	// chainClean.
+	chainNotVerified = "not verified"
+)
+
+// chainScope is the sentence both pages carry beside the state. The chain is
+// checked whole and these pages are a slice of it, because that is all a hash
+// chain admits: an intact part of a tampered chain is still tampered (spec §9).
+// Saying it on the page is what stops a report of one memory from implying that
+// the slice was checked.
+const chainScope = "The chain state covers the whole ledger, not this slice: an intact part of a " +
+	"tampered chain is still tampered, so a report of one memory states the whole chain's integrity, " +
+	"and a break may name a record this slice does not hold."
+
+// chainView is what one report may claim about the ledger's chain, derived once
+// from the Request so the index and verify.html cannot describe one run
+// differently.
+//
+// Three states, and len(Breaks) alone cannot tell them apart: Request.Verify's
+// doc says why. "Verified clean" and "not verified" both carry an empty break
+// list, and rendering the second as the first tells a reader the ledger was
+// checked when it was not -- the unbacked claim this project exists to refuse.
+type chainView struct {
+	// Verified reports that a verification ran for this report.
+	Verified bool
+	// State is one of chainClean, chainBroken or chainNotVerified.
+	State string
+	// Summary is the sentence for the state, without the state word in front of
+	// it: both pages read it as "state: summary". It is computed here rather
+	// than in a template, so no page computes its own.
+	Summary string
+	// Scope is the whole-ledger sentence above, carried as a field so both
+	// pages quote one string rather than two copies of it.
+	Scope string
+	// Breaks is every break the run reported, in the caller's order.
+	Breaks []breakView
+}
+
+// breakView is one break as verify.html renders it.
+type breakView struct {
+	// RecordID is the broken record's id, displayed escaped and never used as a
+	// name. It can be empty: a truncation break names a chain position whose
+	// row is gone.
+	RecordID string
+	// Seq is the broken record's chain position.
+	Seq uint64
+	// Field names the part of the record that failed.
+	Field string
+	// Detail explains the failure in the break collection's own words. It is
+	// carried through unchanged: a page that rewrote it would be describing a
+	// check it did not run.
+	Detail string
+	// Page is the broken record's page in THIS report, or "" when the slice does
+	// not hold that record -- which verification, covering the whole ledger, is
+	// free to report.
+	Page string
+}
+
+// newChainView derives the state, its sentence and its links from the request.
+//
+// A break is linked to its record's page only when this slice holds that
+// record, so the page never links a reader to a file that does not exist; a
+// break outside the slice still names its record and its field.
+func newChainView(req Request, pageOf map[record.RecordID]string) chainView {
+	view := chainView{
+		Verified: req.Verify,
+		Scope:    chainScope,
+		Breaks:   make([]breakView, 0, len(req.Breaks)),
+	}
+	for _, b := range req.Breaks {
+		view.Breaks = append(view.Breaks, breakView{
+			RecordID: string(b.RecordID),
+			Seq:      b.Seq,
+			Field:    b.Field,
+			Detail:   b.Detail,
+			Page:     pageOf[b.RecordID],
+		})
+	}
+	switch {
+	case len(view.Breaks) > 0:
+		view.State = chainBroken
+	case req.Verify:
+		view.State = chainClean
+	default:
+		view.State = chainNotVerified
+	}
+	view.Summary = chainSummary(view.State, req.Verify, len(view.Breaks))
+	return view
+}
+
+// chainSummary is the sentence a page prints after the state. It is built from
+// the two facts the Request carries -- whether a verification ran, and what it
+// collected -- so neither page can describe the run differently, and it never
+// uses the word "clean" for a state that was not checked.
+func chainSummary(state string, verified bool, breaks int) string {
+	switch state {
+	case chainBroken:
+		if verified {
+			return fmt.Sprintf(
+				"verification ran for this run and collected %s in the whole ledger, so the chain does not verify.",
+				plural(breaks, "break", "breaks"))
+		}
+		return fmt.Sprintf(
+			"this run was handed %s, so the chain does not verify; no verification ran for this run itself.",
+			plural(breaks, "break", "breaks"))
+	case chainClean:
+		return "verification ran for this run and collected no break in the whole ledger."
+	default:
+		return "no verification ran for this run, so this report says nothing about whether the chain is intact."
+	}
+}
+
+// tierCounts is the per-tier breakdown spec §12.3 resolved to: one count per
+// visibility tier, and no ranking of them.
+//
+// A tier is not a confidence score and not a severity (architecture spec §3),
+// so a "highest tier" column asserted a bias the record does not carry, and
+// whichever end one picked would have misread the data. Counts assert nothing:
+// a memory with two observed records and one reconstructed one says exactly
+// that.
+type tierCounts struct {
+	// Observed, Reconstructed and Internal count one memory's records, or the
+	// rows of one page, in each tier.
+	Observed      int
+	Reconstructed int
+	Internal      int
+}
+
+// Text renders the breakdown the way a reader reads it -- "2 observed, 1
+// reconstructed" -- leaving out the tiers this memory has no record in, since a
+// count of zero is a fact about the slice rather than about the memory.
+func (c tierCounts) Text() string {
+	parts := make([]string, 0, 3)
+	for _, tier := range []struct {
+		name  string
+		count int
+	}{
+		{"observed", c.Observed},
+		{"reconstructed", c.Reconstructed},
+		{"internal", c.Internal},
+	} {
+		if tier.count > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", tier.count, tier.name))
+		}
+	}
+	if len(parts) == 0 {
+		// Unreachable for the records a report renders: export.Render refuses
+		// a record whose tier is invalid, so every rendered record lands in one
+		// of the three counts above. It exists so a page renders "no records"
+		// rather than an empty cell if that ever stops being true.
+		return "no records"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// countTiers counts one memory's rendered records by visibility tier.
+func countTiers(views []recordView) tierCounts {
+	var counts tierCounts
+	for _, view := range views {
+		switch view.Line.Tier {
+		case record.Observed:
+			counts.Observed++
+		case record.Reconstructed:
+			counts.Reconstructed++
+		case record.Internal:
+			counts.Internal++
+		}
+	}
+	return counts
 }
 
 // subjectText names the slice: the memory, or the range.

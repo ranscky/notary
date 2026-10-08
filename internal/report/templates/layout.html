@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}}</title>
+<link rel="stylesheet" href="{{.Base}}/assets/report.css">
+<script src="{{.Base}}/assets/report.js" defer></script>
 </head>
 <body>
 {{end}}
@@ -11,8 +13,10 @@
 {{define "foot"}}<footer>
 <p>
 This page is a rendering of the ledger, not the ledger: the files here verify
-nothing by themselves. To check the chain, run <code>notary verify</code>
-against the ledger this report was made from.
+nothing by themselves. The chain state this report was made with is on
+<a href="{{.Base}}/verify.html">the chain-state page</a>; to check the chain
+yourself, run <code>notary verify</code> against the ledger this report was
+made from.
 </p>
 </footer>
 </body>

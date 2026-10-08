@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"notary/internal/export"
+	"notary/internal/ledger"
 	"notary/internal/record"
 	"notary/internal/report"
 )
@@ -39,13 +40,16 @@ var (
 	sliceTo   = time.Date(2024, 5, 31, 0, 0, 0, 0, time.UTC)
 )
 
-// pageNameRe is the only shape a generated page's name may have: the fixed
-// index, or a sequence number and eight hex digits inside one of the two page
-// directories. An id can reach a name in no other way.
-var pageNameRe = regexp.MustCompile(`^(index\.html|memory/[0-9]+-[0-9a-f]{8}\.html|record/[0-9]+-[0-9a-f]{8}\.html)$`)
+// pageNameRe is the only shape a generated file's name may have: one of the
+// fixed names the report writes -- the index, the chain-state page and the two
+// assets -- or a sequence number and eight hex digits inside one of the two
+// page directories. An id can reach a name in no other way.
+var pageNameRe = regexp.MustCompile(`^(index\.html|verify\.html|assets/report\.(css|js)|memory/[0-9]+-[0-9a-f]{8}\.html|record/[0-9]+-[0-9a-f]{8}\.html)$`)
 
-// hrefRe finds the links on a page, so a test can follow them.
-var hrefRe = regexp.MustCompile(`href="([^"]*)"`)
+// refRe finds the references a page carries -- every link, and the two asset
+// references its head carries -- so a test can follow them, and so a test can
+// assert that none of them names a host.
+var refRe = regexp.MustCompile(`(?:href|src)="([^"]*)"`)
 
 // fakeReader is an in-memory report.Reader. It answers like the store does --
 // the records whose At lies in [from, to], and a memory's own records -- and it
@@ -248,32 +252,41 @@ func allFilesUnder(t *testing.T, root string) []string {
 	return files
 }
 
-// assertLinksResolve asserts that every link on a page resolves, relative to
-// that page, to a file that exists under dir.
+// assertLinksResolve asserts that every reference on a page -- every link, and
+// the asset references its head carries -- resolves, relative to that page, to
+// a file that exists under dir.
+//
+// A file that is not a page is skipped: an asset carries no references, and
+// requiring one would be requiring a stylesheet to link somewhere.
 func assertLinksResolve(t *testing.T, dir, page string) {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(page)))
 	require.NoError(t, err)
-	hrefs := hrefRe.FindAllStringSubmatch(string(body), -1)
-	require.NotEmpty(t, hrefs, "%s carries no links at all", page)
-	for _, m := range hrefs {
-		href := m[1]
-		if href == "" || strings.HasPrefix(href, "#") {
+	if !strings.HasSuffix(page, ".html") {
+		return
+	}
+	refs := refRe.FindAllStringSubmatch(string(body), -1)
+	require.NotEmpty(t, refs, "%s carries no links at all", page)
+	for _, m := range refs {
+		ref := m[1]
+		if ref == "" || strings.HasPrefix(ref, "#") {
 			continue
 		}
-		target := filepath.Join(dir, filepath.Dir(filepath.FromSlash(page)), filepath.FromSlash(href))
+		target := filepath.Join(dir, filepath.Dir(filepath.FromSlash(page)), filepath.FromSlash(ref))
 		info, serr := os.Stat(target)
-		assert.NoError(t, serr, "%s links to %q, which does not exist", page, href)
+		assert.NoError(t, serr, "%s links to %q, which does not exist", page, ref)
 		if serr == nil {
-			assert.True(t, info.Mode().IsRegular(), "%s links to %q, which is not a file", page, href)
+			assert.True(t, info.Mode().IsRegular(), "%s links to %q, which is not a file", page, ref)
 		}
 	}
 }
 
-// reachableFromIndex follows every link from index.html and returns the pages
-// it reached. A page nothing points at is a page a reader cannot get to, which
-// is why the tree assertions compare against this and not only against the
-// absence of a broken link.
+// reachableFromIndex follows every reference from index.html -- links and the
+// asset references in a page's head -- and returns the files it reached. A page
+// nothing points at is a page a reader cannot get to, which is why the tree
+// assertions compare against this and not only against the absence of a broken
+// link; the assets count for the same reason, since a report whose stylesheet
+// and script were never linked has lost them.
 func reachableFromIndex(t *testing.T, dir string) map[string]bool {
 	t.Helper()
 	seen := map[string]bool{"index.html": true}
@@ -283,12 +296,12 @@ func reachableFromIndex(t *testing.T, dir string) map[string]bool {
 		queue = queue[1:]
 		body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(current)))
 		require.NoError(t, err)
-		for _, m := range hrefRe.FindAllStringSubmatch(string(body), -1) {
-			href := m[1]
-			if href == "" || strings.HasPrefix(href, "#") {
+		for _, m := range refRe.FindAllStringSubmatch(string(body), -1) {
+			ref := m[1]
+			if ref == "" || strings.HasPrefix(ref, "#") {
 				continue
 			}
-			target := filepath.ToSlash(filepath.Join(filepath.Dir(filepath.FromSlash(current)), filepath.FromSlash(href)))
+			target := filepath.ToSlash(filepath.Join(filepath.Dir(filepath.FromSlash(current)), filepath.FromSlash(ref)))
 			if seen[target] {
 				continue
 			}
@@ -365,12 +378,15 @@ func TestReportRendersAnIndexAndAPagePerMemoryAndRecord(t *testing.T) {
 
 	// The created tree: the index, one page per memory, one per record.
 	assert.Equal(t, []string{
+		"assets/report.css",
+		"assets/report.js",
 		"index.html",
 		page("memory", 0, "mem-a"),
 		page("memory", 2, "mem-b"),
 		page("record", 0, "rec-a1"),
 		page("record", 1, "rec-a2"),
 		page("record", 2, "rec-b1"),
+		"verify.html",
 	}, treeNames(t, out))
 
 	// Every page is reachable from the index, and every link on every page
@@ -392,7 +408,7 @@ func TestReportRendersAnIndexAndAPagePerMemoryAndRecord(t *testing.T) {
 	assert.NotContains(t, memA, "rec-b1")
 	assert.Contains(t, memA, page("record", 0, "rec-a1"))
 
-	assert.Equal(t, report.Result{Memories: 2, Records: 3, Pages: 6}, res)
+	assert.Equal(t, report.Result{Memories: 2, Records: 3, Pages: 9}, res)
 }
 
 func TestReportPageFilenamesAreDerivedNotTakenFromIds(t *testing.T) {
@@ -421,9 +437,12 @@ func TestReportPageFilenamesAreDerivedNotTakenFromIds(t *testing.T) {
 	// The created tree is exactly the derived one: no part of an id reached a
 	// name.
 	assert.Equal(t, []string{
+		"a/out/assets/report.css",
+		"a/out/assets/report.js",
 		"a/out/index.html",
 		"a/out/" + page("memory", 0, memoryID),
 		"a/out/" + page("record", 0, recordID),
+		"a/out/verify.html",
 		"a/sibling.txt",
 	}, allFilesUnder(t, root))
 
@@ -472,10 +491,7 @@ func TestReportEscapesStoredText(t *testing.T) {
 	}
 
 	// And no generated file anywhere carries raw markup.
-	for name, body := range files {
-		assert.NotContains(t, body, "<script", "%s carries unescaped markup", name)
-		assert.NotContains(t, body, "</textarea", "%s carries an unescaped close tag", name)
-	}
+	assertOnlyTheFiltersScriptTag(t, files)
 }
 
 func TestReportWithholdsSensitiveContentByDefault(t *testing.T) {
@@ -619,7 +635,7 @@ func TestReportRecordPageCarriesTheEvidenceVerbatim(t *testing.T) {
 	_, files, res := render(t, &fakeReader{records: []record.Record{observed, reconstructed, internal}},
 		report.Request{From: sliceFrom, To: sliceTo})
 
-	assert.Equal(t, report.Result{Memories: 1, Records: 3, Pages: 5}, res)
+	assert.Equal(t, report.Result{Memories: 1, Records: 3, Pages: 8}, res)
 
 	// encodedOf is the bytes the page must carry, read the way the renderer
 	// reads them: the reason's own canonical encoding.
@@ -684,9 +700,7 @@ func TestReportRecordPageCarriesTheEvidenceVerbatim(t *testing.T) {
 		// exactly the one <pre> the template wrote.
 		assert.Equal(t, 1, strings.Count(block, "</pre>"))
 		// And no file anywhere in the report carries raw markup.
-		for name, body := range files {
-			assert.NotContains(t, body, "<script", "%s carries unescaped markup", name)
-		}
+		assertOnlyTheFiltersScriptTag(t, files)
 	})
 
 	t.Run("a record carrying no evidence is refused, so no page can carry an empty block", func(t *testing.T) {
@@ -798,10 +812,26 @@ func TestReportDisclosesUnfilteredEvidence(t *testing.T) {
 			"the text must not appear outside the evidence block")
 
 		// The block states what the reader is holding, and the consequence.
+		//
+		// The consequence is asserted against THIS fixture's case rather than as
+		// three bare phrases: the fixture's content block is the withholding one
+		// -- it renders the marker export.Render set -- and the sentence must say
+		// that text withheld exactly like that can still appear in the block the
+		// sentence sits in. A sentence that inverted the relation while keeping
+		// every phrase ("the evidence is filtered too, so nothing withheld
+		// appears here: not filtered, --include-sensitive, ...") fails this.
+		line, err := export.Render(rec, false)
+		require.NoError(t, err)
+		require.Equal(t, "sensitive", line.Redacted,
+			"this fixture's case is the one the sentence names; if export renamed this marker, the sentence must be renamed with it")
+		assert.Contains(t, recordPage, "Content withheld: <code>"+line.Redacted+"</code>",
+			"the page must be the withholding case, or the sentences below prove nothing")
 		disclosure := flat(block)
+		assert.Contains(t, disclosure,
+			"Text the content section withholds can still appear inside this block")
+		assert.Contains(t, disclosure, "marked "+line.Redacted+" prints no text above")
 		assert.Contains(t, disclosure, "not filtered")
 		assert.Contains(t, disclosure, "--include-sensitive")
-		assert.Contains(t, disclosure, "memory text that the sensitivity rules did not mark")
 	})
 
 	t.Run("the withheld text is reached through the evidence block alone", func(t *testing.T) {
@@ -829,6 +859,9 @@ func TestReportDisclosesUnfilteredEvidence(t *testing.T) {
 		assert.Contains(t, index, "not filtered")
 		assert.Contains(t, index, "--include-sensitive")
 		assert.Contains(t, index, "memory text that the sensitivity rules did not mark")
+		// The narrowed row still says the consequence for the content it does
+		// withhold, so a reader is not left to infer it from the general case.
+		assert.Contains(t, index, "including text a record's content section withholds")
 		// And the absolute promise the old wording made is gone.
 		assert.NotContains(t, index, "prints no text")
 	})
@@ -867,9 +900,13 @@ func TestReportRendersNoInstantWhenTheRunHasNone(t *testing.T) {
 
 func TestReportCancelledRunWritesNothing(t *testing.T) {
 	// Cancellation is checked between records, before the tree is created, and
-	// between pages: a cancelled run leaves nothing behind, not even the output
-	// directory, so an operator who interrupted a report cannot mistake the
-	// remains for a complete one.
+	// between pages. The cancellation this test installs takes effect BEFORE the
+	// run starts, so what it proves is the arrival case: a run whose context is
+	// already cancelled writes nothing at all, not even the output directory,
+	// and an empty slice is no excuse to create one. A cancellation that lands
+	// after the tree exists is a different case, documented at Render: files are
+	// written in order and the index last, so an interrupted run leaves files
+	// but no index claiming a complete report.
 	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -991,10 +1028,13 @@ func TestReportNumbersPagesByLedgerSeqNotByReadOrder(t *testing.T) {
 		report.Request{From: sliceFrom, To: sliceTo})
 
 	assert.Equal(t, []string{
+		"assets/report.css",
+		"assets/report.js",
 		"index.html",
 		page("memory", 0, "mem-o"),
 		page("record", 0, "rec-late"),
 		page("record", 1, "rec-early"),
+		"verify.html",
 	}, treeNames(t, out))
 
 	// The memory's own page is its lifecycle in Seq order, not in read order.
@@ -1015,8 +1055,14 @@ func TestReportRendersRecordsThatBelongToNoMemory(t *testing.T) {
 	// A record with no memory gets a record page and no memory page, and the
 	// index still reaches it: a page nothing links to is a page a reader
 	// cannot find.
-	assert.Equal(t, []string{"index.html", page("record", 0, "add_requested#1")}, treeNames(t, out))
-	assert.Equal(t, report.Result{Records: 1, Pages: 2}, res)
+	assert.Equal(t, []string{
+		"assets/report.css",
+		"assets/report.js",
+		"index.html",
+		page("record", 0, "add_requested#1"),
+		"verify.html",
+	}, treeNames(t, out))
+	assert.Equal(t, report.Result{Records: 1, Pages: 5}, res)
 	assert.Contains(t, files["index.html"], page("record", 0, "add_requested#1"))
 	assertLinksResolve(t, out, "index.html")
 	assertLinksResolve(t, out, page("record", 0, "add_requested#1"))
@@ -1032,11 +1078,14 @@ func TestReportScopesARangeTheSameWayExportDoes(t *testing.T) {
 		report.Request{From: sliceFrom, To: sliceTo, Scope: record.Scope{UserID: "u1"}})
 
 	assert.Equal(t, []string{
+		"assets/report.css",
+		"assets/report.js",
 		"index.html",
 		page("memory", 0, "u1-mem"),
 		page("record", 0, "u1-rec"),
+		"verify.html",
 	}, treeNames(t, out))
-	assert.Equal(t, report.Result{Memories: 1, Records: 1, Pages: 3}, res)
+	assert.Equal(t, report.Result{Memories: 1, Records: 1, Pages: 6}, res)
 	assert.NotContains(t, files["index.html"], "u2-mem")
 }
 
@@ -1081,4 +1130,510 @@ func TestReportRefusesARequestThatNamesNoSingleSubject(t *testing.T) {
 	// A refused request writes nothing at all: no directory, no page, no
 	// partial report an operator could mistake for a complete one.
 	assert.NoDirExists(t, out)
+}
+
+// refPaths returns every reference a file carries, as the file writes it.
+func refPaths(body string) []string {
+	matches := refRe.FindAllStringSubmatch(body, -1)
+	refs := make([]string, 0, len(matches))
+	for _, m := range matches {
+		refs = append(refs, m[1])
+	}
+	return refs
+}
+
+// assetRef is the reference a page must use to reach an asset: a page at the
+// report's root reaches it with "./", a page one directory down with "../".
+// Nothing else resolves, which is why the report's assets have to travel with
+// it.
+func assetRef(pagePath, asset string) string {
+	if strings.Contains(pagePath, "/") {
+		return "../" + asset
+	}
+	return "./" + asset
+}
+
+// stripRecordBytes removes the two regions where a page renders a record's own
+// stored bytes verbatim: the content block, and the evidence encoding. It is
+// the offline scan's whole allowance, and it is deliberately narrow -- those
+// two <pre> blocks and nothing else -- so a URL anywhere else in any generated
+// file is the artefact's own reference and fails the scan.
+func stripRecordBytes(body string) string {
+	for _, class := range []string{"content", "canonical"} {
+		re := regexp.MustCompile(`(?s)<pre class="` + class + `">.*?</pre>`)
+		body = re.ReplaceAllString(body, "")
+	}
+	return body
+}
+
+// rowOf returns the index's table row for a memory, the row's own cells
+// included, so a test can assert what the row carries and what it does not. It
+// fails when no row names the memory, which is itself the assertion that the
+// row is in the HTML a reader gets.
+func rowOf(t *testing.T, body, memoryID string) string {
+	t.Helper()
+	for _, row := range strings.Split(body, "<tr>") {
+		if !strings.Contains(row, "<code>"+memoryID+"</code>") {
+			continue
+		}
+		end := strings.Index(row, "</tr>")
+		require.NotEqual(t, -1, end, "the row for %s is not closed", memoryID)
+		return row[:end]
+	}
+	require.Fail(t, "index.html carries no row for "+memoryID)
+	return ""
+}
+
+// breakRowOf returns the chain-state page's table row for a record id.
+func breakRowOf(t *testing.T, body, recordID string) string {
+	t.Helper()
+	for _, row := range strings.Split(body, "<tr>") {
+		if !strings.Contains(row, "<code>"+recordID+"</code>") {
+			continue
+		}
+		end := strings.Index(row, "</tr>")
+		require.NotEqual(t, -1, end, "the break row for %s is not closed", recordID)
+		return row[:end]
+	}
+	require.Fail(t, "verify.html carries no break row for "+recordID)
+	return ""
+}
+
+// assertOnlyTheFiltersScriptTag asserts that no generated file carries raw
+// markup. Every page may carry exactly one <script tag -- the filter, linked
+// relatively -- and a file that is not a page may carry none; a second tag, or
+// a bare one, is stored text that reached a page as markup rather than as text,
+// which is what the escaping tests exist to catch.
+func assertOnlyTheFiltersScriptTag(t *testing.T, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		assert.NotContains(t, body, "<script>", "%s carries unescaped markup", name)
+		assert.NotContains(t, body, "</textarea", "%s carries an unescaped close tag", name)
+		if !strings.HasSuffix(name, ".html") {
+			assert.NotContains(t, body, "<script", "%s is not a page and must carry no markup", name)
+			continue
+		}
+		assert.Equal(t, 1, strings.Count(body, "<script"),
+			"%s must carry the filter's script tag and no other raw markup", name)
+	}
+}
+
+// TestReportOutputIsOffline is Review Focus 4 and spec §7's test: the artefact
+// must open from a folder with the network off and make no request of any kind.
+//
+// A scan that simply looks for "http" in every file would fail on an artefact
+// that links nowhere, because a record carries a URL in TWO places: its stored
+// content, and its reason's evidence -- raw upstream JSON, Reason.Encode's
+// envelope, which the record page renders verbatim. Both are the record's own
+// bytes rather than the report's references, so the fixture quotes one URL in
+// each and every assertion below is written to tell "the artefact links out"
+// from "a record quotes a URL".
+func TestReportOutputIsOffline(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	const (
+		// A URL quoted by a record's CONTENT: text an agent wrote.
+		contentURL = "https://upstream.example.invalid/memory-text"
+		// A URL quoted by a record's EVIDENCE: reconcile stores whole upstream
+		// objects, so an evidence payload can hold one too.
+		evidenceURL = "http://upstream.example.invalid/v1/search?q=cats"
+	)
+	quoting := withContent(
+		newTestRecord(t, "rec-url-content", 0, "mem-url", base),
+		"the agent said: see "+contentURL, false)
+	inEvidence := observedRecord(t, "rec-url-evidence", 1, "mem-url", base.Add(time.Minute),
+		`{"tool":"search","link":"`+evidenceURL+`"}`)
+
+	_, files, _ := render(t, &fakeReader{records: []record.Record{quoting, inEvidence}},
+		report.Request{From: sliceFrom, To: sliceTo, Verify: true})
+
+	// The fixture is not vacuous: both URLs reach the report, and each of them
+	// only inside the block that carries the record's own bytes -- so removing
+	// those two kinds of block takes them back out, and what is left is the
+	// artefact's own writing.
+	contentPage := files[page("record", 0, "rec-url-content")]
+	evidencePage := files[page("record", 1, "rec-url-evidence")]
+	require.Contains(t, contentPage, contentURL, "the content's URL must reach the page")
+	require.Contains(t, evidencePage, evidenceURL, "the evidence's URL must reach the page")
+	for name, body := range files {
+		quoted := stripRecordBytes(body)
+		assert.NotContains(t, quoted, contentURL,
+			"%s carries the content's URL outside a content block", name)
+		assert.NotContains(t, quoted, evidenceURL,
+			"%s carries the evidence's URL outside an evidence block", name)
+	}
+
+	// With the records' own bytes removed, no generated file names a host.
+	for name, body := range files {
+		quoted := stripRecordBytes(body)
+		assert.NotContains(t, quoted, "http://", "%s references a host", name)
+		assert.NotContains(t, quoted, "https://", "%s references a host", name)
+	}
+
+	// Every reference the report writes is relative: a relative reference names
+	// no host, no scheme and no filesystem root, and it resolves from the folder
+	// the reader opened. At least one reference must have been checked, or this
+	// half of the scan would pass over a report that links to nothing.
+	checkedRefs := 0
+	for name, body := range files {
+		for _, ref := range refPaths(body) {
+			if ref == "" || strings.HasPrefix(ref, "#") {
+				continue
+			}
+			checkedRefs++
+			assert.True(t, strings.HasPrefix(ref, "./") || strings.HasPrefix(ref, "../"),
+				"%s references %q, which is not a relative path", name, ref)
+		}
+	}
+	require.Greater(t, checkedRefs, 0, "the scan must have had references to check")
+
+	// The assets themselves can fetch: a stylesheet by @import or url(), a
+	// script by any request API. Neither would show up in a literal URL scan.
+	//
+	// The two files must be PRESENT before they are scanned: an absent asset
+	// leaves an empty string here, and an empty string passes every NotContains
+	// below -- which is how a scan can prove nothing while looking green.
+	require.Contains(t, files, "assets/report.css", "the scan must have the stylesheet it scans")
+	require.Contains(t, files, "assets/report.js", "the scan must have the script it scans")
+	css, js := files["assets/report.css"], files["assets/report.js"]
+	require.NotEmpty(t, css)
+	require.NotEmpty(t, js)
+	assert.NotContains(t, css, "@import", "a stylesheet that imports is a stylesheet that fetches")
+	assert.NotContains(t, css, "url(", "the report ships no fetched asset")
+	assert.NotContains(t, js, "http", "the filter script must carry no URL")
+	for _, api := range []string{
+		"fetch(", "XMLHttpRequest", "WebSocket", "EventSource", "sendBeacon",
+		"navigator.", "eval(", "new Function", "document.write",
+	} {
+		assert.NotContains(t, js, api, "the filter script must not be able to make a request")
+	}
+}
+
+// TestReportChainStateReportsBothWays is spec §6's two claims about
+// verification, asserted from the pages: clean when the run's verification
+// collected nothing, and every break named -- record, field and detail -- when
+// it collected something.
+//
+// The renderer never walks the chain: Request.Breaks arrives computed by the
+// shared break collection `notary verify` uses. What this proves is that the
+// pages say what they were given: nothing on them is re-derived and nothing is
+// dropped.
+func TestReportChainStateReportsBothWays(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	reader := &fakeReader{records: []record.Record{newTestRecord(t, "rec-chain", 0, "mem-chain", base)}}
+
+	t.Run("an intact chain reads as clean, and says what was checked", func(t *testing.T) {
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, Verify: true, VerifiedAt: base.Add(time.Hour),
+		})
+
+		chainBody := flat(files["verify.html"])
+		assert.Contains(t, chainBody, "Chain state: clean")
+		assert.Contains(t, chainBody, "no break")
+		assert.Contains(t, chainBody, "covers the whole ledger, not this slice",
+			"a report of one memory must not imply the slice was checked")
+
+		index := flat(files["index.html"])
+		assert.Contains(t, index, "Chain state: clean")
+		assert.Contains(t, index, "covers the whole ledger, not this slice")
+		assert.NotContains(t, index, "not verified")
+		// The index sends the reader to the page that carries the detail.
+		assert.Contains(t, files["index.html"], `href="./verify.html"`)
+	})
+
+	t.Run("a break names its record, its field and its detail", func(t *testing.T) {
+		inSlice := ledger.Break{
+			RecordID: "rec-chain", Seq: 0, Field: "hash",
+			Detail: "stored hash 11aa does not match hash recomputed over the record: 22bb",
+		}
+		outside := ledger.Break{
+			RecordID: "rec-elsewhere", Seq: 7, Field: "prev_hash",
+			Detail: "prev_hash 33cc does not match predecessor rec-other hash 44dd",
+		}
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, Verify: true, VerifiedAt: base,
+			Breaks: []ledger.Break{inSlice, outside},
+		})
+
+		chainBody := files["verify.html"]
+		assert.Contains(t, flat(chainBody), "Chain state: broken")
+
+		row := breakRowOf(t, chainBody, "rec-chain")
+		assert.Contains(t, row, "<code>hash</code>", "the break must name the field that failed")
+		assert.Contains(t, row, inSlice.Detail, "the break must carry the detail verification produced")
+		assert.Contains(t, row, `href="./`+page("record", 0, "rec-chain")+`"`,
+			"a break whose record is in this slice links to that record's page")
+
+		outsideRow := breakRowOf(t, chainBody, "rec-elsewhere")
+		assert.Contains(t, outsideRow, "<code>prev_hash</code>")
+		assert.Contains(t, outsideRow, outside.Detail)
+		assert.NotContains(t, outsideRow, "<a href=",
+			"a break outside the slice names its record and links to no page that does not exist")
+
+		index := flat(files["index.html"])
+		assert.Contains(t, index, "Chain state: broken")
+		assert.Contains(t, index, "2 breaks")
+		assert.NotContains(t, index, "clean", "a broken chain must not read as clean")
+	})
+
+	t.Run("breaks with no verification of their own are still not a pass", func(t *testing.T) {
+		// A caller may hand over a break collection it did not compute for this
+		// run -- a report reusing an earlier check, say. The page must then say
+		// both facts: the chain does not verify, AND no verification ran for
+		// this run. Rendering the second as the first's opposite would be the
+		// same defect Review Focus 5 names, one state over.
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, VerifiedAt: base,
+			Breaks: []ledger.Break{{
+				RecordID: "rec-chain", Seq: 0, Field: "signature",
+				Detail: "signature does not verify under key-1",
+			}},
+		})
+		index := flat(files["index.html"])
+		assert.Contains(t, index, "Chain state: broken")
+		assert.Contains(t, index, "no verification ran for this run itself")
+		assert.NotContains(t, index, "clean")
+		assert.Contains(t, flat(files["verify.html"]), "No verification ran for this report")
+	})
+
+	t.Run("a break with no record id is still named", func(t *testing.T) {
+		// ledger.Break documents one shape whose record id is empty: a
+		// truncation break, where the shortened tail's identity is unknowable.
+		// The page must name the field and say why there is no record, rather
+		// than printing an empty cell a reader would have to interpret.
+		truncated := ledger.Break{
+			Seq: 4, Field: "truncation",
+			Detail: "the chain does not reach the signed checkpoint at seq 4",
+		}
+		_, files, _ := render(t, reader, report.Request{
+			From: sliceFrom, To: sliceTo, Verify: true, Breaks: []ledger.Break{truncated},
+		})
+		chainBody := flat(files["verify.html"])
+		assert.Contains(t, chainBody, "<code>truncation</code>")
+		assert.Contains(t, chainBody, truncated.Detail)
+		assert.Contains(t, chainBody, "no record id")
+	})
+}
+
+// TestReportNotVerifiedDoesNotReadAsClean is Review Focus 5's test.
+//
+// `--no-verify` means no verification ran, and an empty break list is what both
+// a passing check and a skipped one look like: len(Breaks) alone cannot tell
+// them apart, which is why Request.Verify exists beside it. A page that says
+// "clean" whenever the break list is empty tells a reader the ledger was checked
+// when it was not -- the unbacked claim this project exists to refuse.
+func TestReportNotVerifiedDoesNotReadAsClean(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	reader := &fakeReader{records: []record.Record{newTestRecord(t, "rec-nv", 0, "mem-nv", base)}}
+
+	// Verify is the zero value here: the safe default is that nothing ran.
+	out, skipped, _ := render(t, reader, report.Request{
+		From: sliceFrom, To: sliceTo, VerifiedAt: base.Add(time.Hour)})
+	_, checked, _ := render(t, reader, report.Request{
+		From: sliceFrom, To: sliceTo, VerifiedAt: base.Add(time.Hour), Verify: true})
+
+	// The skipped run says what happened, rather than leaving a reader to infer
+	// a pass from an empty list...
+	index := flat(skipped["index.html"])
+	assert.Contains(t, index, "Chain state: not verified")
+	assert.Contains(t, index, "no verification ran")
+	assert.Contains(t, flat(skipped["verify.html"]), "no verification ran")
+
+	// ...and its chain-state page still exists: a missing page says nothing at
+	// all, and "skipped" and "lost" would look the same to the reader.
+	require.Contains(t, skipped, "verify.html")
+
+	// No file in the skipped report reads as clean. The output path is stripped
+	// first because the index prints it, and the path carries this test's name.
+	cleanWord := regexp.MustCompile(`(?i)\bclean\b`)
+	for name, body := range skipped {
+		assert.NotRegexp(t, cleanWord, strings.ReplaceAll(body, out, "<out>"),
+			"%s reads as clean although no verification ran", name)
+	}
+
+	// The same slice, verified and clean, does say so on both pages -- so the
+	// assertions above are about the fact and not about the vocabulary.
+	assert.Contains(t, flat(checked["index.html"]), "Chain state: clean")
+	assert.Contains(t, flat(checked["verify.html"]), "Chain state: clean")
+}
+
+// TestReportIndexCarriesPerTierCounts is spec §12.3's resolution: the index
+// carries a count per tier, not a single "highest tier". A tier is not a
+// confidence score and not a severity (architecture spec §3), so ranking the
+// three would assert a bias the record does not carry; a memory with two
+// observed records and one reconstructed one says exactly that, in two counts.
+func TestReportIndexCarriesPerTierCounts(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	reader := &fakeReader{records: []record.Record{
+		newTestRecord(t, "rec-1", 0, "mem-mixed", base),
+		newTestRecord(t, "rec-2", 1, "mem-mixed", base.Add(time.Minute)),
+		reconstructedRecord(t, "rec-3", 2, "mem-mixed", base.Add(2*time.Minute)),
+		internalRecord(t, "rec-4", 3, "mem-other", base.Add(3*time.Minute)),
+	}}
+
+	_, files, _ := render(t, reader, report.Request{From: sliceFrom, To: sliceTo})
+
+	// The mixed memory is the case a "highest tier" summary would flatten: it
+	// must render as two counts, and it must not claim a tier it has no record
+	// in.
+	mixed := rowOf(t, files["index.html"], "mem-mixed")
+	assert.Contains(t, mixed, "2 observed")
+	assert.Contains(t, mixed, "1 reconstructed")
+	assert.NotContains(t, mixed, "internal")
+
+	other := rowOf(t, files["index.html"], "mem-other")
+	assert.Contains(t, other, "1 internal")
+	assert.NotContains(t, other, "observed", "a memory with no observed record must not claim one")
+
+	// Counts, not a ranking: no page names a "highest" tier.
+	assert.NotContains(t, strings.ToLower(files["index.html"]), "highest")
+
+	// The memory's own page carries the same breakdown for the same records.
+	memoryPage := files[page("memory", 0, "mem-mixed")]
+	assert.Contains(t, memoryPage, "2 observed")
+	assert.Contains(t, memoryPage, "1 reconstructed")
+}
+
+// TestReportRendersAnEmptySliceWithoutADeadFilter covers the slice that matches
+// no record, which is a legitimate answer rather than a failure: a report still
+// has to open, say what it holds, and carry the chain state. It is also where a
+// filter control would be a lie -- there is no table to filter -- and the
+// control stays hidden because the script reveals it only when it finds one.
+func TestReportRendersAnEmptySliceWithoutADeadFilter(t *testing.T) {
+	out, files, res := render(t, &fakeReader{}, report.Request{
+		From: sliceFrom, To: sliceTo, Verify: true, VerifiedAt: sliceTo,
+	})
+
+	assert.Equal(t, []string{
+		"assets/report.css",
+		"assets/report.js",
+		"index.html",
+		"verify.html",
+	}, treeNames(t, out))
+	assert.Equal(t, 4, res.Pages)
+
+	index := files["index.html"]
+	assert.Contains(t, index, "This slice holds no record for any memory.")
+	assert.Contains(t, index, "0 memories, 0 records.")
+	assert.NotContains(t, index, `id="memories"`, "an empty slice has no table to filter")
+	assert.Contains(t, index, `id="filter-box" hidden`,
+		"the control is offered only when there is a table for it, so an empty slice shows none")
+	assertLinksResolve(t, out, "index.html")
+
+	// The chain state is a fact about the ledger, not about the slice, so it is
+	// there even when the slice is empty.
+	assert.Contains(t, flat(files["verify.html"]), "Chain state: clean")
+}
+
+// TestReportWritesTheAssetsBesideThePages asserts the two embedded files reach
+// the report, that every page reaches them relatively, and that Result.Pages
+// counts every file written -- assets included, because the command reports that
+// number to the operator.
+func TestReportWritesTheAssetsBesideThePages(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	one := &fakeReader{records: []record.Record{newTestRecord(t, "rec-a", 0, "mem-a", base)}}
+	two := &fakeReader{records: []record.Record{
+		newTestRecord(t, "rec-b", 0, "mem-b", base),
+		newTestRecord(t, "rec-c", 1, "mem-c", base.Add(time.Minute)),
+	}}
+
+	out, files, res := render(t, one, report.Request{From: sliceFrom, To: sliceTo, Verify: true})
+
+	// The assets are files in the report, beside the pages...
+	require.Contains(t, files, "assets/report.css")
+	require.Contains(t, files, "assets/report.js")
+	assert.NotEmpty(t, files["assets/report.css"])
+	assert.NotEmpty(t, files["assets/report.js"])
+
+	// ...every page links them relatively, at its own depth, so the folder opens
+	// from disk with no server and no network...
+	for name, body := range files {
+		if !strings.HasSuffix(name, ".html") {
+			continue
+		}
+		assert.Contains(t, body, `href="`+assetRef(name, "assets/report.css")+`"`,
+			"%s must link the stylesheet relatively", name)
+		assert.Contains(t, body, `src="`+assetRef(name, "assets/report.js")+`"`,
+			"%s must link the filter script relatively", name)
+	}
+
+	// ...the tree is exactly the files the report claims to write...
+	assert.Equal(t, []string{
+		"assets/report.css",
+		"assets/report.js",
+		"index.html",
+		page("memory", 0, "mem-a"),
+		page("record", 0, "rec-a"),
+		"verify.html",
+	}, treeNames(t, out))
+
+	// ...and Result.Pages counts every one of them: a count that misses the
+	// assets would be a number the command reports to an operator that does not
+	// match the folder they are holding.
+	assert.Equal(t, 6, res.Pages)
+	assert.Equal(t, len(treeNames(t, out)), res.Pages)
+
+	// The assets carry no index data at all -- the filter reads the DOM -- so
+	// they are byte-identical for a different slice: nothing about a report's
+	// records can reach them.
+	_, other := tempRoot(t)
+	_, err := report.New(two).Render(context.Background(),
+		report.Request{From: sliceFrom, To: sliceTo, Verify: true}, other)
+	require.NoError(t, err)
+	otherFiles := readTree(t, other)
+	assert.Equal(t, files["assets/report.css"], otherFiles["assets/report.css"])
+	assert.Equal(t, files["assets/report.js"], otherFiles["assets/report.js"])
+}
+
+// TestReportIndexNeedsNoScriptToBeComplete asserts §3 decision 3's and §7's
+// progressive-enhancement claim from the file rather than promising it in a
+// comment: the renderer writes the whole table, the script only HIDES rows, and
+// the one control that needs a script is revealed by the script. With the script
+// missing or blocked a reader sees no dead control, every memory in the slice,
+// and a working link on every row.
+func TestReportIndexNeedsNoScriptToBeComplete(t *testing.T) {
+	base := time.Date(2024, 5, 2, 9, 0, 0, 0, time.UTC)
+	reader := &fakeReader{records: []record.Record{
+		newTestRecord(t, "rec-1", 0, "mem-1", base),
+		newTestRecord(t, "rec-2", 1, "mem-1", base.Add(time.Minute)),
+		newTestRecord(t, "rec-3", 2, "mem-2", base.Add(2*time.Minute)),
+	}}
+
+	_, files, _ := render(t, reader, report.Request{From: sliceFrom, To: sliceTo})
+	index, js := files["index.html"], files["assets/report.js"]
+
+	// The table is in the HTML, whole: every memory has a row, each row carries
+	// its record count and its own link, and no row is hidden -- a row the
+	// renderer wrote is never hidden, because it is the script that hides.
+	require.Len(t, strings.Split(index, "<tr>"), 4, "the header row and one row per memory")
+	assert.Contains(t, rowOf(t, index, "mem-1"), "<td>2</td>")
+	assert.Contains(t, rowOf(t, index, "mem-1"), `href="./`+page("memory", 0, "mem-1")+`"`)
+	assert.Contains(t, rowOf(t, index, "mem-2"), "<td>1</td>")
+	assert.Contains(t, rowOf(t, index, "mem-2"), `href="./`+page("memory", 2, "mem-2")+`"`)
+	for _, id := range []string{"mem-1", "mem-2"} {
+		assert.NotContains(t, rowOf(t, index, id), "hidden",
+			"a row is written visible: only the script hides one")
+	}
+
+	// The filter control is marked hidden in the markup and revealed by the
+	// script, so a reader with no script sees no control that cannot work.
+	assert.Contains(t, index, `id="filter-box" hidden`,
+		"the filter control must be hidden until a script can drive it")
+	assert.Contains(t, js, "box.hidden = false;", "the script is what reveals the filter")
+	guard := strings.Index(js, "if (!box || !input || !table || !note)")
+	reveal := strings.Index(js, "box.hidden = false;")
+	require.NotEqual(t, -1, guard, "the script must guard on the elements it needs")
+	require.NotEqual(t, -1, reveal)
+	assert.Less(t, guard, reveal,
+		"the reveal must sit behind the guard, so a page with no table leaves the control hidden")
+
+	// The script can only hide: it builds no markup, so nothing on the page
+	// depends on it having run.
+	assert.Contains(t, js, "hidden = !match", "the filter hides rows, and does nothing else to them")
+	for _, builder := range []string{"innerHTML", "createElement", "insertAdjacentHTML", "document.write"} {
+		assert.NotContains(t, js, builder, "the filter script must not build the table it filters")
+	}
+	// And it carries no index data: it filters the DOM the renderer wrote.
+	for _, id := range []string{"mem-1", "mem-2", "rec-1"} {
+		assert.NotContains(t, js, id, "the script must carry no memory or record data")
+	}
 }

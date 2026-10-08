@@ -14,22 +14,30 @@ so the flag order is normalised and flags that changed no page are not shown.
 <dt>Sensitive content</dt><dd>{{.Sensitivity}}</dd>
 <dt>Evidence</dt><dd>not filtered: every record page shows the record's own stored reason, exactly as
 the ledger hashes it, and that is the same whether or not <code>--include-sensitive</code> was given.
-It can therefore quote memory text that the sensitivity rules did not mark.</dd>
+It can therefore quote memory text that the sensitivity rules did not mark, including text a record's
+content section withholds, because reconcile stores whole upstream objects rather than curated fields.</dd>
 </dl>
 
 <p class="counts">{{.Counts}}.</p>
 
+<p class="chain-state">
+Chain state: {{.Chain.State}} -- {{.Chain.Summary}} {{.Chain.Scope}}
+<a href="{{.Base}}/verify.html">The chain state in full</a>.
+</p>
+
 <h2>Memories</h2>
-{{if .Memories}}<table class="memories">
+<div class="filter" id="filter-box" hidden>
+<label for="filter-input">Filter by memory id</label>
+<input id="filter-input" type="search" autocomplete="off" spellcheck="false" placeholder="memory id">
+<p class="filter-note" id="filter-note" hidden>No memory in this slice matches.</p>
+<p class="filter-note" id="filter-count"></p>
+</div>
+{{if .Memories}}<table class="memories" id="memories">
 <thead>
-<tr><th>Memory</th><th>Records in this slice</th><th>Page</th></tr>
+<tr><th>Memory</th><th>Records in this slice</th><th>Tiers</th><th>Page</th></tr>
 </thead>
 <tbody>
-{{range .Memories}}<tr>
-<td><code>{{.ID}}</code></td>
-<td>{{.Records}}</td>
-<td><a href="{{$.Base}}/{{.Page}}">open</a></td>
-</tr>
+{{range .Memories}}<tr><td><code>{{.ID}}</code></td><td>{{.Records}}</td><td>{{.Tiers.Text}}</td><td><a href="{{$.Base}}/{{.Page}}">open</a></td></tr>
 {{end}}</tbody>
 </table>
 {{else}}<p>This slice holds no record for any memory.</p>

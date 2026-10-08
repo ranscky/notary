@@ -1,0 +1,115 @@
+/* Notary report stylesheet.
+ *
+ * It ships inside the report and every page links it relatively, so it is
+ * written for a document opened from a folder with the network off: no
+ * stylesheet imports, no fetched font, no external resource reference, no
+ * external anything. Everything here is presentation -- with this file missing
+ * the pages are complete, readable and every link still works.
+ *
+ * The colour scheme follows the reader's system setting, because a compliance
+ * lead may be reading this late at night on a machine this report has never
+ * seen.
+ */
+
+:root {
+  color-scheme: light dark;
+  --fg: #16181d;
+  --bg: #ffffff;
+  --muted: #5b6270;
+  --rule: #d8dbe2;
+  --link: #1053b8;
+  --panel: #f5f6f8;
+  --note-bg: #eef3fb;
+  --withheld-bg: #fff6e5;
+  --withheld-fg: #6b4a00;
+  --broken-bg: #fdecec;
+  --broken-fg: #8a1f1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e8eaef;
+    --bg: #14161a;
+    --muted: #a2a8b4;
+    --rule: #343a46;
+    --link: #86b4ff;
+    --panel: #1b1e24;
+    --note-bg: #1c2430;
+    --withheld-bg: #2c2410;
+    --withheld-fg: #ffd894;
+    --broken-bg: #331c1c;
+    --broken-fg: #ffb0b0;
+  }
+}
+
+body {
+  margin: 0 auto;
+  max-width: 62rem;
+  padding: 1.5rem 1.25rem 3rem;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+h1 { font-size: 1.5rem; line-height: 1.25; margin: 0.5rem 0 1rem; }
+h2 { font-size: 1.15rem; margin: 2rem 0 0.5rem; padding-top: 0.75rem; border-top: 1px solid var(--rule); }
+p { margin: 0.6rem 0; }
+
+a { color: var(--link); }
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+code { overflow-wrap: anywhere; }
+
+.nav { margin-bottom: 0; }
+.provenance, .counts, .chain-state, .chain-scope, .chain-summary { color: var(--muted); }
+
+dl.slice, dl.record { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 1rem 0; }
+dl.slice dt, dl.record dt { font-weight: 600; }
+dl.slice dd, dl.record dd { margin: 0; overflow-wrap: anywhere; }
+
+table { border-collapse: collapse; width: 100%; margin: 0.5rem 0 1rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--rule); }
+th { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+tbody tr:hover { background: var(--panel); }
+
+.filter { margin: 0.5rem 0 0.75rem; padding: 0.75rem; background: var(--panel); border: 1px solid var(--rule); }
+.filter label { display: block; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-bottom: 0.35rem; }
+.filter input { width: 100%; box-sizing: border-box; padding: 0.4rem 0.5rem; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--rule); }
+.filter-note { margin: 0.5rem 0 0; color: var(--muted); }
+
+pre.content, pre.canonical {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+pre.canonical { max-height: 24rem; overflow: auto; }
+
+.withheld, .empty, .none, .not-verified, .disclosure {
+  padding: 0.6rem 0.75rem;
+  border-left: 4px solid var(--rule);
+  background: var(--panel);
+}
+.withheld { background: var(--withheld-bg); color: var(--withheld-fg); border-left-color: var(--withheld-fg); }
+.not-verified { background: var(--note-bg); }
+.break-count { background: var(--broken-bg); color: var(--broken-fg); border-left-color: var(--broken-fg); }
+
+details { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border: 1px solid var(--rule); }
+summary { cursor: pointer; color: var(--muted); }
+details[open] summary { margin-bottom: 0.5rem; }
+
+ol.timeline { list-style: none; margin: 0; padding: 0; }
+li.timeline-record { margin: 1rem 0; padding: 0.75rem; border: 1px solid var(--rule); }
+li.timeline-record .line { font-weight: 600; }
+li.timeline-record .instants { color: var(--muted); font-size: 0.9rem; }
+
+ul.memoryless { padding-left: 1.1rem; }
+
+.no-record { color: var(--muted); font-style: italic; }
+.breaks td { overflow-wrap: anywhere; }
+
+footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.9rem; }
