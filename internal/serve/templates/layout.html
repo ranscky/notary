@@ -8,12 +8,22 @@
 <script src="/assets/htmx.min.js" defer></script>
 </head>
 <body>
+<a class="skip" href="#main">Skip to the ledger</a>
 <header class="site">
-<span class="brand">notary</span>
-<nav class="site-nav"><a href="/">Records</a></nav>
+<h1 class="brand">notary</h1>
+{{/* The nav marks the current SECTION, so /record and /memory light up Records:
+     a reader looking at one record is still in that section. aria-current
+     carries it, so the state is announced and not merely coloured. */}}
+<nav class="site-nav" aria-label="Views">
+<ul>
+<li><a href="/"{{if eq .Current "records"}} aria-current="page"{{end}}>Records</a></li>
+<li><a href="/gaps"{{if eq .Current "gaps"}} aria-current="page"{{end}}>Gaps</a></li>
+<li><a href="/verify"{{if eq .Current "verify"}} aria-current="page"{{end}}>Chain</a></li>
+</ul>
+</nav>
 </header>
 {{template "chainBanner" .}}
-<main class="page">
+<main class="page" id="main">
 {{template "page" .}}
 </main>
 <footer class="site-foot">

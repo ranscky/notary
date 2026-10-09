@@ -74,6 +74,9 @@ var (
 	contentTextRe    = regexp.MustCompile(`<span class="content-text">([^<]*)</span>`)
 	recordHrefRe     = regexp.MustCompile(`href="(/record\?[^"]*)"`)
 	recordsHeadRe    = regexp.MustCompile(`(?s)<thead>.*?</thead>`)
+	// thTextRe reads header CELL TEXT, so a change to a header's attributes (a
+	// scope="col" added for screen readers) is not mistaken for a column change.
+	thTextRe = regexp.MustCompile(`<th[^>]*>([^<]*)</th>`)
 	// widerHrefRe pulls the empty state's offered range out of the page, so a
 	// test can follow the link the page actually rendered rather than one the
 	// test rebuilt and hoped was the same.
@@ -304,19 +307,23 @@ func TestRecordPageLinksMemoryOnlyWhenTheRecordNamesOne(t *testing.T) {
 // raw scope to the record page. The assertion is on the rendered header, so a
 // column added back is a failing test rather than a quiet regression -- the
 // reason this table was trimmed at all is that nine columns wrapped every row.
+//
+// It compares header CELL TEXT, not literal markup: the header carries
+// scope="col" for screen readers, and pinning the exact tag would make an
+// accessibility attribute look like a redesign failure.
 func TestRecordsTableDropsTheDetailColumns(t *testing.T) {
 	f := newFixture(t)
 	body := get(t, f.server.Handler(), "/").Body.String()
 
 	head := recordsHeadRe.FindString(body)
 	require.NotEmpty(t, head, "the records view must render a table header")
-	for _, col := range []string{"Seq", "Event time", "Event", "Tier", "Phrasing", "Content"} {
-		assert.Contains(t, head, "<th>"+col+"</th>", "the table must keep the %s column", col)
+
+	var cols []string
+	for _, m := range thTextRe.FindAllStringSubmatch(head, -1) {
+		cols = append(cols, strings.TrimSpace(m[1]))
 	}
-	for _, col := range []string{"Reason", "Memory", "Scope"} {
-		assert.NotContains(t, head, "<th>"+col+"</th>",
-			"the %s column moved to the record page and must not be back in the table", col)
-	}
+	assert.Equal(t, []string{"Seq", "Event time", "Event", "Tier", "Phrasing", "Content"}, cols,
+		"the records table leads with exactly the columns a reviewer scans, in order")
 
 	// The detail is genuinely still reachable: the record page the row links to
 	// carries all three.
@@ -324,6 +331,34 @@ func TestRecordsTableDropsTheDetailColumns(t *testing.T) {
 	assert.Contains(t, rec, "Reason", "the record page must still show the reason kind")
 	assert.Contains(t, rec, "Scope", "the record page must still show the scope")
 	assert.Contains(t, rec, "mem-alpha", "the record page must still show the memory")
+}
+
+// TestShellMarksTheCurrentSectionAndNeverTransformsAnID pins two shell facts a
+// restyle can quietly break, both found by looking at the rendered page rather
+// than by any assertion here:
+//
+//   - the nav marks the current SECTION, so /record and /memory light up Records
+//     (a reader looking at one record is still in that section), and aria-current
+//     is what carries it, so the state is announced and not merely coloured;
+//   - a record id renders as <code>, which the stylesheet exempts from
+//     text-transform. Page headings are uppercased by design, and an uppercased
+//     id is a DIFFERENT id: `demo-search-1#1` is evidence and must read exactly
+//     as it was written.
+func TestShellMarksTheCurrentSectionAndNeverTransformsAnID(t *testing.T) {
+	f := newFixture(t)
+	h := f.server.Handler()
+
+	for _, path := range []string{"/", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify"} {
+		body := get(t, h, path).Body.String()
+		assert.Contains(t, body, `<nav class="site-nav" aria-label="Views">`,
+			"%s must render the nav as a labelled list", path)
+		assert.Contains(t, body, `aria-current="page"`,
+			"%s must mark its own section as current", path)
+	}
+
+	rec := get(t, h, "/record?id=fixture-observed").Body.String()
+	assert.Contains(t, rec, "<h2>Record <code>fixture-observed</code></h2>",
+		"the record id must render as code, exempt from the heading's text-transform")
 }
 
 // TestNonGETMethodsAreRefusedWithNoBody pins the method guard: anything but
@@ -662,7 +697,7 @@ var (
 )
 
 // memoryPhrasingRe pulls the phrasing cell from a memory-view row.
-var memoryPhrasingRe = regexp.MustCompile(`<td class="phrasing"><a href="[^"]*">([^<]*)</a></td>`)
+var memoryPhrasingRe = regexp.MustCompile(`<td class="phrasing"[^>]*><a href="[^"]*">([^<]*)</a></td>`)
 
 // toggleLinkRe pulls the href and hx-get of the reveal toggle anchor -- the one
 // link that carries BOTH attributes and an id. Its two capture groups are the

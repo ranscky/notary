@@ -126,7 +126,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := indexData{
-		pageData: pageData{Title: "Records", Now: s.now(), Chain: chain},
+		pageData: pageData{Title: "Records", Current: "records", Now: s.now(), Chain: chain},
 		Filter:   s.defaultWindow(),
 	}
 
@@ -262,7 +262,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 
 	revealHref := recordHref(record.RecordID(id))
 	data := recordData{
-		pageData: pageData{Title: "Record", Now: s.now(), Chain: chain},
+		pageData: pageData{Title: "Record", Current: "records", Now: s.now(), Chain: chain},
 		RevealControl: revealControl{
 			Href:       revealHref,
 			RevealHref: revealHref + "&reveal=1",
@@ -318,7 +318,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 
 	revealHref := memoryHref(id)
 	data := memoryData{
-		pageData: pageData{Title: "Memory", Now: s.now(), Chain: chain},
+		pageData: pageData{Title: "Memory", Current: "records", Now: s.now(), Chain: chain},
 		MemoryID: id,
 		RevealControl: revealControl{
 			Href:       revealHref,
@@ -367,7 +367,7 @@ func (s *Server) handleGaps(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	data := gapsData{
-		pageData: pageData{Title: "Gaps", Now: s.now(), Chain: chain},
+		pageData: pageData{Title: "Gaps", Current: "gaps", Now: s.now(), Chain: chain},
 		View:     view,
 	}
 	s.respond(w, http.StatusOK, "gaps", data)
@@ -387,7 +387,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	data := verifyData{
-		pageData: pageData{Title: "Verify", Now: s.now(), Chain: chain},
+		pageData: pageData{Title: "Verify", Current: "verify", Now: s.now(), Chain: chain},
 	}
 	// The record count is the clean state's own claim, so it is read only for a
 	// clean chain -- a broken or not-verified chain has no count to report.

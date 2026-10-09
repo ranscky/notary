@@ -1,7 +1,10 @@
 {{define "chainBanner"}}<div class="chain-banner {{if .Chain.NotVerified}}chain-not-verified{{else if .Chain.Clean}}chain-clean{{else}}chain-broken{{end}}">
+{{/* The frame label names the compartment, so the banner reads as an instrument
+     reading rather than as a page notice. It adds no claim of its own. */}}
+<span class="frame-label">[ CHAIN INTEGRITY ]</span>
 <p class="chain-line">As of {{.Chain.AsOf.Format "2006-01-02 15:04:05 MST"}}, this tool's verification reported:
 {{if .Chain.NotVerified}}<strong>Not verified — no trusted keys are configured.</strong> Set <code>NOTARY_TRUSTED_KEYS_PATH</code> to a keyring of base64-encoded ed25519 public keys{{if .Chain.KeyringPath}} (currently <code>{{.Chain.KeyringPath}}</code>){{end}}; <code>notary doctor</code> checks it.{{else if .Chain.Clean}}<strong>Clean — no breaks across the whole ledger.</strong>{{else}}<strong>Broken — {{len .Chain.Breaks}} break(s) found.</strong>{{end}}</p>
-<p class="chain-rerun">Re-run: <code>notary verify</code>{{if .Chain.KeyringPath}} (trusted keys: <code>{{.Chain.KeyringPath}}</code>){{end}}</p>
+<p class="chain-rerun">Re-run: <kbd>notary verify</kbd>{{if .Chain.KeyringPath}} (trusted keys: <code>{{.Chain.KeyringPath}}</code>){{end}}</p>
 </div>
 {{end}}
 

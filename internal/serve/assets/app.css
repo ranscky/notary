@@ -1,170 +1,984 @@
-/* The notary console's stylesheet. Hand-written, embedded, and fetched from
-   /assets/app.css. It carries the banner's own visual language: the three
-   visibility tiers are the banner's three colours and rules, so the console and
-   the banner tell one story. The tier badge always shows the tier NAME as text
-   beside its colour, so it survives colour-blindness, a greyscale printout and a
-   screenshot. */
+/* The Notary console's stylesheet. Hand-written, embedded, fetched from
+   /assets/app.css. No framework, no build step, no remote asset of any kind --
+   the console must render on a machine with no outbound network, so the type is
+   the system stack and nothing here reaches off-origin.
+
+   Aesthetic: Tactical Telemetry (industrial brutalism). Rigid modular grid,
+   visible compartmentalisation, 90-degree geometry, monospace micro-typography
+   against heavy grotesque macro-typography, hairline rules as structure.
+
+   Two deviations from that protocol, both deliberate and both because this is
+   evidence rather than a portfolio piece:
+
+   1. NO analog degradation. The protocol calls for CRT scanlines, halftone and
+      grain. Here texture is not neutral: a reviewer looking for a redaction must
+      never have to ask whether what they see is a pattern or a withheld region.
+      Clean surfaces, every mark legible.
+   2. NO decorative accent colour. The protocol names hazard red as the single
+      accent; that red is already "the chain is broken" in this console. Every
+      colour in this file carries exactly ONE meaning -- a visibility tier or a
+      chain state -- so no colour is ever ornament. That is also why the primary
+      button is inverted ink rather than tinted, and why focus rings are ink.
+
+   The three tier colours and their rule styles are the banner's own language
+   (docs/assets/banner.svg): Observed gold solid, Reconstructed grey-blue dashed,
+   Internal dim dotted. A tier badge always shows the tier NAME as text, so the
+   badge survives colour-blindness, a photocopy and a screenshot. */
 
 :root {
+  /* Substrate: a deactivated CRT in three elevation steps. Never pure black --
+     pure black crushes the hairlines the grid is built from. */
   --ground: #0A0D12;
   --panel: #141A23;
-  --text: #EEF1F5;
+  --raised: #1B232E;
+  --ink: #EEF1F5;
   --muted: #98A2B3;
+  --faint: #5F6976;
+  --line: #232B36;
+  --line-strong: #2C3844;
+
+  /* Tier semantics. Do not repurpose: these three mean Observed, Reconstructed
+     and Internal, and nothing else anywhere in the console. */
   --observed: #D9A441;
   --reconstructed: #8593A5;
-  --internal: #47505E;
-  --internal-line: #707B8A;
+  --internal: #707B8A;
+
+  /* Chain-state semantics. Three states, three treatments, never collapsed. */
   --clean: #4C8C5A;
   --broken: #C05B5B;
+  --unverified: #707B8A;
+
+  /* Type. Micro is monospace, uppercase, tracked -- the terminal voice, used for
+     every label, id, instant and unit. Macro is the system grotesque at heavy
+     weight with negative tracking, built from the stack because no webfont may
+     be fetched. */
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --t-micro: 0.6875rem; /* 11px -- labels, metadata, ids */
+  --t-small: 0.8125rem; /* 13px -- secondary prose */
+  --t-body: 0.9375rem; /* 15px -- body and table */
+  --t-macro: clamp(1.6rem, 1.1rem + 2vw, 3rem);
+  --track-micro: 0.09em;
+  --track-macro: -0.035em;
+
+  /* One spacing scale, used everywhere, so nothing is eyeballed. */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+  --s8: 4.5rem;
+
+  --measure: 68ch; /* prose stops before the eye loses the line */
+  --z-head: 10;
+  --z-skip: 20;
 }
 
-* { box-sizing: border-box; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* 90 degrees is the house rule; state it once rather than per component. */
+input,
+button,
+fieldset,
+textarea,
+select {
+  border-radius: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
 
 body {
   margin: 0;
+  min-height: 100dvh;
   background: var(--ground);
-  color: var(--text);
-  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  font: var(--t-body) / 1.55 var(--sans);
+  /* The top rule reads as a machine bezel and gives the page a hard edge. */
+  border-top: 2px solid var(--line-strong);
 }
 
-a { color: #8FB7E0; text-decoration: none; }
-a:hover { text-decoration: underline; }
+/* Micro-typography: the terminal voice. Identifiers, commands and hashes are
+   NEVER case-transformed -- an uppercased id is a different id, and this console
+   shows evidence, so `notary verify` and `demo-search-1#1` must read exactly as
+   they were written. */
+code,
+kbd,
+samp {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  text-transform: none;
+  letter-spacing: normal;
+}
 
-code { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.9em; }
+/* Macro-typography: heavy, tracked in, uppercase, tightly led. */
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-family: var(--sans);
+  font-weight: 800;
+  letter-spacing: var(--track-macro);
+  line-height: 0.95;
+  text-transform: uppercase;
+}
+
+p {
+  margin: 0 0 var(--s3);
+  max-width: var(--measure);
+  text-wrap: pretty;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 0.22em;
+}
+
+a:hover {
+  text-decoration-color: var(--ink);
+}
+
+/* Keyboard focus is an accessibility floor, not a nicety: a hard ink outline
+   that can never be confused with a tier or a state colour. */
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* A skip link, so a keyboard user reaches the ledger without walking the nav. */
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: var(--z-skip);
+  background: var(--ink);
+  color: var(--ground);
+  padding: var(--s2) var(--s4);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.skip:focus {
+  left: 0;
+}
+
+/* --- Header -------------------------------------------------------------- */
 
 .site {
   display: flex;
-  align-items: baseline;
-  gap: 1.5rem;
-  padding: 0.75rem 1.25rem;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3) var(--s5);
+  padding: var(--s3) var(--s5);
   background: var(--panel);
-  border-bottom: 1px solid #232B36;
+  border-bottom: 1px solid var(--line);
 }
-.brand { font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-.site-nav a { color: var(--muted); }
 
-.page { max-width: 1200px; margin: 0 auto; padding: 1.25rem; }
+.brand {
+  margin: 0;
+  font: 800 var(--t-small) / 1 var(--sans);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+/* Nav labels are micro-typography: uppercase monospace, tracked, boxed. The
+   current view is inverted rather than merely coloured, so it is legible to
+   someone who cannot separate the muted grey from the ink.
+   The list styling lives on the <ul>, not on <nav>: styling the wrapper leaves
+   the list with its default discs and padding, which renders the nav as a
+   bulleted column. */
+.site-nav {
+  margin: 0;
+}
+
+.site-nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.site-nav a {
+  display: block;
+  padding: var(--s2) var(--s3);
+  border: 1px solid transparent;
+  color: var(--muted);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+  text-decoration: none;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.site-nav a:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.site-nav a[aria-current="page"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ground);
+}
+
+/* --- Chain banner -------------------------------------------------------- */
+
+/* On every page and attributed to the run. The three states differ by rule
+   colour, chip and label -- never by colour alone -- so "not verified" can
+   never be read as "clean". Clean is the common case, so it is rendered calm
+   rather than as an alarm: only broken shouts. */
+.chain-banner {
+  display: grid;
+  gap: var(--s1);
+  padding: var(--s3) var(--s5);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  border-left: 4px solid var(--unverified);
+}
+
+.chain-clean {
+  border-left-color: var(--clean);
+}
+
+.chain-broken {
+  border-left-color: var(--broken);
+}
+
+.chain-not-verified {
+  border-left-color: var(--unverified);
+}
+
+.chain-banner p {
+  margin: 0;
+  max-width: none;
+}
+
+.chain-line {
+  color: var(--ink);
+  font-size: var(--t-small);
+}
+
+.chain-rerun {
+  color: var(--muted);
+  font: var(--t-micro) / 1.5 var(--mono);
+  letter-spacing: var(--track-micro);
+}
+
+/* Frame label: the protocol's ASCII compartment marker, used once per region
+   and always as a label rather than as decoration. */
+.frame-label {
+  display: block;
+  color: var(--muted);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+/* --- Page shell ---------------------------------------------------------- */
+
+.page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: var(--s6) var(--s5) var(--s7);
+}
+
+.page > h2 {
+  font-size: var(--t-macro);
+  margin-bottom: var(--s5);
+}
 
 .site-foot {
   max-width: 1200px;
-  margin: 2rem auto 0;
-  padding: 1rem 1.25rem 2rem;
+  margin: 0 auto;
+  padding: var(--s4) var(--s5) var(--s6);
+  border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 0.85rem;
+  font: var(--t-micro) / 1.6 var(--mono);
+  letter-spacing: 0.02em;
 }
 
-/* The chain banner: on every page, attributed to the run. Its three states are
-   deliberately three different treatments, so "not verified" can never be
-   mistaken for "clean". */
-.chain-banner {
-  border-left: 4px solid var(--muted);
-  background: var(--panel);
-  padding: 0.6rem 1.25rem;
+.site-foot p {
   margin: 0;
+  max-width: none;
 }
-.chain-banner p { margin: 0.2rem 0; }
-.chain-not-verified { border-left-color: var(--internal-line); }
-.chain-clean { border-left-color: var(--clean); }
-.chain-broken { border-left-color: var(--broken); }
-.chain-line { color: var(--text); }
-.chain-rerun { color: var(--muted); font-size: 0.85rem; }
 
-/* The filter form is an ordinary GET form; htmx only upgrades the swap. */
+/* --- Filter -------------------------------------------------------------- */
+
+/* An ordinary GET form; htmx only upgrades the swap. Compartments are drawn
+   with hairlines so range and scope read as two distinct instruments. */
+.filter {
+  margin-bottom: var(--s5);
+}
+
 .filter fieldset {
+  margin: 0;
+  padding: var(--s3) var(--s4) var(--s4);
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.filter legend {
+  padding: 0 var(--s2);
+  color: var(--muted);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--s3) var(--s4);
+  align-items: end;
+}
+
+.filter label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  color: var(--muted);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+.filter input[type="text"] {
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-strong);
+  background: var(--ground);
+  color: var(--ink);
+  font: var(--t-small) / 1.4 var(--mono);
+  font-variant-numeric: tabular-nums;
+  transition: border-color 150ms ease;
+}
+
+.filter input[type="text"]:hover {
+  border-color: var(--muted);
+}
+
+.filter input[type="text"]:focus {
+  border-color: var(--ink);
+}
+
+.filter input[type="text"]::placeholder {
+  color: var(--faint);
+}
+
+.filter-foot {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem 1rem;
-  align-items: flex-end;
-  border: 1px solid #232B36;
-  background: var(--panel);
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
+  align-items: center;
+  gap: var(--s3) var(--s4);
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--line);
 }
-.filter legend { color: var(--muted); padding: 0 0.4rem; }
-.filter label { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.85rem; }
-.filter input[type="text"] {
-  background: var(--ground);
-  color: var(--text);
-  border: 1px solid #2C3844;
-  border-radius: 4px;
-  padding: 0.35rem 0.5rem;
-  min-width: 12rem;
-}
-.filter .reveal { flex-direction: row; align-items: center; gap: 0.4rem; }
-.filter button {
-  background: var(--observed);
-  color: #14100A;
-  border: 0;
-  border-radius: 4px;
-  padding: 0.5rem 1rem;
-  font-weight: 600;
+
+.filter .reveal {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--muted);
   cursor: pointer;
 }
 
-.filter-error {
-  border: 1px solid var(--broken);
-  border-radius: 6px;
-  padding: 0.6rem 0.9rem;
-  color: var(--text);
+.filter input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--ink);
 }
 
-.empty { color: var(--muted); }
+/* Inverted, not tinted: no accent colour exists to spend here. */
+.filter button {
+  padding: var(--s2) var(--s5);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--ground);
+  cursor: pointer;
+  font: 700 var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+  transition: background-color 150ms ease, color 150ms ease;
+}
 
-/* Records table. */
+.filter button:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.filter button:active {
+  transform: translateY(1px);
+}
+
+.filter-error {
+  display: block;
+  margin: 0 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--broken);
+  border-left-width: 4px;
+  background: var(--panel);
+  color: var(--ink);
+  max-width: var(--measure);
+}
+
+/* --- Records table ------------------------------------------------------- */
+
+/* column hairlines: the blueprint grid, drawn with the lightest line available
+   so six tracked columns stay scannable instead of noisy. */
 table.records {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 1rem;
-  font-size: 0.9rem;
+  border: 1px solid var(--line);
+  font-size: var(--t-body);
 }
-table.records th, table.records td {
+
+/* The caption is styled as a caption and NOT via .frame-label: that class sets
+   display:block, which overrides display:table-caption and collapses the
+   caption into the table's first column. */
+table.records caption {
+  caption-side: top;
   text-align: left;
-  padding: 0.45rem 0.6rem;
-  border-bottom: 1px solid #232B36;
+  padding: 0 0 var(--s3);
+  color: var(--muted);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+table.records th,
+table.records td {
+  text-align: left;
+  padding: var(--s3) var(--s3);
+  border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
-table.records th { color: var(--muted); font-weight: 600; }
-.record-row:hover { background: var(--panel); }
 
-/* Six columns, each one short enough to scan: the seq and the instant never
-   wrap, and the two prose columns get the room. Memory, reason kind and the
-   raw scope live on the record page the phrasing column links to, so dropping
-   them here loses nothing a reviewer cannot reach in one click. */
-table.records td.seq { white-space: nowrap; font-variant-numeric: tabular-nums; }
-table.records td.at { white-space: nowrap; font-variant-numeric: tabular-nums; }
-table.records td.event { white-space: nowrap; }
-table.records td.tier { white-space: nowrap; }
-table.records td.phrasing { min-width: 16rem; }
-table.records td.content { min-width: 14rem; }
-/* Break long words only when there is no other choice, so an id or a URL is not
-   split mid-token while a sentence still wraps normally. */
-table.records td { overflow-wrap: break-word; word-break: normal; }
+table.records th + th,
+table.records td + td {
+  border-left: 1px solid var(--line);
+}
 
-.empty-wider { color: var(--muted); }
-
-/* Tier badges: name as text AND colour; the rule style is the banner's. */
-.badge {
-  display: inline-block;
-  padding: 0.1rem 0.5rem;
-  border-radius: 4px;
-  font-weight: 600;
+table.records th {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-head);
+  background: var(--raised);
+  border-bottom: 1px solid var(--line-strong);
+  color: var(--muted);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
   white-space: nowrap;
 }
-.tier-observed {
-  color: #14100A;
-  background: var(--observed);
-  border: 2px solid var(--observed);
-}
-.tier-reconstructed {
-  color: var(--reconstructed);
-  background: transparent;
-  border: 2px dashed var(--reconstructed);
-}
-.tier-internal {
-  color: var(--internal-line);
-  background: transparent;
-  border: 2px dotted var(--internal-line);
+
+table.records tbody tr:last-child td {
+  border-bottom: 0;
 }
 
-.withheld { color: var(--observed); }
-.no-content, .no-memory { color: var(--muted); }
+.record-row:hover td {
+  background: var(--panel);
+}
+
+/* The seq and the instant are units, not prose: never wrap, never kern apart. */
+td.seq,
+td.at {
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  font-variant-numeric: tabular-nums;
+}
+
+td.seq {
+  color: var(--muted);
+}
+
+td.event {
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+}
+
+td.tier {
+  white-space: nowrap;
+}
+
+td.phrasing {
+  min-width: 16rem;
+}
+
+td.content {
+  min-width: 14rem;
+}
+
+/* Break a long token only when there is no other choice, so an id or a hash is
+   not split mid-token while a sentence still wraps normally. */
+td.phrasing,
+td.content {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+/* --- Tier badges --------------------------------------------------------- */
+
+/* Name as text AND colour AND rule style: three independent channels, so the
+   tier survives colour-blindness and a greyscale printout. */
+.badge {
+  display: inline-block;
+  padding: 0.15rem var(--s2);
+  border: 2px solid;
+  font: 700 var(--t-micro) / 1.35 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tier-observed {
+  background: var(--observed);
+  border-color: var(--observed);
+  color: var(--ground);
+}
+
+.tier-reconstructed {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--reconstructed);
+  color: var(--reconstructed);
+}
+
+.tier-internal {
+  background: transparent;
+  border-style: dotted;
+  border-color: var(--internal);
+  color: var(--internal);
+}
+
+/* --- Content states ------------------------------------------------------ */
+
+/* Withheld and absent must never look alike: one is a deliberate omission the
+   reader is cleared to know about, the other is no content at all.
+   Withheld is set in full-brightness ink rather than in gold: gold already means
+   the Observed tier, and borrowing it here would put two meanings on one colour.
+   The state is carried by the mono type and by the markup's own sentence, which
+   reads the same to a screen reader as it does on screen. */
+.withheld {
+  color: var(--ink);
+  font: var(--t-small) / 1.5 var(--mono);
+}
+
+.no-content,
+.no-memory {
+  color: var(--muted);
+  font: var(--t-small) / 1.5 var(--mono);
+}
+
+.content-text {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+}
+
+/* --- Single-record and single-memory views ------------------------------- */
+
+.record-memory,
+.record-sentence {
+  max-width: var(--measure);
+}
+
+.record-memory {
+  color: var(--muted);
+  font: var(--t-small) / 1.6 var(--mono);
+}
+
+.record-sentence {
+  font-size: 1.0625rem;
+  line-height: 1.5;
+}
+
+#record > h2,
+#memory > h2 {
+  font-size: var(--t-macro);
+  margin-bottom: var(--s4);
+}
+
+/* The claim as a spec sheet: label column fixed, value column free. */
+dl.record-claim,
+dl {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) 1fr;
+  gap: 0;
+  margin: 0 0 var(--s5);
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+dt {
+  padding: var(--s3);
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  font: var(--t-micro) / 1.4 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+dd {
+  margin: 0;
+  padding: var(--s3);
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+}
+
+dt:last-of-type,
+dd:last-of-type {
+  border-bottom: 0;
+}
+
+section.content {
+  margin-bottom: var(--s5);
+}
+
+section.content > p {
+  margin: 0;
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  max-width: var(--measure);
+}
+
+section.content > p.no-content,
+section.content > p.withheld {
+  border-left-color: var(--line-strong);
+}
+
+details.chain-fields {
+  margin-bottom: var(--s5);
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+details.chain-fields summary {
+  padding: var(--s3) var(--s4);
+  cursor: pointer;
+  color: var(--muted);
+  font: var(--t-micro) / 1.4 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+details.chain-fields summary:hover {
+  color: var(--ink);
+}
+
+details.chain-fields > p {
+  margin: 0;
+  padding: 0 var(--s4) var(--s3);
+}
+
+details.chain-fields dl {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.chain-prev-hash,
+.chain-hash,
+.chain-signature,
+.chain-signer {
+  font-size: var(--t-micro);
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+}
+
+/* --- Gaps and verify views ---------------------------------------------- */
+
+ul.breaks {
+  max-width: var(--measure);
+  margin: 0 0 var(--s5);
+  padding: var(--s3) var(--s3) var(--s3) var(--s6);
+  border: 1px solid var(--broken);
+  border-left-width: 4px;
+  background: var(--panel);
+}
+
+ul.breaks li {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+}
+
+.integrity-note {
+  max-width: var(--measure);
+  color: var(--muted);
+  font-size: var(--t-small);
+}
+
+/* A verdict chip: the state as a word, so the answer is readable before the
+   prose is. The colour names the VERDICT, not the subject, which is why /verify
+   (the chain) and /gaps (the gap log) can share one palette honestly. */
+.state-clean,
+.state-broken,
+.state-unknown {
+  display: inline-block;
+  margin: 0 0 var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid;
+  font: 700 var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+.state-clean {
+  border-color: var(--clean);
+  color: var(--clean);
+}
+
+.state-broken {
+  border-color: var(--broken);
+  color: var(--broken);
+}
+
+.state-unknown {
+  border-color: var(--unverified);
+  color: var(--unverified);
+}
+
+.back {
+  display: inline-block;
+  margin-top: var(--s4);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+}
+
+/* --- Empty and error states --------------------------------------------- */
+
+/* An empty window is not a dead end: it names the range it searched, and when
+   the ledger holds records the window missed, it offers them. */
+.empty {
+  max-width: var(--measure);
+  margin: 0 0 var(--s3);
+  color: var(--muted);
+}
+
+.empty-wider {
+  max-width: var(--measure);
+  margin: 0;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line-strong);
+  border-left-width: 4px;
+  background: var(--panel);
+}
+
+.view-error {
+  max-width: var(--measure);
+  margin: 0 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--broken);
+  border-left-width: 4px;
+  background: var(--panel);
+}
+
+/* --- Disclosure controls ------------------------------------------------- */
+
+.reveal-toggle {
+  margin: 0 0 var(--s4);
+}
+
+.reveal-toggle a {
+  display: inline-block;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font: var(--t-micro) / 1 var(--mono);
+  letter-spacing: var(--track-micro);
+  text-transform: uppercase;
+  text-decoration: none;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.reveal-toggle a:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+/* --- Print --------------------------------------------------------------- */
+/* A reviewer prints a record and files it. Dark panels waste toner, so print
+   flips to ink on paper, keeps every rule, and unhides the chain fields -- the
+   printed page must carry the evidence, not a collapsed disclosure. */
+@media print {
+  :root {
+    --ground: #FFFFFF;
+    --panel: #FFFFFF;
+    --raised: #FFFFFF;
+    --ink: #05080C;
+    --muted: #3A4450;
+    --faint: #5F6976;
+    --line: #B9C0C9;
+    --line-strong: #6B7683;
+  }
+
+  body {
+    border-top: 0;
+    font-size: 11pt;
+  }
+
+  .skip,
+  .site-nav,
+  .filter,
+  .reveal-toggle,
+  .site-foot {
+    display: none;
+  }
+
+  details.chain-fields {
+    display: block;
+  }
+
+  details.chain-fields > * {
+    display: block;
+  }
+
+  table.records th {
+    position: static;
+  }
+
+  a {
+    text-decoration: none;
+  }
+}
+
+/* --- Reduced motion and forced colours ---------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+
+  .filter button:active {
+    transform: none;
+  }
+}
+
+/* Forced-colours modes drop author backgrounds: restate the structure as
+   borders so the grid and the compartments survive. */
+@media (forced-colors: active) {
+  table.records,
+  table.records th,
+  table.records td,
+  .filter fieldset,
+  dl,
+  dt,
+  dd,
+  .chain-banner,
+  .empty-wider {
+    border-color: CanvasText;
+  }
+
+  .badge {
+    border-color: CanvasText;
+  }
+
+  .site-nav a[aria-current="page"] {
+    border-color: Highlight;
+  }
+}
+
+/* --- Narrow viewports ---------------------------------------------------- */
+/* The table is six tracked columns of data; below tablet width it cannot stay a
+   table without becoming unreadable, so each row becomes a stacked record with
+   its column name carried in front of the value. */
+@media (max-width: 860px) {
+  .page {
+    padding: var(--s5) var(--s4) var(--s6);
+  }
+
+  table.records,
+  table.records tbody,
+  table.records tr,
+  table.records td {
+    display: block;
+    width: 100%;
+  }
+
+  table.records thead {
+    display: none;
+  }
+
+  table.records {
+    border: 0;
+  }
+
+  /* A display:block table has no caption box; keep the label visible. */
+  table.records caption {
+    display: block;
+    padding: 0 0 var(--s2);
+  }
+
+  table.records tr {
+    margin-bottom: var(--s4);
+    border: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  table.records td {
+    border-bottom: 0;
+    border-left: 0;
+    padding: var(--s2) var(--s3);
+  }
+
+  table.records td + td {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  table.records td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: var(--s1);
+    color: var(--muted);
+    font: var(--t-micro) / 1 var(--mono);
+    letter-spacing: var(--track-micro);
+    text-transform: uppercase;
+  }
+
+  table.records td.seq,
+  table.records td.at,
+  table.records td.event,
+  table.records td.tier {
+    white-space: normal;
+  }
+
+  dl,
+  dl.record-claim {
+    grid-template-columns: 1fr;
+  }
+
+  dt {
+    border-right: 0;
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  dd {
+    padding-top: var(--s1);
+  }
+}

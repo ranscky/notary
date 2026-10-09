@@ -1,10 +1,12 @@
 {{define "page"}}<div id="record">
 {{if .Err}}<p class="view-error" role="alert">{{.Err}}</p>
+<p class="back"><a href="/">Back to records</a></p>
 {{else}}
 {{template "revealToggle" .RevealControl}}
-<h2>Record {{.Row.Line.ID}}</h2>
+<h2>Record <code>{{.Row.Line.ID}}</code></h2>
 <p class="record-memory">{{if .Row.Line.MemoryID}}Memory: <a href="{{memoryHref .Row.Line.MemoryID}}">{{.Row.Line.MemoryID}}</a>{{else}}<span class="no-memory">This record names no memory.</span>{{end}}</p>
 <p class="record-sentence">{{.Row.Line.Phrasing}}</p>
+<span class="frame-label">[ CLAIM ]</span>
 <dl class="record-claim">
 <dt>Event</dt><dd>{{.Row.Line.Event}}</dd>
 <dt>Reason</dt><dd>{{.Row.Line.ReasonKind}}</dd>
@@ -13,14 +15,15 @@
 <dt>Recorded</dt><dd>{{.Row.Line.RecordedAt.Format "2006-01-02 15:04:05 MST"}}</dd>
 <dt>Scope</dt><dd>{{scopeString .Row.Line.Scope}}</dd>
 </dl>
+<span class="frame-label">[ CONTENT ]</span>
 <section class="content">
 {{if .Row.Line.Content}}<p class="content-text">{{.Row.Line.Content}}</p>
 {{else if .Row.Line.Redacted}}<p class="withheld">Content withheld — marked sensitive</p>
 {{else}}<p class="no-content">No content recorded</p>{{end}}
 </section>
 <details class="chain-fields">
-<summary>Chain fields</summary>
-<p>This page verifies nothing by itself. Run <code>notary verify</code> to check the record's hash, link and signature.</p>
+<summary>[ CHAIN FIELDS ] — this page verifies nothing by itself</summary>
+<p>Run <kbd>notary verify</kbd> to check this record's hash, its link to its predecessor, and its signature.</p>
 <dl>
 <dt>prev_hash</dt><dd class="chain-prev-hash">{{.Row.Line.PrevHash}}</dd>
 <dt>hash</dt><dd class="chain-hash">{{.Row.Line.Hash}}</dd>
@@ -28,5 +31,6 @@
 <dt>signer_key_id</dt><dd class="chain-signer">{{.Row.Line.SignerKeyID}}</dd>
 </dl>
 </details>
+<p class="back"><a href="/">Back to records</a></p>
 {{end}}
 </div>{{end}}

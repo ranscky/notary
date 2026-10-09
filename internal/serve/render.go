@@ -25,6 +25,12 @@ import (
 type pageData struct {
 	// Title names the page in the document title.
 	Title string
+	// Current is the nav key of the view being rendered ("records", "gaps" or
+	// "verify"), so the shell can mark the current nav entry with
+	// aria-current="page". It is a key rather than a path because /record and
+	// /memory belong to the records section: the reader is in that section
+	// whichever single subject they are looking at.
+	Current string
 	// Now is the instant the page was built, from the Server's clock.
 	Now time.Time
 	// Chain is the whole ledger's chain verdict, taken for this render.
