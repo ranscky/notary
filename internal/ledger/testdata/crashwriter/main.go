@@ -1,3 +1,5 @@
+//go:build !windows
+
 // Command crashwriter appends records to a Notary ledger file and then dies in
 // a controlled way, so that a test can observe exactly what a mid-write crash
 // leaves behind. It lives under testdata/ so the go tool ignores it during
@@ -23,6 +25,12 @@
 // own line to stdout, so the test can see how far the writer got before it
 // died. The signer key is read from the environment (NOTARY_CRASH_KEY) so the
 // test can derive the matching public key and verify the surviving chain.
+//
+// This program is POSIX-only. kill-mid is its reason to exist, and it does its
+// work with syscall.Kill and syscall.SIGKILL -- neither of which Windows has --
+// so the file carries a !windows build tag rather than a Windows substitute
+// signal. internal/ledger/crash_test.go, which builds this program, is excluded
+// on Windows with it.
 package main
 
 import (
