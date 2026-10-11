@@ -1,3 +1,13 @@
+// This file observes what a mid-write crash leaves behind, and it arranges
+// that crash by making the crashwriter helper deliver SIGKILL to itself, via
+// syscall.Kill. Windows has neither SIGKILL nor syscall.Kill, so the helper
+// does not compile there. The file is excluded on Windows rather than weakened
+// with a substitute signal: SIGKILL is the whole point -- it is the one signal
+// the process cannot catch -- and a catchable signal would test a different
+// thing while still reporting a pass. The Linux gate runs the test unchanged.
+
+//go:build !windows
+
 package ledger_test
 
 import (

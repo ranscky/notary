@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -65,6 +66,16 @@ func TestNewSignerFailsWithoutKey(t *testing.T) {
 // TestNewSignerRejectsLoosePerms proves a key file whose mode is not exactly
 // 0600 is refused, and that the same file rewritten 0600 loads.
 func TestNewSignerRejectsLoosePerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX permission bits: os.Chmod only toggles the
+		// read-only attribute, and os.FileMode.Perm reports 0666 for every
+		// file whatever was requested. So on Windows the first half of this
+		// test would pass for the wrong reason (every file looks loose) and
+		// the second half -- the same file rewritten 0600 must load -- cannot
+		// pass at all. Skipping is honest; the alternative would be asserting
+		// a platform limitation as if it were the intended behaviour.
+		t.Skip("Windows cannot express mode 0600, so neither half of this test can mean what it says")
+	}
 	path := filepath.Join(t.TempDir(), "signing.key")
 	require.NoError(t, os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(newSeed(t))), 0o600))
 	require.NoError(t, os.Chmod(path, 0o644))

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -170,6 +171,17 @@ func TestServeCmdStartsTheDashboardOnALoopbackPort(t *testing.T) {
 // runtime default action and kills the test process -- so this is a real
 // guard, not a restatement of the code.
 func TestServeCmdStopsOnAnInterrupt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// This test delivers SIGINT with os.Process.Signal, which Windows
+		// refuses outright ("not supported by windows"): the os package has no
+		// way to post a console control event to a pid, and GenerateConsoleCtrlEvent
+		// needs a console this test does not own. Only the delivery mechanism is
+		// missing -- the graceful-stop path the test guards is platform-neutral,
+		// since signal.NotifyContext wires up os.Interrupt on Windows too -- so
+		// the other platforms keep the guard unchanged and Windows says it
+		// skipped rather than passing while checking nothing.
+		t.Skip("Windows cannot deliver os.Interrupt to a process from a test, so this guard cannot run here")
+	}
 	dbPath := serveFixture(t)
 
 	cmd, _, errOut := newTestServeCmd(t)
