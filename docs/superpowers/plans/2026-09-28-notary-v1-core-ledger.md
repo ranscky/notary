@@ -19,7 +19,7 @@
 - Never `panic` in library code. Every fallible function returns an error.
 - Wrap errors with context: `fmt.Errorf("writing record: %w", err)`.
 - No global mutable state; dependencies are passed through constructors.
-- No hardcoded secrets or signing keys. Env vars or OS keychain only; a key file is dev-only, must sit outside the repo, and must be `0600`.
+- No hardcoded secrets or signing keys. Env vars or OS keychain only; a key file is dev-only, must sit outside the repo, and must be readable only by its owner — `0600` on POSIX; on Windows, an ACL naming only the owner, SYSTEM and Administrators.
 - Never log key material or raw sensitive memory content.
 - The `VisibilityTier` zero value is invalid and must never reach the store.
 - The structured record is the source of truth. No code path treats generated text as authoritative.

@@ -1,9 +1,10 @@
 // This file is deliberately NOT behind the mem0live build tag.
 //
-// It holds the one safety check the live test's README paragraph leans on. If
-// that check lived only in the tagged file, no gate would ever compile it -- and
-// a safety check no gate compiles is a claim, not a guarantee. Here it is
-// compiled and exercised by the default suite and by CI, offline, with no key.
+// It holds the one safety check that the live test's paragraph in
+// docs/OPERATIONS.md leans on. If that check lived only in the tagged file, no
+// gate would ever compile it -- and a safety check no gate compiles is a claim,
+// not a guarantee. Here it is compiled and exercised by the default suite and
+// by CI, offline, with no key.
 package reconcile_test
 
 import (
@@ -48,8 +49,9 @@ func requireTestScope(t *testing.T, scope record.Scope) record.Scope {
 	return scope
 }
 
-// TestTestScopeIsSafe pins the guard itself, because the README's safety claim
-// rests on it and the live test cannot be run by any gate.
+// TestTestScopeIsSafe pins the guard itself, because the safety claim
+// docs/OPERATIONS.md makes rests on it and the live test cannot be run by any
+// gate.
 func TestTestScopeIsSafe(t *testing.T) {
 	assert.True(t, testScopeIsSafe(record.Scope{UserID: liveTestScopePrefix + "9f1c2d3e4b5a6c7d"}),
 		"a generated scope must be accepted")
