@@ -166,6 +166,16 @@ Every command, flag, environment variable and configuration rule is documented i
 
 ---
 
+## Reporting a vulnerability
+
+Please report suspected security issues through this repository's
+[private vulnerability reporting](https://github.com/ranscky/notary/security) — the **Report a
+vulnerability** button on the Security tab — rather than a public issue, so a fix can be prepared before
+the finding is disclosed. What's in scope, and what deliberately isn't, is in
+[SECURITY.md](SECURITY.md).
+
+---
+
 ## Status and licence
 
 Complete and tested: the core record, the reconciler, and the `export`, `replay`, `explain`, `proxy`,
