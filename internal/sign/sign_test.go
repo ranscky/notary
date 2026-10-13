@@ -63,8 +63,10 @@ func TestNewSignerFailsWithoutKey(t *testing.T) {
 	})
 }
 
-// TestNewSignerRejectsLoosePerms proves a key file whose mode is not exactly
-// 0600 is refused, and that the same file rewritten 0600 loads.
+// TestNewSignerRejectsLoosePerms proves the POSIX rule: a key file whose mode is
+// not exactly 0600 is refused, and the same file rewritten 0600 loads. It is
+// skipped on Windows, which has no mode to be loose in -- see
+// keyfile_windows_test.go for the ACL rule that stands in for it there.
 func TestNewSignerRejectsLoosePerms(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// Windows has no POSIX permission bits: os.Chmod only toggles the

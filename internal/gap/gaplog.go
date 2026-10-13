@@ -13,7 +13,8 @@
 // The package imports internal/record (for the shared types) and internal/sign
 // (for signed head checkpoints over the log, see checkpoint.go). Importing
 // internal/sign does not reintroduce the shared failure domain: signing uses
-// local key material from an env var, a 0600 file, or (unimplemented) the OS
+// local key material from an env var, a key file private to its owner, or
+// (unimplemented) the OS
 // keychain -- it never touches the record store. The store outage a gap log
 // exists to survive does not disable signing, so a checkpoint can still be
 // written and checked while the store is broken.

@@ -336,7 +336,8 @@ This is the **core ledger, the reconciler, `export`, `replay`, `explain`, `proxy
   creates key material**, and no other command and no other flag ever does (the demo script below mints its
   own throwaway key, from `/dev/urandom`, and never writes it to disk): it prints a fresh ed25519 seed as an
   `export NOTARY_SIGNING_KEY=…` line to stdout and writes no file, `--key-out PATH` writes that private half
-  to a file instead (mode `0600`, refused inside a checkout), and `--trusted-keys-out PATH`, with
+  to a file instead (readable only by its owner — mode `0600` on POSIX, an ACL naming only its owner, SYSTEM
+  and Administrators on Windows — and refused inside a checkout), and `--trusted-keys-out PATH`, with
   `--generate-key`, writes the matching **public** half (mode `0644`, allowed inside a checkout, because a
   public half is not a credential) as the base64 line `NOTARY_TRUSTED_KEYS_PATH` reads — so a first run needs
   no external tool to derive the public half from a key it has just made. It requires `--generate-key`

@@ -18,11 +18,14 @@ import (
 	"notary/internal/interceptor/proxy"
 )
 
-// keyFilePerm is the only mode sign.KeySourceFile's loader accepts: it
-// compares the key file's permissions with 0600 exactly and fails with
-// sign.ErrLoosePerms otherwise (internal/sign/sign.go). --key-out must write
-// what that loader reads, or doctor would produce a key its own commands
-// refuse to load.
+// keyFilePerm is the mode --key-out writes the private half with, and the mode
+// sign.KeySourceFile's loader demands on the systems that have modes: it
+// requires a file readable only by its owner, and fails with sign.ErrLoosePerms
+// otherwise (internal/sign/sign.go). On Windows that half does not exist -- the
+// file's ACL is what makes it private there, and Perm() reports 0666 for every
+// file -- so this is written for the platforms where it means something.
+// --key-out must write what that loader reads, or doctor would produce a key its
+// own commands refuse to load.
 const keyFilePerm os.FileMode = 0o600
 
 // trustedKeysFilePerm is the mode --trusted-keys-out writes with: 0644, not
@@ -50,8 +53,9 @@ const setupPageFilename = "setup.html"
 // flag combination, ever generates a key (the demo script mints its own
 // throwaway key, from /dev/urandom, and writes it to no file). It prints an
 // `export NOTARY_SIGNING_KEY=...` line to stdout and writes no file;
-// --key-out PATH writes the PRIVATE half to PATH instead, at mode 0600 and
-// outside the repository; and --trusted-keys-out PATH writes the PUBLIC half --
+// --key-out PATH writes the PRIVATE half to PATH instead -- mode 0600 on POSIX,
+// an ACL naming only its owner on Windows -- and outside the repository; and
+// --trusted-keys-out PATH writes the PUBLIC half --
 // the one base64 line NOTARY_TRUSTED_KEYS_PATH names for verify, replay and
 // report -- at mode 0644, allowed inside a checkout, because a public half is
 // not a credential. It is explicit because silence is the safety property.
@@ -88,7 +92,8 @@ func newDoctorCmd() *cobra.Command {
 			"file: it is the only command in this repository that creates key material\n" +
 			"(the demo script mints its own throwaway key, and writes it to no file), and\n" +
 			"it does so only when asked. --key-out PATH writes the private half to PATH\n" +
-			"(mode 0600, refused inside the repository) instead of printing it.\n" +
+			"(readable only by its owner, refused inside the repository) instead of\n" +
+			"printing it.\n" +
 			"\n" +
 			"--trusted-keys-out PATH, with --generate-key, writes the pair's PUBLIC half\n" +
 			"to PATH as the one base64 line NOTARY_TRUSTED_KEYS_PATH names for verify,\n" +
@@ -129,7 +134,7 @@ func newDoctorCmd() *cobra.Command {
 	cmd.Flags().Bool("generate-key", false,
 		"generate a fresh ed25519 key pair and print the private half as an export NOTARY_SIGNING_KEY=... line (see --key-out and --trusted-keys-out for the halves as files)")
 	cmd.Flags().String("key-out", "",
-		"with --generate-key, write the private half to this path (mode 0600, refused inside the repository) instead of printing it")
+		"with --generate-key, write the private half to this path (readable only by its owner, refused inside the repository) instead of printing it")
 	cmd.Flags().String("trusted-keys-out", "",
 		"with --generate-key, write the public half to this path (mode 0644, allowed inside the repository) for NOTARY_TRUSTED_KEYS_PATH to read")
 	return cmd
@@ -379,17 +384,22 @@ func generateSigningKey(out io.Writer, keyOut, trustedKeysOut string) error {
 
 // writeSigningKeyFile writes material to path satisfying the loader's own
 // rules, copied rather than restated: sign.KeySourceFile reads a key file that
-// "must be mode 0600 and live outside the repository" (internal/sign/sign.go),
-// and its loader fails with sign.ErrLoosePerms when the mode is anything else.
-// So this writes 0600 and refuses a path inside the repository -- otherwise
-// doctor would write a key its own commands refuse to load, which is worse
-// than refusing to write one at all.
+// "must be readable only by its owner ... and live outside the repository"
+// (internal/sign/sign.go), and its loader fails with sign.ErrLoosePerms when
+// that does not hold. So this writes 0600 and refuses a path inside the
+// repository -- otherwise doctor would write a key its own commands refuse to
+// load, which is worse than refusing to write one at all.
+//
+// The mode is the POSIX half of "readable only by its owner". On Windows that
+// half does not exist and the file's ACL is what makes it private, which is
+// what the loader reads there: a key created into the user's own directory
+// inherits access for the owner, SYSTEM and Administrators, and nobody else.
 //
 // The file is created O_EXCL: silently replacing existing key material would
 // destroy the only copy of a signing identity, so an existing path is an
 // error, not a clobber. The mode is chmod'ed after creation because the umask
 // applies to the open and a restrictive one could clear bits from the 0600 the
-// loader demands exactly.
+// loader demands exactly, where it demands a mode at all.
 func writeSigningKeyFile(out io.Writer, path, material string) error {
 	if err := refuseKeyInsideRepository(path); err != nil {
 		return err
@@ -458,7 +468,8 @@ func writeTrustedKeysFile(out io.Writer, path, publicHalf string) error {
 // mode to perm with fchmod, because the umask applies to the open and a
 // restrictive one could clear bits from the mode the caller needs: 0600
 // exactly for the private half, which sign.KeySourceFile accepts at no other
-// mode, and the 0644 the spec fixes for the public half. The trailing newline
+// mode on the platforms where a mode is what makes the file private, and the
+// 0644 the spec fixes for the public half. The trailing newline
 // is cosmetic -- both loaders trim whitespace -- and keeps the file a
 // well-formed text file.
 func writeKeyContents(f *os.File, material string, perm os.FileMode) error {

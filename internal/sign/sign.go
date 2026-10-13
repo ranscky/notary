@@ -31,7 +31,9 @@ const (
 	// KeySourceEnv reads base64 key material from an environment variable.
 	KeySourceEnv KeySourceKind = iota + 1
 	// KeySourceFile reads base64 key material from a dev-only file that must be
-	// mode 0600 and live outside the repository.
+	// readable only by its owner -- mode 0600 on POSIX systems; on Windows, an
+	// ACL granting access to nobody but the owner, SYSTEM and Administrators --
+	// and must live outside the repository.
 	KeySourceFile
 	// KeySourceKeychain is reserved for an OS keychain. This platform has no
 	// keychain API available to us, so it is unsupported (ErrKeychainUnsupported)
@@ -57,7 +59,10 @@ var (
 	// ErrKeychainUnsupported reports that KeySourceKeychain is unavailable on
 	// this platform.
 	ErrKeychainUnsupported = errors.New("sign: OS keychain is unsupported on this platform")
-	// ErrLoosePerms reports that a key file's permissions are not exactly 0600.
+	// ErrLoosePerms reports that a key file is readable by someone other than its
+	// owner: a mode other than 0600 on POSIX systems, or on Windows an ACL that
+	// grants access to any identity besides the owner, SYSTEM and
+	// Administrators.
 	ErrLoosePerms = errors.New("sign: key file permissions must be 0600")
 	// ErrUnknownKey reports that a signature was checked against a KeyID that is
 	// absent from the verifier's trusted keyring.
@@ -69,9 +74,6 @@ var (
 
 // redactedPlaceholder is emitted by every printable path of secretKey.
 const redactedPlaceholder = "[redacted]"
-
-// keyFilePerm is the only acceptable permission mode for a key file.
-const keyFilePerm = os.FileMode(0o600)
 
 // secretKey holds ed25519 private key material. It deliberately implements
 // String, GoString, Format, and MarshalJSON so that no fmt verb (%v, %+v, %s,
@@ -210,7 +212,13 @@ func isEnvVarName(s string) bool {
 	return true
 }
 
-// loadFromFile reads base64 key material from the 0600 file at path.
+// loadFromFile reads base64 key material from the key file at path, refusing a
+// file whose access is not restricted to its owner.
+//
+// What "restricted to its owner" means is platform-specific -- a POSIX mode on
+// one, a discretionary ACL on the other -- so the test lives in keyfile_posix.go
+// and keyfile_windows.go, and both are expected to return a wrapped
+// ErrLoosePerms when the file is not private enough.
 func loadFromFile(path string) (ed25519.PrivateKey, error) {
 	if path == "" {
 		return nil, fmt.Errorf("%w: no key file path provided", ErrNoKeyConfigured)
@@ -219,8 +227,8 @@ func loadFromFile(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sign: reading key file: %w", err)
 	}
-	if perm := info.Mode().Perm(); perm != keyFilePerm {
-		return nil, fmt.Errorf("%w: %s has mode %04o", ErrLoosePerms, path, perm)
+	if err := checkKeyFileAccess(path, info); err != nil {
+		return nil, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
