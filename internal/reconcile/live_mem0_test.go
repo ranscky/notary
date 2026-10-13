@@ -1,9 +1,9 @@
 //go:build mem0live
 
 // This file talks to the REAL Mem0 API. It is opt-in behind the `mem0live` build
-// tag so that it can never run in CI and the README's promise -- tests never
-// touch the network -- stays true: `go test ./...` does not compile this file,
-// and neither `go build` nor `go vet` sees it.
+// tag so that it can never run in CI and the promise docs/OPERATIONS.md makes --
+// tests never touch the network -- stays true: `go test ./...` does not compile
+// this file, and neither `go build` nor `go vet` sees it.
 //
 // Run it deliberately, with a real key in the environment, and WITH -count=1:
 //
@@ -68,9 +68,9 @@ const (
 
 // liveTestScope mints a scope belonging to nobody. liveTestScopePrefix and
 // requireTestScope live in livetest_scope_test.go, which is deliberately NOT
-// behind this build tag: the guard the README's safety claim rests on is
-// therefore compiled and exercised by the default suite, rather than existing
-// only in a file that no gate ever compiles.
+// behind this build tag: the guard the safety claim in docs/OPERATIONS.md rests
+// on is therefore compiled and exercised by the default suite, rather than
+// existing only in a file that no gate ever compiles.
 func liveTestScope(t *testing.T) record.Scope {
 	t.Helper()
 	buf := make([]byte, 8)

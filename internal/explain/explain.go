@@ -226,7 +226,8 @@ func (e *Explainer) read(req Request) ([]record.Record, error) {
 // jsonRecord is explain's own wire shape for one record: the fields a
 // single-subject reader needs, and none of export.Line's range-view fields. It
 // is the documented --json contract rather than an internal detail, and its
-// keys are the ones named for a consumer in README's "notary explain" bullet.
+// keys are the ones named for a consumer in the "explain" section of
+// docs/OPERATIONS.md.
 type jsonRecord struct {
 	Seq uint64          `json:"seq"`
 	ID  record.RecordID `json:"id"`

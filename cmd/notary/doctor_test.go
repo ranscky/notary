@@ -317,28 +317,22 @@ func assertPOSIXMode(t *testing.T, path string, want os.FileMode, msg string) {
 }
 
 // TestDoctorCmdGenerateKeyWritesAKeyTheFileLoaderAccepts is the other half of
-// the loader's rules, copied: sign.KeySourceFile accepts exactly mode 0600 and
-// fails with sign.ErrLoosePerms otherwise, so the file --key-out writes must
-// be 0600 and must load through that same loader, or doctor would write a key
-// its own commands refuse to load.
+// the loader's rules, copied: sign.KeySourceFile accepts a key file that is
+// private to its owner and fails with sign.ErrLoosePerms otherwise, so the file
+// --key-out writes must be private and must load through that same loader, or
+// doctor would write a key its own commands refuse to load.
+//
+// The mode assertion is POSIX-only, because on POSIX the mode is the rule. On
+// Windows the file is private by virtue of its ACL while the mode reports 0666
+// for every file, so asserting a mode there would fail while the property under
+// test held. The load below is the assertion that carries the test everywhere.
 func TestDoctorCmdGenerateKeyWritesAKeyTheFileLoaderAccepts(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// The test's premise is that a key written by --key-out must load back
-		// through sign.KeySourceFile. That loader accepts exactly mode 0600 and
-		// refuses everything else, and Windows reports 0666 for every file, so
-		// the premise cannot hold here. This is a real limitation of file-based
-		// key loading on Windows rather than a broken assertion, and asserting
-		// "the file is 0666" would dress the limitation up as intent.
-		t.Skip("Windows cannot load a key file: sign.KeySourceFile requires mode 0600 and Windows reports 0666")
-	}
 	path := filepath.Join(t.TempDir(), "signing.key")
 
 	out, err := executeDoctorCmd(t, "--generate-key", "--key-out", path)
 	require.NoError(t, err)
 
-	info, err := os.Stat(path)
-	require.NoError(t, err, "--key-out must write the key file")
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
+	assertPOSIXMode(t, path, 0o600,
 		"sign.KeySourceFile accepts exactly 0600; the writer must not rely on the umask")
 
 	sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceFile, Ref: path})
@@ -395,15 +389,6 @@ func TestDoctorCmdTrustedKeysOutWritesThePairAndRequiresGenerateKey(t *testing.T
 		"the public half is 0644: it is not a credential, it is meant to be read")
 
 	t.Run("with --key-out both halves become files", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			// This subtest is the file pair end to end: the private half is
-			// loaded back with sign.KeySourceFile, and on Windows that loader
-			// refuses every file, so the identity check at the end could not
-			// run even if the two mode assertions were ignored. The parent
-			// test still proves the pair through the environment half and the
-			// real keyring, so the coverage kept on Windows is real.
-			t.Skip("Windows cannot load a key file: sign.KeySourceFile requires mode 0600 and Windows reports 0666")
-		}
 		dir := t.TempDir()
 		keyPath := filepath.Join(dir, "signing.key")
 		keysPath := filepath.Join(dir, "trusted.keys")
@@ -412,12 +397,11 @@ func TestDoctorCmdTrustedKeysOutWritesThePairAndRequiresGenerateKey(t *testing.T
 		require.NoError(t, err)
 		assertNoExportedKeyLine(t, out)
 
-		privateInfo, err := os.Stat(keyPath)
-		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o600), privateInfo.Mode().Perm())
-		keysInfo, err := os.Stat(keysPath)
-		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o644), keysInfo.Mode().Perm())
+		// The two modes are POSIX facts and are asserted where they exist. The
+		// part that makes this a file PAIR -- that the private half loads and
+		// belongs to the public half -- is asserted below on every platform.
+		assertPOSIXMode(t, keyPath, 0o600, "the private half is 0600")
+		assertPOSIXMode(t, keysPath, 0o644, "the public half is 0644")
 
 		sg, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceFile, Ref: keyPath})
 		require.NoError(t, err)

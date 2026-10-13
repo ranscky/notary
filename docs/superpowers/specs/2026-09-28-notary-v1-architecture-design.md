@@ -266,7 +266,7 @@ Idempotency keys are deterministic and content-derived — never wall-clock, nev
 
 ### Key handling
 
-ed25519. Loaded from an env var or the OS keychain; a file path is a dev convenience only — it must live outside the repository, be `0600`, and loading **refuses** if permissions are loose. A key is never generated silently. Key material is wrapped in a type whose `String`, `Format`, and `MarshalJSON` all emit `[redacted]`, so "never log key material" is a property of the type rather than a review that must be repeated. Each record names its `SignerKeyID` (a public-key fingerprint), and config supplies a set of trusted public keys so rotation does not invalidate history.
+ed25519. Loaded from an env var or the OS keychain; a file path is a dev convenience only — it must live outside the repository, be readable only by its owner (`0600` on POSIX; on Windows, an ACL naming only the owner, SYSTEM and Administrators), and loading **refuses** if it is not. A key is never generated silently. Key material is wrapped in a type whose `String`, `Format`, and `MarshalJSON` all emit `[redacted]`, so "never log key material" is a property of the type rather than a review that must be repeated. Each record names its `SignerKeyID` (a public-key fingerprint), and config supplies a set of trusted public keys so rotation does not invalidate history.
 
 ### Startup versus runtime
 

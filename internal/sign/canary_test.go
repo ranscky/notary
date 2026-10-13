@@ -197,11 +197,19 @@ func TestNewSignerNeverEchoesMaterialRef(t *testing.T) {
 	})
 }
 
+// signerErrLoosePerms produces the ErrLoosePerms error path for the canary.
+//
+// The file is made loose through makeKeyFileLoose rather than by chmod'ing it
+// here, because "loose" is platform-specific: mode 0644 on POSIX, an ACE
+// granting Everyone read on Windows. Simply chmod'ing to 0644 would be wrong on
+// Windows, where that leaves the file perfectly private -- the canary would
+// return nil, and the error path it exists to audit would quietly drop out of
+// the test while the test kept passing.
 func signerErrLoosePerms(t *testing.T, content string) error {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "canary.key")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-	require.NoError(t, os.Chmod(path, 0o644))
+	makeKeyFileLoose(t, path)
 	_, err := sign.NewSigner(sign.KeySource{Kind: sign.KeySourceFile, Ref: path})
 	return err
 }
