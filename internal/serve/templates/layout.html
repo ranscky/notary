@@ -7,10 +7,16 @@
      by widening the CSP. The policy in security.go carries no 'unsafe-eval' and
      no 'unsafe-inline', so the three htmx capabilities that would need them are
      switched off instead: eval (hx-on attributes, js: expressions), running
-     <script> found in swapped content, and injecting its default indicator
-     <style> element. This console's templates use none of them -- app.css styles
+     script tags found in swapped content, and injecting its default indicator
+     style element. This console's templates use none of them -- app.css styles
      everything and the reveal swap is a plain hx-get -- so nothing is lost, and
-     the policy stays at the strict end. */}}
+     the policy stays at the strict end.
+
+     Deliberately written without literal tag syntax. Go strips this comment
+     before the browser ever sees it, so nothing here reaches a served page --
+     but the file is also a plain document to anything that opens it directly,
+     and a raw opening script tag in here swallows the rest of the markup for a
+     reader viewing the unrendered template. */}}
 <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false}'>
 <title>{{.Title}} — notary</title>
 <link rel="stylesheet" href="/assets/app.css">
