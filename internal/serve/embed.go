@@ -21,13 +21,33 @@ import (
 // htmx is vendored as a pinned artefact and its bytes must never be edited:
 //
 //	htmx 2.0.7 -- https://unpkg.com/htmx.org@2.0.7/dist/htmx.min.js
-//	51,076 bytes; SHA-256 60231ae6ba9db3825eb15a261122d5f55921c4d53b66bf637dc18b4ee27c79f9
 //	Licensed Zero-Clause BSD (0BSD); the licence text ships as assets/htmx.LICENSE.
+//
+// The digest and length that pin it are the constants below rather than a number
+// written into this comment. A pin recorded only in prose is one no test can
+// compare against, so the record and the check would drift apart the first time
+// anyone re-vendored the file; keeping the values here makes that impossible to
+// do quietly.
 //
 // htmx is the only script, and it is progressive enhancement: the filter form
 // is an ordinary GET form and every link is an ordinary link, so with
 // JavaScript off the console still works. Vendoring an asset is not adding a Go
 // module, so no go.mod entry and no network fetch at runtime (design section 7).
+
+const (
+	// htmxSHA256 is the hex-encoded SHA-256 of assets/htmx.min.js for the pinned
+	// htmx 2.0.7. TestServedHtmxMatchesTheRecordedHash compares the bytes the
+	// handler actually serves against this, so re-vendoring htmx means changing
+	// both the file and this value -- and if only the file moves, the test is what
+	// notices.
+	htmxSHA256 = "60231ae6ba9db3825eb15a261122d5f55921c4d53b66bf637dc18b4ee27c79f9"
+
+	// htmxSize is the byte length of assets/htmx.min.js for the pinned htmx
+	// 2.0.7. It is checked alongside the digest because a truncated vendored file
+	// is the likeliest way this asset goes wrong, and a length is the one property
+	// that would still notice a wholesale swap of the hash function.
+	htmxSize = 51076
+)
 
 //go:embed templates/*.html
 var templateSources embed.FS

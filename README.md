@@ -136,6 +136,31 @@ its reader needs.
 
 ---
 
+## Reading the trail in a browser
+
+Sometimes a reviewer would rather click through the trail than read a folder. `notary serve` puts the
+same records on a small dashboard that runs on the reviewer's own machine.
+
+- **It is reachable only from that machine.** It binds the loopback address — `127.0.0.1`, meaning *this
+  computer only* — and there is no setting that widens it. The one flag it takes is the port.
+- **It has no login, and that is deliberate.** Something reachable only from this machine, and only able
+  to read, is not made safer by a password — and a password would suggest the dashboard is safe to
+  expose, which it is not. The honest boundary is the machine itself: anyone who can use this computer
+  can read this ledger. It also refuses any request arriving under a different hostname, and allows no
+  other web page to read its responses, so a site you happen to have open cannot reach in.
+- **It cannot change anything.** Every page is a plain read. The ledger is opened read-only, so there is
+  no route through the dashboard that writes.
+- **Revealing sensitive content is deliberate, and never silent.** Content marked sensitive stays hidden.
+  A reveal toggle shows it *for that view only*, changes no fingerprint, and writes one line to the
+  server's log each time — so a reveal is recorded, not merely clicked. Revealed pages are marked as not
+  storable, so they are kept out of the browser's cache and its back-and-forward history, and the pages
+  refuse to be framed by another site.
+
+The dashboard is for the reviewer sitting at the machine. The report folder above is for the reviewer who
+needs to take the evidence away.
+
+---
+
 ## Where it sits, and what happens when it fails
 
 ```mermaid

@@ -139,6 +139,18 @@ and sets no CORS header, so a foreign page can neither reach nor read it. It is 
 the ledger is opened with no signer, so it can never append — and it needs neither a signing key nor a
 trusted-key file: a keyring, when one is configured, only enables the chain banner's verdict.
 
+Every response carries a fixed set of security headers, set in one middleware (`securityHeaders` in
+`internal/serve/security.go`) rather than per handler, so the refusals — the 405 and the 403 — carry them
+as well as the pages: `Cache-Control: no-store`, because a page rendered with `reveal=1` must not outlive
+the view in a browser cache or the session history; `X-Content-Type-Options: nosniff`; a
+`Content-Security-Policy` of `default-src 'none'` that allows only the console's own script, stylesheet
+and images, pins `form-action` and `base-uri` to `'self'`, and sets `frame-ancestors 'none'` so the
+dashboard cannot be framed; and `Referrer-Policy: no-referrer`, so a record or memory id does not travel
+in a `Referer` header. htmx is configured through its `htmx-config` meta tag with eval, script-tag
+execution and indicator-style injection switched off, which is what lets the policy carry neither
+`'unsafe-eval'` nor `'unsafe-inline'`. The vendored htmx is pinned by `htmxSHA256` and `htmxSize` in
+`internal/serve/embed.go`, and a test hashes the bytes the handler serves against them.
+
 ### `export` — a range as JSONL
 
 `export` renders a range of the ledger to stdout as JSONL — one stable object per record — so an audit

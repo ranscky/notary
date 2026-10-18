@@ -14,7 +14,8 @@
 //
 // This file holds the Server and the dependencies it is constructed from; the
 // data projections live in views.go, the routes in routes.go, the rendering in
-// render.go, and the embedded templates and assets in embed.go.
+// render.go, the embedded templates and assets in embed.go, and the response
+// headers every route sends in security.go.
 package serve
 
 import (

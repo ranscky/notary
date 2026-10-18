@@ -3,6 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{/* htmx is configured here, through the meta tag it reads at load, rather than
+     by widening the CSP. The policy in security.go carries no 'unsafe-eval' and
+     no 'unsafe-inline', so the three htmx capabilities that would need them are
+     switched off instead: eval (hx-on attributes, js: expressions), running
+     <script> found in swapped content, and injecting its default indicator
+     <style> element. This console's templates use none of them -- app.css styles
+     everything and the reveal swap is a plain hx-get -- so nothing is lost, and
+     the policy stays at the strict end. */}}
+<meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false}'>
 <title>{{.Title}} — notary</title>
 <link rel="stylesheet" href="/assets/app.css">
 <script src="/assets/htmx.min.js" defer></script>

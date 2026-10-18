@@ -58,7 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/gaps", s.handleGaps)
 	mux.HandleFunc("/verify", s.handleVerify)
 	mux.HandleFunc("/assets/", s.handleAsset)
-	return guardMethods(guardHost(mux))
+	return securityHeaders(guardMethods(guardHost(mux)))
 }
 
 // guardMethods refuses every method but GET and HEAD with 405 and no body, so
@@ -171,8 +171,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // filesystem. A name the binary did not embed is a 404, so the handler cannot
 // be talked into serving a directory listing or a file off disk.
 //
-// Every asset is served with Cache-Control: no-store, so a browser always
-// revalidates and a stale page never pairs with a stale stylesheet.
+// Cache-Control is deliberately not set here. The securityHeaders middleware
+// sets no-store on every response, so a browser always revalidates and a stale
+// page never pairs with a stale stylesheet; setting it in the handler as well
+// would give one policy two places to disagree in.
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/assets/")
 	data, ok := s.assets[name]
@@ -180,7 +182,6 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", assetContentType(name))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
