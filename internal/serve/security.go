@@ -12,11 +12,22 @@ import "net/http"
 // them inside the handlers would leave exactly those responses bare.
 const (
 	// contentSecurityPolicy allows only what the console actually loads: its own
-	// stylesheet, its own script and its own images, all same-origin. There is no
-	// 'unsafe-inline' and no 'unsafe-eval', so an injected script or an inline
-	// style has no way in; default-src 'none' means anything the policy does not
-	// name is refused rather than allowed, so a new resource type is a deliberate
-	// edit here. form-action and base-uri are pinned to 'self' so a form cannot be
+	// stylesheet, its own script, its own images and its own endpoints, all
+	// same-origin. There is no 'unsafe-inline' and no 'unsafe-eval', so an
+	// injected script or an inline style has no way in; default-src 'none' means
+	// anything the policy does not name is refused rather than allowed, so a new
+	// resource type is a deliberate edit here.
+	//
+	// connect-src is what makes htmx work at all. Every hx-get -- the reveal
+	// toggle and the filter form -- is a fetch, and a fetch is governed by
+	// connect-src, NOT by the script-src allowance that let htmx load in the
+	// first place. Without it the browser blocks the request and the console
+	// degrades to a full page load: no error the reader sees, just a swap that
+	// never happens, and a page that looks like it worked. It is the one directive
+	// here whose absence is invisible in a rendered page, which is why the test
+	// derives the requirement from the markup instead of checking a list.
+	//
+	// form-action and base-uri are pinned to 'self' so a form cannot be
 	// redirected off-origin and a <base> cannot be injected to re-point relative
 	// URLs, and frame-ancestors 'none' refuses to be framed at all -- the
 	// clickjacking guard, and the modern replacement for X-Frame-Options.
@@ -26,7 +37,7 @@ const (
 	// no js: expressions, so eval would buy nothing and permitting it would be
 	// surface with no purpose. See the htmx-config meta tag in layout.html.
 	contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
-		"form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+		"connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 
 	// cacheControlNoStore is why a revealed page does not outlive the view. A
 	// page rendered with reveal=1 can carry the sensitive content the ledger

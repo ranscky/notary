@@ -143,12 +143,19 @@ Every response carries a fixed set of security headers, set in one middleware (`
 `internal/serve/security.go`) rather than per handler, so the refusals — the 405 and the 403 — carry them
 as well as the pages: `Cache-Control: no-store`, because a page rendered with `reveal=1` must not outlive
 the view in a browser cache or the session history; `X-Content-Type-Options: nosniff`; a
-`Content-Security-Policy` of `default-src 'none'` that allows only the console's own script, stylesheet
-and images, pins `form-action` and `base-uri` to `'self'`, and sets `frame-ancestors 'none'` so the
-dashboard cannot be framed; and `Referrer-Policy: no-referrer`, so a record or memory id does not travel
-in a `Referer` header. htmx is configured through its `htmx-config` meta tag with eval, script-tag
-execution and indicator-style injection switched off, which is what lets the policy carry neither
-`'unsafe-eval'` nor `'unsafe-inline'`. The vendored htmx is pinned by `htmxSHA256` and `htmxSize` in
+`Content-Security-Policy` of `default-src 'none'` that allows only the console's own script, stylesheet,
+images and endpoints, pins `form-action` and `base-uri` to `'self'`, and sets `frame-ancestors 'none'` so
+the dashboard cannot be framed; and `Referrer-Policy: no-referrer`, so a record or memory id does not
+travel in a `Referer` header.
+
+`connect-src 'self'` in that policy is what makes htmx work. Every `hx-get` — the reveal toggle and the
+filter form — is a fetch, and a fetch is governed by `connect-src`, not by the `script-src` allowance
+that let htmx load. Without it the browser blocks the request and the console quietly degrades to full
+page reloads, with nothing visibly broken. A test derives the required directives from the embedded
+markup, so adding an image, a font face or another request-bearing attribute fails until the policy names
+it. htmx is configured through its `htmx-config` meta tag with eval, script-tag execution and
+indicator-style injection switched off, which is what lets the policy carry neither `'unsafe-eval'` nor
+`'unsafe-inline'`. The vendored htmx is pinned by `htmxSHA256` and `htmxSize` in
 `internal/serve/embed.go`, and a test hashes the bytes the handler serves against them.
 
 ### `export` — a range as JSONL

@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,7 +21,7 @@ import (
 // would agree with whatever the code happened to say, which is precisely the
 // property a contract test must not have.
 const wantCSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; " +
-	"form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+	"connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 
 // assertSecurityHeaders asserts the four headers on one response.
 //
@@ -82,6 +85,104 @@ func TestEveryRouteCarriesTheSecurityHeaders(t *testing.T) {
 			require.Equal(t, tc.status, rr.Code, "%s %s must answer %d", tc.method, tc.target, tc.status)
 			assertSecurityHeaders(t, rr)
 		})
+	}
+}
+
+// parseCSP splits a policy into its directives, so a test can ask what the
+// policy says by name rather than matching the whole string. The values are the
+// source lists; an empty value is a directive that takes none.
+func parseCSP(policy string) map[string]string {
+	directives := map[string]string{}
+	for _, part := range strings.Split(policy, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, sources, _ := strings.Cut(part, " ")
+		directives[name] = strings.TrimSpace(sources)
+	}
+	return directives
+}
+
+// goTemplateCommentRe matches a Go template comment. Comments are stripped
+// before markup is scanned because a comment is not markup: layout.html's own
+// comments name hx-get and, once, a raw script tag, and a scanner that counted
+// those would demand directives for things no browser ever fetches.
+var goTemplateCommentRe = regexp.MustCompile(`(?s)\{\{/\*.*?\*/\}\}`)
+
+// resourceDirective maps markup that pulls a resource to the CSP directive that
+// governs it. The table is the point: the test reads what the console LOADS
+// instead of a list of directive names someone remembered to keep in step.
+var resourceDirective = []struct {
+	directive string
+	pattern   *regexp.Regexp
+	what      string
+}{
+	{"script-src", regexp.MustCompile(`<script[^>]*\ssrc=`), "a script source"},
+	{"style-src", regexp.MustCompile(`<link[^>]*\srel=["']?stylesheet`), "a linked stylesheet"},
+	{"style-src", regexp.MustCompile(`<style[\s>]|\sstyle=["']`), "an inline style"},
+	{"img-src", regexp.MustCompile(`<img[\s>]`), "an image"},
+	{"connect-src", regexp.MustCompile(`\shx-(get|post|put|patch|delete)=`), "an htmx request"},
+	{"font-src", regexp.MustCompile(`@font-face`), "a font face"},
+}
+
+// TestCSPCarriesADirectiveForEveryResourceTheConsoleUses ties the policy to what
+// the console actually loads.
+//
+// default-src 'none' refuses anything the policy does not name, which is the
+// right default but means a resource type is only as supported as its directive.
+// htmx's requests are the case that proved it: every hx-get is a fetch, so with
+// no connect-src the browser blocks it and the toggle silently degrades to a
+// full page load. Nothing appears broken -- the swap just never happens.
+//
+// So this derives the requirement from the markup rather than asserting a list
+// of names. Adding an image or a font face to a page fails this test until the
+// policy names it, which is the only way the two stay in step.
+func TestCSPCarriesADirectiveForEveryResourceTheConsoleUses(t *testing.T) {
+	f := newFixture(t)
+	policy := parseCSP(get(t, f.server.Handler(), "/").Header().Get("Content-Security-Policy"))
+	require.NotEmpty(t, policy, "the policy must parse into directives")
+
+	// What the markup requires, and the evidence for each.
+	required := map[string]string{}
+	files, err := fs.Glob(templateSources, "templates/*.html")
+	require.NoError(t, err)
+	require.NotEmpty(t, files, "the templates must be embedded for this test to mean anything")
+	for _, name := range files {
+		raw, err := fs.ReadFile(templateSources, name)
+		require.NoError(t, err)
+		markup := goTemplateCommentRe.ReplaceAll(raw, nil)
+		for _, entry := range resourceDirective {
+			if _, seen := required[entry.directive]; seen {
+				continue
+			}
+			if entry.pattern.Match(markup) {
+				required[entry.directive] = fmt.Sprintf("%s (%s)", entry.what, name)
+			}
+		}
+	}
+
+	// The stylesheet can pull a resource too, and it is embedded rather than
+	// templated, so it is scanned as bytes.
+	css, err := fs.ReadFile(assetSources, "assets/app.css")
+	require.NoError(t, err)
+	if _, seen := required["img-src"]; !seen && regexp.MustCompile(`url\(`).Match(css) {
+		required["img-src"] = "a url(...) in assets/app.css"
+	}
+
+	require.NotEmpty(t, required, "the console must load something")
+	for directive, why := range required {
+		assert.Contains(t, policy, directive,
+			"the console loads %s, so the policy must name %s: default-src 'none' refuses anything unnamed",
+			why, directive)
+	}
+
+	// The directives the console is allowed to use, spelled out. Most are also
+	// derived above; img-src is asserted even though no template uses an image
+	// today, because the policy permits one and dropping the directive would
+	// break that page at runtime instead of here.
+	for _, directive := range []string{"script-src", "style-src", "img-src", "connect-src"} {
+		assert.Contains(t, policy, directive, "the console relies on %s", directive)
 	}
 }
 
