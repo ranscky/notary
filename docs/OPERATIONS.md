@@ -134,6 +134,25 @@ verification pages report what `notary gaps` and `notary verify` report. Sensiti
 default and a per-view toggle reveals it for that view only, writing one audit line to stderr each time
 and never changing a hash.
 
+The routes are **`/` for the Overview** — the console's front page — and **`/records` for the table**,
+with `/record`, `/memory`, `/gaps` and `/verify` beside them. The nav bar is one list in
+`internal/serve/nav.go` and is rendered by a template function, so a page added later is one line there
+rather than an edit to every template.
+
+The Overview renders, in order: a three-state verdict card driven by the same `chainView` the banner uses
+(`chainClean`, `chainNotVerified`, `chainBroken`), the ledger's count, span and per-tier split, and the
+gap count from `ledger.OutstandingGaps` — the same read `notary gaps` reports. A ledger with **no** records
+shows a first-run state instead of the figures, with a note that quotes the ledger path this console opened
+(`Options.LedgerPath`) so it is specific to the deployment rather than generic advice; that note is the one
+place in the console that names environment variables, and it is text for an engineer, not for the reviewer
+who forwards it.
+
+The Overview's figures come from `store.LedgerStats`, the one definition of "how many records and what
+span" in the tree: the records view's own `extent()` delegates to it. It is two aggregate queries rather
+than a row walk, because the front page shows those numbers on every load. A row whose stored tier is not
+one of the three makes the read an error instead of producing a split that silently omits a record the
+total counts.
+
 `--port` is its only flag: it binds `127.0.0.1` and only `127.0.0.1` (there is no host or address flag)
 and sets no CORS header, so a foreign page can neither reach nor read it. It is structurally read-only —
 the ledger is opened with no signer, so it can never append — and it needs neither a signing key nor a

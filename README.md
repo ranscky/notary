@@ -138,8 +138,22 @@ its reader needs.
 
 ## Reading the trail in a browser
 
-Sometimes a reviewer would rather click through the trail than read a folder. `notary serve` puts the
-same records on a small dashboard that runs on the reviewer's own machine.
+Sometimes a reviewer would rather click through the trail than read a folder. `notary serve` puts a small
+dashboard on the reviewer's own machine — and it opens on the question they came to ask.
+
+The front page is an **Overview**, and it answers one thing: *can I trust this trail?* It gives one of
+three verdicts — **no tampering found**, **no trusted keys are configured, so signatures were not
+checked**, or **a problem was found**, with the count and a link to the detail. Every verdict carries the
+time of the check behind it and the command that reproduces it.
+
+Under the verdict sit three facts about the ledger: how many records it holds, the period it covers, and
+how those records split across the three confidence levels — *seen directly*, *inferred*, and *not visible
+to Notary*. Then the number of moments Notary did not record. Each figure names the command that
+reproduces it.
+
+The evidence is one click away: the records table, the gaps, and the chain detail in full. And if nothing
+has been recorded yet, the front page says so plainly and offers a short note you can forward to the
+engineer who is going to connect the application.
 
 - **It is reachable only from that machine.** It binds the loopback address — `127.0.0.1`, meaning *this
   computer only* — and there is no setting that widens it. The one flag it takes is the port.

@@ -1,0 +1,51 @@
+{{define "page"}}
+<section class="overview-status {{if .Card.Intact}}status-intact{{else if .Card.NotVerified}}status-unverified{{else}}status-broken{{end}}">
+<span class="frame-label">[ CAN THIS TRAIL BE TRUSTED? ]</span>
+{{if .Card.Intact}}
+<p class="verdict verdict-ok">No tampering found as of {{.Card.AsOf.Format "2006-01-02 15:04:05 MST"}}</p>
+<p>Every record's hash and signature checks out, across the whole ledger.</p>
+{{else if .Card.NotVerified}}
+<p class="verdict verdict-unchecked">No trusted keys are configured, so signatures were not checked</p>
+<p>The ledger's chain can still be walked, but without a keyring Notary cannot tell you these records are
+authentic — only that they are internally consistent. Point <code>NOTARY_TRUSTED_KEYS_PATH</code> at a
+keyring of base64 ed25519 public keys; <code>notary doctor</code> checks it.</p>
+{{else}}
+<p class="verdict verdict-bad">{{.Card.Breaks}} break(s) found across the whole ledger</p>
+<p>Something in the trail does not match what Notary recorded. The chain page names the record and the
+field that changed.</p>
+<p><a href="/verify">See the detail</a></p>
+{{end}}
+<p class="reproduce">Re-run: <kbd>notary verify</kbd> to reproduce this verdict.</p>
+</section>
+
+{{if .Empty}}
+<section class="first-run">
+<h3>Nothing has been recorded yet</h3>
+<p>Notary records what an agent's memory does — what was stored, what a search returned, and what later
+disappeared. Nothing is recording into this ledger yet, so there is nothing here to summarise.</p>
+<p>Once an engineer connects your application, this page will say whether the trail can be trusted and what
+it contains. Forward them this note:</p>
+<textarea class="first-run-note" readonly rows="16" aria-label="Note to forward to an engineer">{{.Note}}</textarea>
+</section>
+{{else}}
+<section class="overview-facts">
+<h3>What is in this ledger</h3>
+<ul class="facts">
+<li><span class="fact-label">Records</span> <strong>{{.Facts.Count}} records</strong></li>
+<li><span class="fact-label">Covers</span> {{.Facts.Earliest.Format "2006-01-02 15:04 MST"}} to {{.Facts.Latest.Format "2006-01-02 15:04 MST"}}</li>
+</ul>
+<ul class="tier-facts">
+{{range .Facts.Tiers}}<li><span class="tier-label {{.Class}}">{{.Label}}</span> <strong>{{.Count}}</strong></li>
+{{end}}</ul>
+<p class="reproduce">Reproduced by <kbd>notary verify</kbd> for the record count, and <kbd>notary export</kbd>
+for the span and the tier counts — its JSONL carries the event time and the tier of every record.</p>
+</section>
+{{end}}
+
+<section class="overview-gaps">
+<h3>Gaps</h3>
+{{if .Gaps}}<p><strong>{{.Gaps}} moments Notary did not record</strong> — <a href="/gaps">see them</a>.</p>
+{{else}}<p><strong>None found</strong> — every operation Notary watched was recorded.</p>{{end}}
+<p class="reproduce">Reproduced by <kbd>notary gaps</kbd>.</p>
+</section>
+{{end}}

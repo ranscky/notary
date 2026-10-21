@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,7 +148,21 @@ func TestServeCmdStartsTheDashboardOnALoopbackPort(t *testing.T) {
 	_ = resp.Body.Close()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Contains(t, string(body), "Observed",
+	// The printed URL is the console's front page, which is the Overview. Both
+	// pages are pinned here, against a server the command actually started: the
+	// front page must be the Overview, and the evidence must still be one route
+	// along -- a move that stranded the records view would fail either half.
+	assert.Contains(t, string(body), "CAN THIS TRAIL BE TRUSTED?",
+		"the printed URL must serve the Overview")
+
+	recordsResp, err := http.Get(strings.TrimRight(url, "/") + "/records")
+	require.NoError(t, err, "the records route must answer")
+	recordsBody, err := io.ReadAll(recordsResp.Body)
+	require.NoError(t, err)
+	_ = recordsResp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, recordsResp.StatusCode)
+	assert.Contains(t, string(recordsBody), "Observed",
 		"the records view must render the observed record's tier")
 
 	cancel()

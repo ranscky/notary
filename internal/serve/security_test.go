@@ -66,7 +66,8 @@ func TestEveryRouteCarriesTheSecurityHeaders(t *testing.T) {
 		host   string
 		status int
 	}{
-		{"records view", http.MethodGet, "/", loopbackHost, http.StatusOK},
+		{"overview", http.MethodGet, "/", loopbackHost, http.StatusOK},
+		{"records view", http.MethodGet, "/records", loopbackHost, http.StatusOK},
 		{"record view", http.MethodGet, "/record?id=fixture-observed", loopbackHost, http.StatusOK},
 		{"memory view", http.MethodGet, "/memory?id=mem-alpha", loopbackHost, http.StatusOK},
 		{"gaps view", http.MethodGet, "/gaps", loopbackHost, http.StatusOK},
@@ -199,7 +200,7 @@ func TestRevealedPageIsNotStored(t *testing.T) {
 	h := f.server.Handler()
 
 	for _, target := range []string{
-		"/?reveal=1",
+		"/records?reveal=1",
 		"/record?id=fixture-observed&reveal=1",
 		"/memory?id=mem-alpha&reveal=1",
 	} {

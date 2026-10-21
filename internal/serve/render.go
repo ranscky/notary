@@ -78,6 +78,7 @@ func templateFuncs() template.FuncMap {
 		"recordScopeString": recordScopeString,
 		"recordHref":        recordHref,
 		"memoryHref":        memoryHref,
+		"navFor":            navFor,
 	}
 }
 

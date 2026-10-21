@@ -154,6 +154,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config) error {
 		Ledger:      l,
 		Store:       st,
 		GapLogPath:  cfg.GapLogPath,
+		LedgerPath:  cfg.DBPath,
 		Keyring:     keyring,
 		KeyringPath: cfg.TrustedKeysPath,
 		Reveal:      cmd.ErrOrStderr(),

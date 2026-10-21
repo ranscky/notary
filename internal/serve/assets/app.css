@@ -569,6 +569,70 @@ td.content {
   color: var(--internal);
 }
 
+/* --- Overview, the console's front page ---------------------------------- */
+/*
+  The page answers one question, so the verdict is the largest thing on it and
+  its state is carried by a colour AND by the sentence, never by colour alone.
+  The badge classes above already draw solid/dashed/dotted; .tier-label supplies
+  the box they decorate.
+*/
+.overview-status {
+  border: 1px solid #2a313c;
+  border-left-width: 4px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 2rem;
+}
+.status-intact { border-left-color: var(--observed); }
+.status-unverified { border-left-color: var(--reconstructed); }
+.status-broken { border-left-color: #e06c5a; }
+.overview-status .verdict {
+  font-size: 1.35rem;
+  line-height: 1.35;
+  margin: 0.5rem 0 0.85rem;
+}
+.verdict-ok { color: var(--observed); }
+.verdict-unchecked { color: var(--reconstructed); }
+.verdict-bad { color: #e06c5a; }
+.overview-facts .facts,
+.overview-facts .tier-facts {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0;
+}
+.overview-facts .facts li { margin: 0.25rem 0; }
+.overview-facts .tier-facts li { margin: 0.4rem 0; }
+.fact-label {
+  display: inline-block;
+  min-width: 5rem;
+  color: #98a2b3;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+}
+.tier-label {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid currentColor;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.first-run-note {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  background: #141a23;
+  color: inherit;
+  border: 1px solid #2a313c;
+  padding: 0.9rem 1rem;
+}
+.reproduce {
+  color: #98a2b3;
+  font-size: 0.85rem;
+}
+
 /* --- Content states ------------------------------------------------------ */
 
 /* Withheld and absent must never look alike: one is a deliberate omission the

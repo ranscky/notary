@@ -52,7 +52,8 @@ const headerReadTimeout = 5 * time.Second
 // of them claims.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/", s.handleOverview)
+	mux.HandleFunc("/records", s.handleRecords)
 	mux.HandleFunc("/record", s.handleRecord)
 	mux.HandleFunc("/memory", s.handleMemory)
 	mux.HandleFunc("/gaps", s.handleGaps)
@@ -106,17 +107,38 @@ func isLoopbackHost(hostport string) bool {
 	}
 }
 
-// handleIndex renders the records view, the console's front page.
+// handleOverview renders the console's front page: the answer to "can I trust
+// this trail?" for a reader who is not an engineer.
 //
-// Only the exact root path is the records view; any other path the mux sends
-// here (a request the later routes do not yet claim) is 404 rather than a
-// records view wearing the wrong URL.
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+// Only the exact root path is the Overview; any other path the mux sends here (a
+// request no route claims) is 404 rather than the Overview wearing the wrong URL.
+func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
 
+	// The chain banner is on every page, so the verdict is taken here too -- the
+	// Overview's own card is the same verdict, presented for a reader who will not
+	// read the banner.
+	chain, err := s.loadChain()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data, err := s.newOverviewData(chain)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data.pageData = pageData{Title: "Overview", Current: sectionOverview, Now: s.now(), Chain: chain}
+	s.respond(w, http.StatusOK, "overview", data)
+}
+
+// handleRecords renders the records view: the table of records in one range and
+// scope, the console's evidence view.
+func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 	// The chain banner is on every page, so the chain verdict is taken here,
 	// before the filter is even parsed -- a bad filter still renders it.
 	chain, err := s.loadChain()

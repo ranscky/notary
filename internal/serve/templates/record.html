@@ -1,6 +1,6 @@
 {{define "page"}}<div id="record">
 {{if .Err}}<p class="view-error" role="alert">{{.Err}}</p>
-<p class="back"><a href="/">Back to records</a></p>
+<p class="back"><a href="/records">Back to records</a></p>
 {{else}}
 {{template "revealToggle" .RevealControl}}
 <h2>Record <code>{{.Row.Line.ID}}</code></h2>
@@ -31,6 +31,6 @@
 <dt>signer_key_id</dt><dd class="chain-signer">{{.Row.Line.SignerKeyID}}</dd>
 </dl>
 </details>
-<p class="back"><a href="/">Back to records</a></p>
+<p class="back"><a href="/records">Back to records</a></p>
 {{end}}
 </div>{{end}}

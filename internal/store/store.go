@@ -94,6 +94,15 @@ type Store interface {
 	// Head returns the record with the greatest Seq. The bool is false, with
 	// a zero record and a nil error, when the table is empty.
 	Head() (record.Record, bool, error)
+	// LedgerStats returns the ledger's aggregate shape -- how many rows it
+	// holds, the earliest and latest event time among them, and the count per
+	// visibility tier -- from aggregate queries rather than a row walk. An
+	// empty ledger yields a zero Stats and a nil error.
+	//
+	// It is the one definition of "how many records and what span" in the tree:
+	// the console's Overview shows these numbers, and its records view derives
+	// the range it offers from the same read.
+	LedgerStats() (Stats, error)
 	// ByIdemKey returns the record with the given idempotency key. The bool
 	// is false when no such record exists, including for the empty key.
 	ByIdemKey(record.IdemKey) (record.Record, bool, error)

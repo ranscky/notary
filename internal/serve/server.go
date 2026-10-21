@@ -53,6 +53,12 @@ type Options struct {
 	// gap.Verify, never gap.Open, which would create and heal it).
 	GapLogPath string
 
+	// LedgerPath names the ledger file this console opened. It is display-only --
+	// nothing reads through it -- and exists so the first-run page can quote the
+	// path a reviewer's forwarded note tells an engineer to configure. Empty is
+	// allowed: the note then names the variable rather than a path.
+	LedgerPath string
+
 	// Keyring is the trusted public keys a chain check verifies against. A nil
 	// or EMPTY keyring means the check does not run at all: a keyless verifier
 	// reports every record in a healthy ledger as a signature break, so building
@@ -88,6 +94,7 @@ type Server struct {
 	ledger      *ledger.Ledger
 	store       store.Store
 	gapLogPath  string
+	ledgerPath  string
 	verifier    *sign.Verifier
 	keyringPath string
 	reveal      io.Writer
@@ -154,6 +161,7 @@ func New(opts Options) (*Server, error) {
 		ledger:      opts.Ledger,
 		store:       opts.Store,
 		gapLogPath:  opts.GapLogPath,
+		ledgerPath:  opts.LedgerPath,
 		verifier:    verifier,
 		keyringPath: opts.KeyringPath,
 		reveal:      reveal,

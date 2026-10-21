@@ -31,10 +31,8 @@
      carries it, so the state is announced and not merely coloured. */}}
 <nav class="site-nav" aria-label="Views">
 <ul>
-<li><a href="/"{{if eq .Current "records"}} aria-current="page"{{end}}>Records</a></li>
-<li><a href="/gaps"{{if eq .Current "gaps"}} aria-current="page"{{end}}>Gaps</a></li>
-<li><a href="/verify"{{if eq .Current "verify"}} aria-current="page"{{end}}>Chain</a></li>
-</ul>
+{{range navFor .Current}}<li><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}</a></li>
+{{end}}</ul>
 </nav>
 </header>
 {{template "chainBanner" .}}

@@ -80,7 +80,7 @@ var (
 	// widerHrefRe pulls the empty state's offered range out of the page, so a
 	// test can follow the link the page actually rendered rather than one the
 	// test rebuilt and hoped was the same.
-	widerHrefRe = regexp.MustCompile(`href="(/\?from=[^"]*)"`)
+	widerHrefRe = regexp.MustCompile(`href="(/records\?from=[^"]*)"`)
 )
 
 // parseRows pulls the records rows out of a rendered page.
@@ -134,7 +134,7 @@ func TestEveryRouteAnswers(t *testing.T) {
 	h := f.server.Handler()
 
 	for _, target := range []string{
-		"/", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
+		"/", "/records", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
 		"/assets/app.css", "/assets/htmx.min.js",
 	} {
 		rr := get(t, h, target)
@@ -169,7 +169,7 @@ func TestRecordsViewMatchesTheExportPath(t *testing.T) {
 			fl.Reveal = tc.reveal
 			fl.Scope = tc.scope
 
-			rr := get(t, h, "/?"+rangeQuery(fl))
+			rr := get(t, h, "/records?"+rangeQuery(fl))
 			require.Equal(t, http.StatusOK, rr.Code)
 			rows := parseRows(t, rr.Body.String())
 
@@ -207,7 +207,7 @@ func TestRecordsViewMatchesTheExportPath(t *testing.T) {
 // and a greyscale printout.
 func TestRecordsViewShowsTheTierBadgeForEachTier(t *testing.T) {
 	f := newFixture(t)
-	rr := get(t, f.server.Handler(), "/")
+	rr := get(t, f.server.Handler(), "/records")
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	body := rr.Body.String()
@@ -233,7 +233,7 @@ func TestRecordsViewEscapesAHostileID(t *testing.T) {
 	appendRecord(t, f.ledger, contentRecord(t, hostile, fixtureAt(1),
 		record.Scope{UserID: "u1"}, "mem-alpha", "hostile", false))
 
-	rr := get(t, f.server.Handler(), "/")
+	rr := get(t, f.server.Handler(), "/records")
 	require.Equal(t, http.StatusOK, rr.Code)
 	body := rr.Body.String()
 
@@ -313,7 +313,7 @@ func TestRecordPageLinksMemoryOnlyWhenTheRecordNamesOne(t *testing.T) {
 // accessibility attribute look like a redesign failure.
 func TestRecordsTableDropsTheDetailColumns(t *testing.T) {
 	f := newFixture(t)
-	body := get(t, f.server.Handler(), "/").Body.String()
+	body := get(t, f.server.Handler(), "/records").Body.String()
 
 	head := recordsHeadRe.FindString(body)
 	require.NotEmpty(t, head, "the records view must render a table header")
@@ -348,7 +348,7 @@ func TestShellMarksTheCurrentSectionAndNeverTransformsAnID(t *testing.T) {
 	f := newFixture(t)
 	h := f.server.Handler()
 
-	for _, path := range []string{"/", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify"} {
+	for _, path := range []string{"/", "/records", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify"} {
 		body := get(t, h, path).Body.String()
 		assert.Contains(t, body, `<nav class="site-nav" aria-label="Views">`,
 			"%s must render the nav as a labelled list", path)
@@ -394,7 +394,7 @@ func TestNoResponseCarriesACORSHeader(t *testing.T) {
 	f := newFixture(t)
 	h := f.server.Handler()
 
-	for _, target := range []string{"/", "/assets/app.css", "/assets/htmx.min.js", "/no-such-page", "/?from=2026-09-25T00:00:00Z&to=2026-09-20T00:00:00Z"} {
+	for _, target := range []string{"/", "/assets/app.css", "/assets/htmx.min.js", "/no-such-page", "/records?from=2026-09-25T00:00:00Z&to=2026-09-20T00:00:00Z"} {
 		rr := get(t, h, target)
 		assert.Empty(t, rr.Header().Get("Access-Control-Allow-Origin"),
 			"GET %s must not carry a CORS header", target)
@@ -416,9 +416,10 @@ func TestPagesAreOffline(t *testing.T) {
 	h := f.server.Handler()
 
 	// A reversed range is the bad-filter 400 render.
-	const badFilter = "/?from=2026-09-25T00:00:00Z&to=2026-09-20T00:00:00Z"
+	const badFilter = "/records?from=2026-09-25T00:00:00Z&to=2026-09-20T00:00:00Z"
 	pages := map[string]string{
 		"/":                           get(t, h, "/").Body.String(),
+		"/records":                    get(t, h, "/records").Body.String(),
 		"/record?id=fixture-observed": get(t, h, "/record?id=fixture-observed").Body.String(),
 		"/memory?id=mem-alpha":        get(t, h, "/memory?id=mem-alpha").Body.String(),
 		"/gaps":                       get(t, h, "/gaps").Body.String(),
@@ -437,7 +438,7 @@ func TestPagesAreOffline(t *testing.T) {
 // range it searched and how to widen it -- not a table that is silently blank.
 func TestAnEmptyRangeSaysSoInWords(t *testing.T) {
 	f := newFixture(t)
-	rr := get(t, f.server.Handler(), "/?from=2020-01-01&to=2020-01-02")
+	rr := get(t, f.server.Handler(), "/records?from=2020-01-01&to=2020-01-02")
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	body := rr.Body.String()
@@ -461,7 +462,7 @@ func TestAnEmptyWindowOffersTheLedgersOwnRange(t *testing.T) {
 
 	// A window far from the fixture's records, so the ledger has records the
 	// window misses.
-	body := get(t, h, "/?from=2020-01-01&to=2020-01-02").Body.String()
+	body := get(t, h, "/records?from=2020-01-01&to=2020-01-02").Body.String()
 
 	assert.Contains(t, body, "This ledger holds", "the empty state must say the ledger is not empty")
 	m := widerHrefRe.FindStringSubmatch(body)
@@ -489,7 +490,7 @@ func TestAnEmptyWindowOffersTheLedgersOwnRange(t *testing.T) {
 // range that would show nothing.
 func TestAnEmptyLedgerOffersNothing(t *testing.T) {
 	srv := newEmptyServer(t)
-	body := get(t, srv.Handler(), "/").Body.String()
+	body := get(t, srv.Handler(), "/records").Body.String()
 
 	assert.Contains(t, body, "No records", "an empty ledger still renders its empty state")
 	assert.NotContains(t, body, "This ledger holds",
@@ -502,7 +503,7 @@ func TestAnEmptyLedgerOffersNothing(t *testing.T) {
 // all still renders the front page rather than failing.
 func TestAnEmptyLedgerRendersWithoutError(t *testing.T) {
 	srv := newEmptyServer(t)
-	rr := get(t, srv.Handler(), "/")
+	rr := get(t, srv.Handler(), "/records")
 	require.Equal(t, http.StatusOK, rr.Code)
 	assert.Contains(t, rr.Body.String(), "No records", "an empty ledger must render its empty state")
 }
@@ -526,7 +527,7 @@ func TestABadFilterRendersTheViewWithABanner(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rr := get(t, h, "/?"+tc.query)
+			rr := get(t, h, "/records?"+tc.query)
 			assert.Equal(t, http.StatusBadRequest, rr.Code, "a bad filter must render 400")
 
 			body := rr.Body.String()
@@ -628,7 +629,7 @@ func TestNoRouteWrites(t *testing.T) {
 
 	h := srv.Handler()
 	for _, target := range []string{
-		"/", "/assets/app.css", "/assets/htmx.min.js",
+		"/records", "/assets/app.css", "/assets/htmx.min.js",
 		"/record?id=w-record", "/memory?id=mem-1", "/gaps", "/verify",
 	} {
 		rr := get(t, h, target)
@@ -1057,7 +1058,7 @@ func TestStoredTextCannotBecomeMarkup(t *testing.T) {
 		target   string
 		fragment string
 	}{
-		{"/", "records"},
+		{"/records", "records"},
 		{"/record?id=hostile-record", "record"},
 		{"/memory?id=" + url.QueryEscape(hostileMemory), "memory"},
 		{"/gaps", "gaps"},
@@ -1208,7 +1209,7 @@ func TestNoKeyMaterialInAnyPage(t *testing.T) {
 	}
 
 	for _, target := range []string{
-		"/", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
+		"/", "/records", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
 	} {
 		body := get(t, h, target).Body.String()
 		require.NotEmpty(t, body)
@@ -1255,7 +1256,7 @@ func TestRevealScopeIsPinned(t *testing.T) {
 		marker string
 		view   string
 	}{
-		{"records", "/?reveal=1", `name="reveal"`, "records"},
+		{"records", "/records?reveal=1", `name="reveal"`, "records"},
 		{"record", "/record?id=fixture-observed&reveal=1", revealToggleMarker, "record fixture-observed"},
 		{"memory", "/memory?id=mem-alpha&reveal=1", revealToggleMarker, "memory mem-alpha"},
 	} {
