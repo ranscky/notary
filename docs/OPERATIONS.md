@@ -134,10 +134,22 @@ verification pages report what `notary gaps` and `notary verify` report. Sensiti
 default and a per-view toggle reveals it for that view only, writing one audit line to stderr each time
 and never changing a hash.
 
-The routes are **`/` for the Overview** — the console's front page — and **`/records` for the table**,
-with `/record`, `/memory`, `/gaps` and `/verify` beside them. The nav bar is one list in
-`internal/serve/nav.go` and is rendered by a template function, so a page added later is one line there
-rather than an edit to every template.
+The routes are **`/` for the Overview** — the console's front page — **`/records` for the table** and
+**`/asof` for the point-in-time view**, with `/record`, `/memory`, `/gaps` and `/verify` beside them. The
+nav bar is one list in `internal/serve/nav.go` and is rendered by a template function, so a page added later
+is one line there rather than an edit to every template.
+
+`/asof` is the browser form of `notary replay`. It parses date, time and zone into a `replay.Request`,
+runs the real `replay.Replayer` into a buffer, and decodes the JSONL it wrote back into `export.Line`s to
+render the shared record table — so the inclusive boundary (`RecordedAt <= at`), the chain-prefix
+verification, the scope conjunction and the redaction are all the package's, not the console's. The zone is
+a required field with no default: a time without one is a different instant depending on where it is read,
+so a missing zone is a validation message rather than an assumption about the server's or the browser's
+locale. With no trusted keys configured the page runs nothing and says so in the Overview card's wording,
+matching the CLI's refusal. The page shows how many records it displayed and its withheld count; it does
+**not** show how many records were written after the instant, because `replay.Result` exposes `Records`,
+`Redacted` and `Breaks` only, and a second read with a different boundary rule would be a second definition
+of the same thing.
 
 The Overview renders, in order: a three-state verdict card driven by the same `chainView` the banner uses
 (`chainClean`, `chainNotVerified`, `chainBroken`), the ledger's count, span and per-tier split, and the

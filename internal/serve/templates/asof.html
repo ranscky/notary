@@ -1,0 +1,65 @@
+{{define "page"}}
+<h2>As of</h2>
+<div id="asof">
+<form class="filter asof" method="get" action="/asof" hx-get="/asof" hx-target="#asof-results" hx-select="#asof-results" hx-swap="outerHTML">
+<fieldset>
+<legend>[ THE MOMENT ]</legend>
+<p class="asof-hint">Give the moment you want to look at. All three fields are required — a time without a
+zone is a different moment depending on where it is read, so this page will not guess.</p>
+<div class="filter-grid">
+<label>Date <input type="text" name="date" value="{{.Date}}" placeholder="2026-09-28" inputmode="numeric"></label>
+<label>Time <input type="text" name="time" value="{{.Time}}" placeholder="12:00" inputmode="numeric"></label>
+<label>Time zone
+<select name="zone">
+<option value=""{{if eq .Zone ""}} selected{{end}}>Choose a time zone</option>
+{{range .Zones}}<option value="{{.}}"{{if eq . $.Zone}} selected{{end}}>{{.}}</option>
+{{end}}</select>
+</label>
+</div>
+</fieldset>
+<fieldset>
+<legend>[ SCOPE ]</legend>
+<div class="filter-grid">
+<label>Person <input type="text" name="user_id" value="{{.Scope.UserID}}"></label>
+<label>Agent <input type="text" name="agent_id" value="{{.Scope.AgentID}}"></label>
+<label>Application <input type="text" name="app_id" value="{{.Scope.AppID}}"></label>
+<label>Session <input type="text" name="run_id" value="{{.Scope.RunID}}"></label>
+</div>
+</fieldset>
+<button type="submit">Show me</button>
+</form>
+
+{{if .Err}}<p class="form-error" role="alert">Could not read that moment: {{.Err}}</p>{{end}}
+
+{{if .NotVerified}}
+<div id="asof-results" class="asof-results">
+<p class="verdict verdict-unchecked">No trusted keys are configured, so signatures were not checked</p>
+<p>A replay is verified as a chain prefix before it is shown. Without a keyring nothing can be verified, so
+this page will not show you a replay it cannot stand behind. Point <code>NOTARY_TRUSTED_KEYS_PATH</code> at a
+keyring of base64 ed25519 public keys; <code>notary doctor</code> checks it.</p>
+</div>
+{{else if .Ran}}
+<div id="asof-results" class="asof-results">
+{{template "revealToggle" .Reveal}}
+{{if .Breaks}}
+<p class="verdict verdict-bad">{{len .Breaks}} break(s) found in the records up to this moment</p>
+<p>Something in this prefix does not match what Notary recorded. <a href="/verify">The chain page</a> names the
+record and the field that changed.</p>
+{{end}}
+<p class="asof-echo">Showing what Notary had recorded by {{.Echo}} ({{.At.UTC.Format "2006-01-02 15:04:05 MST"}}).</p>
+<p class="asof-meaning">Records written after this moment are correctly absent — this is what Notary knew then,
+not what it knows now.</p>
+{{if .Table.Rows}}
+<p class="asof-count">{{len .Table.Rows}} record(s) shown{{if .Redacted}}, {{.Redacted}} with content withheld{{end}}.</p>
+{{template "recordTable" .Table}}
+{{else}}
+<p class="asof-empty">Nothing had been recorded by this moment.</p>
+{{end}}
+<p class="reproduce">Reproduce: <kbd>{{.Reproduce}}</kbd></p>
+</div>
+{{else}}
+<p class="asof-hint">This page shows what Notary had recorded by a moment you choose — not what it holds now.
+Records written after that moment are correctly absent.</p>
+{{end}}
+</div>
+{{end}}

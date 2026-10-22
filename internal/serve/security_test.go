@@ -68,6 +68,8 @@ func TestEveryRouteCarriesTheSecurityHeaders(t *testing.T) {
 	}{
 		{"overview", http.MethodGet, "/", loopbackHost, http.StatusOK},
 		{"records view", http.MethodGet, "/records", loopbackHost, http.StatusOK},
+		{"as-of view", http.MethodGet, "/asof", loopbackHost, http.StatusOK},
+		{"as-of results", http.MethodGet, "/asof?date=2026-09-28&time=12:00&zone=UTC", loopbackHost, http.StatusOK},
 		{"record view", http.MethodGet, "/record?id=fixture-observed", loopbackHost, http.StatusOK},
 		{"memory view", http.MethodGet, "/memory?id=mem-alpha", loopbackHost, http.StatusOK},
 		{"gaps view", http.MethodGet, "/gaps", loopbackHost, http.StatusOK},

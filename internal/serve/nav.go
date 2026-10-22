@@ -7,6 +7,7 @@ package serve
 const (
 	sectionOverview = "overview"
 	sectionRecords  = "records"
+	sectionAsOf     = "asof"
 	sectionGaps     = "gaps"
 	sectionVerify   = "verify"
 )
@@ -27,6 +28,7 @@ type navEntry struct {
 var navEntries = []navEntry{
 	{Href: "/", Label: "Overview", Section: sectionOverview},
 	{Href: "/records", Label: "Records", Section: sectionRecords},
+	{Href: "/asof", Label: "As of", Section: sectionAsOf},
 	{Href: "/gaps", Label: "Gaps", Section: sectionGaps},
 	{Href: "/verify", Label: "Verify", Section: sectionVerify},
 }

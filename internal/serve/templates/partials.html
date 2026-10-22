@@ -9,3 +9,24 @@
 {{end}}
 
 {{define "revealToggle"}}<p class="reveal-toggle">{{if .On}}<a href="{{.Href}}" hx-get="{{.Href}}" hx-target="#{{.Target}}" hx-select="#{{.Target}}" hx-swap="outerHTML">Hide sensitive content</a>{{else}}<a href="{{.RevealHref}}" hx-get="{{.RevealHref}}" hx-target="#{{.Target}}" hx-select="#{{.Target}}" hx-swap="outerHTML">Reveal sensitive content</a>{{end}}</p>{{end}}
+
+{{/* The records table, rendered by every view that shows a range of records: the
+     Records view and the As-of view. One definition, so the two cannot drift into
+     tables that look similar and disagree -- and the data-* attributes below are a
+     contract, since the differential tests read rows back through them. Caption
+     says WHICH slice the rows are; the count is derived here so it cannot
+     disagree with the rows. */}}
+{{define "recordTable"}}<table class="records">
+<caption>[ {{len .Rows}} RECORD(S) {{.Caption}} ]</caption>
+<thead><tr><th scope="col">Seq</th><th scope="col">Event time</th><th scope="col">Event</th><th scope="col">Tier</th><th scope="col">Phrasing</th><th scope="col">Content</th></tr></thead>
+<tbody>
+{{range .Rows}}<tr class="record-row" data-seq="{{.Line.Seq}}" data-id="{{.Line.ID}}" data-tier="{{.Line.Tier}}" data-content="{{if .Line.Content}}shown{{else if .Line.Redacted}}withheld{{else}}none{{end}}">
+<td class="seq" data-label="Seq"><data value="{{.Line.Seq}}">{{.Line.Seq}}</data></td>
+<td class="at" data-label="Event time">{{.Line.At.Format "2006-01-02 15:04:05 MST"}}</td>
+<td class="event" data-label="Event">{{.Line.Event}}</td>
+<td class="tier" data-label="Tier"><span class="badge {{.Tier.Class}}">{{.Tier.Name}}</span></td>
+<td class="phrasing" data-label="Phrasing"><a href="{{recordHref .Line.ID}}">{{.Line.Phrasing}}</a></td>
+<td class="content" data-label="Content">{{if .Line.Content}}<span class="content-text">{{.Line.Content}}</span>{{else if .Line.Redacted}}<span class="withheld">Content withheld — marked sensitive</span>{{else}}<span class="no-content">No content recorded</span>{{end}}</td>
+</tr>{{end}}
+</tbody>
+</table>{{end}}

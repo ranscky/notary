@@ -134,7 +134,7 @@ func TestEveryRouteAnswers(t *testing.T) {
 	h := f.server.Handler()
 
 	for _, target := range []string{
-		"/", "/records", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
+		"/", "/records", "/asof", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
 		"/assets/app.css", "/assets/htmx.min.js",
 	} {
 		rr := get(t, h, target)
@@ -348,7 +348,7 @@ func TestShellMarksTheCurrentSectionAndNeverTransformsAnID(t *testing.T) {
 	f := newFixture(t)
 	h := f.server.Handler()
 
-	for _, path := range []string{"/", "/records", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify"} {
+	for _, path := range []string{"/", "/records", "/asof", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify"} {
 		body := get(t, h, path).Body.String()
 		assert.Contains(t, body, `<nav class="site-nav" aria-label="Views">`,
 			"%s must render the nav as a labelled list", path)
@@ -418,14 +418,15 @@ func TestPagesAreOffline(t *testing.T) {
 	// A reversed range is the bad-filter 400 render.
 	const badFilter = "/records?from=2026-09-25T00:00:00Z&to=2026-09-20T00:00:00Z"
 	pages := map[string]string{
-		"/":                           get(t, h, "/").Body.String(),
-		"/records":                    get(t, h, "/records").Body.String(),
-		"/record?id=fixture-observed": get(t, h, "/record?id=fixture-observed").Body.String(),
-		"/memory?id=mem-alpha":        get(t, h, "/memory?id=mem-alpha").Body.String(),
-		"/gaps":                       get(t, h, "/gaps").Body.String(),
-		"/verify":                     get(t, h, "/verify").Body.String(),
-		badFilter:                     get(t, h, badFilter).Body.String(),
-		"/assets/app.css":             get(t, h, "/assets/app.css").Body.String(),
+		"/":        get(t, h, "/").Body.String(),
+		"/records": get(t, h, "/records").Body.String(),
+		"/asof?date=2026-09-28&time=12:00&zone=UTC": get(t, h, "/asof?date=2026-09-28&time=12:00&zone=UTC").Body.String(),
+		"/record?id=fixture-observed":               get(t, h, "/record?id=fixture-observed").Body.String(),
+		"/memory?id=mem-alpha":                      get(t, h, "/memory?id=mem-alpha").Body.String(),
+		"/gaps":                                     get(t, h, "/gaps").Body.String(),
+		"/verify":                                   get(t, h, "/verify").Body.String(),
+		badFilter:                                   get(t, h, badFilter).Body.String(),
+		"/assets/app.css":                           get(t, h, "/assets/app.css").Body.String(),
 	}
 	for target, body := range pages {
 		require.NotEmpty(t, body, "%s must render a non-empty body before it can be asserted offline", target)
@@ -1209,7 +1210,7 @@ func TestNoKeyMaterialInAnyPage(t *testing.T) {
 	}
 
 	for _, target := range []string{
-		"/", "/records", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
+		"/", "/records", "/asof", "/record?id=fixture-observed", "/memory?id=mem-alpha", "/gaps", "/verify",
 	} {
 		body := get(t, h, target).Body.String()
 		require.NotEmpty(t, body)

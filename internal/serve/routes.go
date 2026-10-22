@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"notary/internal/record"
+	"notary/internal/replay"
 	"notary/internal/store"
 )
 
@@ -54,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleOverview)
 	mux.HandleFunc("/records", s.handleRecords)
+	mux.HandleFunc("/asof", s.handleAsOf)
 	mux.HandleFunc("/record", s.handleRecord)
 	mux.HandleFunc("/memory", s.handleMemory)
 	mux.HandleFunc("/gaps", s.handleGaps)
@@ -136,6 +139,120 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, http.StatusOK, "overview", data)
 }
 
+// handleAsOf renders the As-of page: the browser form of `notary replay`.
+//
+// The chain banner is on every page, so the verdict is taken here first. The
+// replay itself runs in loadAsOf, and only when the reader has given an instant
+// this page can read -- the page has no default instant, because silently
+// replaying "now" for a typo'd one answers a question nobody asked.
+func (s *Server) handleAsOf(w http.ResponseWriter, r *http.Request) {
+	chain, err := s.loadChain()
+	if err != nil {
+		s.internalError(w, r.URL.Path, err)
+		return
+	}
+
+	q := r.URL.Query()
+	data := asOfData{
+		pageData: pageData{Title: "As of", Current: sectionAsOf, Now: s.now(), Chain: chain},
+		Date:     q.Get("date"),
+		Time:     q.Get("time"),
+		Zone:     q.Get("zone"),
+		Zones:    asOfZones,
+		Scope: record.Scope{
+			UserID:  q.Get("user_id"),
+			AgentID: q.Get("agent_id"),
+			AppID:   q.Get("app_id"),
+			RunID:   q.Get("run_id"),
+		},
+	}
+	data.Submitted = data.Date != "" || data.Time != "" || data.Zone != "" ||
+		data.Scope != record.Scope{}
+	if !data.Submitted {
+		// The form, and nothing else: asking for an instant is not an error.
+		s.respond(w, http.StatusOK, "asof", data)
+		return
+	}
+
+	at, perr := parseAsOfInstant(data.Date, data.Time, data.Zone)
+	if perr != nil {
+		// The reader's own input, so it is a message on the page -- never a 500 and
+		// never a default instant.
+		data.Err = perr.Error()
+		s.respond(w, http.StatusBadRequest, "asof", data)
+		return
+	}
+	data.At = at
+	data.Echo = at.UTC().Format(time.RFC3339)
+	data.Reproduce = reproduceLine(at, data.Scope)
+
+	// No keyring: a replay that cannot be verified is not evidence, so none is
+	// run. The CLI refuses the same way; the page says it in words instead.
+	if s.verifier == nil {
+		data.NotVerified = true
+		s.respond(w, http.StatusOK, "asof", data)
+		return
+	}
+
+	req := replay.Request{
+		At:               at,
+		Scope:            data.Scope,
+		IncludeSensitive: q.Get("reveal") == "1",
+	}
+	run, err := s.loadAsOf(r.Context(), req)
+	if err != nil {
+		s.internalError(w, r.URL.Path, err)
+		return
+	}
+
+	data.Ran = true
+	data.Redacted = run.Redacted
+	data.Breaks = run.Breaks
+	data.Table = recordTable{Caption: "BY " + data.Echo, Rows: run.Rows}
+	data.Reveal = revealControl{
+		Href:       asOfHref(data.Date, data.Time, data.Zone, data.Scope, false),
+		RevealHref: asOfHref(data.Date, data.Time, data.Zone, data.Scope, true),
+		On:         req.IncludeSensitive,
+		Target:     "asof-results",
+	}
+	if req.IncludeSensitive {
+		// The same one-line audit note every other revealing view writes.
+		s.logReveal("as of " + data.Echo)
+	}
+
+	s.respond(w, http.StatusOK, "asof", data)
+}
+
+// asOfHref rebuilds this request's URL, optionally revealing sensitive content.
+//
+// Every field the reader submitted is carried, so toggling reveal changes only
+// what is shown and never the question being asked. The query is built with
+// url.Values, so the values are already percent-encoded before html/template
+// escapes them for the attribute.
+func asOfHref(date, clock, zone string, scope record.Scope, reveal bool) string {
+	q := url.Values{}
+	q.Set("date", date)
+	q.Set("time", clock)
+	q.Set("zone", zone)
+	for _, dim := range []struct {
+		name  string
+		value string
+	}{
+		{"user_id", scope.UserID},
+		{"agent_id", scope.AgentID},
+		{"app_id", scope.AppID},
+		{"run_id", scope.RunID},
+	} {
+		if dim.value != "" {
+			q.Set(dim.name, dim.value)
+		}
+	}
+	if reveal {
+		q.Set("reveal", "1")
+	}
+	return "/asof?" + q.Encode()
+}
+
 // handleRecords renders the records view: the table of records in one range and
 // scope, the console's evidence view.
 func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +284,7 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data.Filter = f
-	data.Rows = rows
+	data.Table = recordTable{Caption: "IN RANGE", Rows: rows}
 	// An empty window is not a dead end: when the ledger holds records the
 	// window missed, the page offers the ledger's own range. This is computed
 	// only here, on the empty path, because it reads every stored row.

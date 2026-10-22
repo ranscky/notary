@@ -44,13 +44,27 @@ type pageData struct {
 // renders the page with a banner naming the problem, at 400, instead of a
 // contentless error body: a reviewer sees what they typed, what was wrong, and
 // the chain banner, in one response.
+// recordTable is the records table as every view that shows a range of records
+// renders it: the rows, plus the caption naming which slice they are.
+//
+// It is one type and one template (partials.html's "recordTable") so the Records
+// view and the As-of view cannot drift into two tables that look similar and
+// disagree about what a row means. The count in the caption is derived by the
+// template from the rows themselves, so it cannot contradict them.
+type recordTable struct {
+	// Caption completes the header: "IN RANGE", "BY 2026-09-28T12:00:00Z".
+	Caption string
+	// Rows is one row per record, in the order the view loaded them.
+	Rows []recordRow
+}
+
 type indexData struct {
 	pageData
 	// Filter is the range and scope the view ran (or, on a usage error, the
 	// default window the form falls back to).
 	Filter filter
-	// Rows is one row per record in range, in ledger order.
-	Rows []recordRow
+	// Table is the records in range, in ledger order.
+	Table recordTable
 	// Err is the filter's usage error, empty when the filter was usable.
 	Err string
 	// Wider is set ONLY when the window rendered no rows but the ledger holds

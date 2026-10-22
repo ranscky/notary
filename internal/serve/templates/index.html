@@ -20,20 +20,7 @@
 </form>
 <div id="records">
 {{if .Err}}<p class="filter-error" role="alert">Could not read that filter: {{.Err}} The range shown is the default; fix the values above and submit again.</p>
-{{else if .Rows}}<table class="records">
-<caption>[ {{len .Rows}} RECORD(S) IN RANGE ]</caption>
-<thead><tr><th scope="col">Seq</th><th scope="col">Event time</th><th scope="col">Event</th><th scope="col">Tier</th><th scope="col">Phrasing</th><th scope="col">Content</th></tr></thead>
-<tbody>
-{{range .Rows}}<tr class="record-row" data-seq="{{.Line.Seq}}" data-id="{{.Line.ID}}" data-tier="{{.Line.Tier}}" data-content="{{if .Line.Content}}shown{{else if .Line.Redacted}}withheld{{else}}none{{end}}">
-<td class="seq" data-label="Seq"><data value="{{.Line.Seq}}">{{.Line.Seq}}</data></td>
-<td class="at" data-label="Event time">{{.Line.At.Format "2006-01-02 15:04:05 MST"}}</td>
-<td class="event" data-label="Event">{{.Line.Event}}</td>
-<td class="tier" data-label="Tier"><span class="badge {{.Tier.Class}}">{{.Tier.Name}}</span></td>
-<td class="phrasing" data-label="Phrasing"><a href="{{recordHref .Line.ID}}">{{.Line.Phrasing}}</a></td>
-<td class="content" data-label="Content">{{if .Line.Content}}<span class="content-text">{{.Line.Content}}</span>{{else if .Line.Redacted}}<span class="withheld">Content withheld — marked sensitive</span>{{else}}<span class="no-content">No content recorded</span>{{end}}</td>
-</tr>{{end}}
-</tbody>
-</table>
+{{else if .Table.Rows}}{{template "recordTable" .Table}}
 {{else}}<p class="empty">No records between {{.Filter.From.Format "2006-01-02T15:04:05Z07:00"}} and {{.Filter.To.Format "2006-01-02T15:04:05Z07:00"}}. To see more, widen the range — an earlier <code>from</code>, a later <code>to</code>, or clearing the scope fields.</p>
 {{if .Wider}}<p class="empty-wider">This ledger holds {{.Wider.Count}} record(s), from {{.Wider.Earliest.Format "2006-01-02 15:04:05 MST"}} to {{.Wider.Latest.Format "2006-01-02 15:04:05 MST"}}.{{if .Wider.Clamped}} That is wider than this view's span limit, so the link offers its most recent part.{{end}} <a href="{{.Wider.Href}}">Show {{if .Wider.Clamped}}that range{{else}}them{{end}}</a>.</p>
 {{end}}

@@ -151,9 +151,16 @@ how those records split across the three confidence levels — *seen directly*, 
 to Notary*. Then the number of moments Notary did not record. Each figure names the command that
 reproduces it.
 
-The evidence is one click away: the records table, the gaps, and the chain detail in full. And if nothing
-has been recorded yet, the front page says so plainly and offers a short note you can forward to the
-engineer who is going to connect the application.
+The evidence is one click away: the records table, the as-of view, the gaps, and the chain detail in full.
+And if nothing has been recorded yet, the front page says so plainly and offers a short note you can
+forward to the engineer who is going to connect the application.
+
+**"As of"** answers the question an auditor actually arrives with: *what had Notary recorded by this
+moment?* Pick a date, a time and a time zone — the zone is required, because a time without one is a
+different moment depending on where it is read — and the page shows the records Notary had recorded at or
+before it. Records written after that moment are **correctly absent**: this is what Notary knew then, not
+what it knows now, and the page says so in as many words. It is the browser form of `notary replay`, and it
+needs trusted keys for the same reason the command does — a replay that cannot be verified is not evidence.
 
 - **It is reachable only from that machine.** It binds the loopback address — `127.0.0.1`, meaning *this
   computer only* — and there is no setting that widens it. The one flag it takes is the port.
