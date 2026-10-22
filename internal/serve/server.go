@@ -22,6 +22,7 @@ import (
 	"crypto/ed25519"
 	"html/template"
 	"io"
+	"os"
 	"time"
 
 	"notary/internal/ledger"
@@ -80,6 +81,12 @@ type Options struct {
 	// nil, so a test that does not care about the note needs no writer.
 	Reveal io.Writer
 
+	// Log is where an internal error is reported, with the route that produced
+	// it. It is normalised to os.Stderr when nil, because the operator -- not the
+	// reader -- is who the detail is for; the response itself only ever carries a
+	// fixed sentence. A test that needs to see the error supplies a buffer.
+	Log io.Writer
+
 	// Now supplies the clock a view stamps itself with. It is normalised to
 	// time.Now when nil, so a caller cannot disable the clock.
 	Now func() time.Time
@@ -98,6 +105,7 @@ type Server struct {
 	verifier    *sign.Verifier
 	keyringPath string
 	reveal      io.Writer
+	log         io.Writer
 	now         func() time.Time
 
 	// templates holds one parsed template set per page, keyed by page name
@@ -143,6 +151,10 @@ func New(opts Options) (*Server, error) {
 	if reveal == nil {
 		reveal = io.Discard
 	}
+	logw := opts.Log
+	if logw == nil {
+		logw = os.Stderr
+	}
 	var verifier *sign.Verifier
 	if len(opts.Keyring) > 0 {
 		verifier = sign.NewVerifier(opts.Keyring)
@@ -165,6 +177,7 @@ func New(opts Options) (*Server, error) {
 		verifier:    verifier,
 		keyringPath: opts.KeyringPath,
 		reveal:      reveal,
+		log:         logw,
 		now:         now,
 		templates:   templates,
 		assets:      assets,

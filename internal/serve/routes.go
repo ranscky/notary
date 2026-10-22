@@ -127,7 +127,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// degrades inside newOverviewData, because the verdict is still worth showing.
 	chain, err := s.loadChain()
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 
@@ -143,7 +143,7 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 	// before the filter is even parsed -- a bad filter still renders it.
 	chain, err := s.loadChain()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 
@@ -163,7 +163,7 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.loadRecords(f)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 	data.Filter = f
@@ -174,7 +174,7 @@ func (s *Server) handleRecords(w http.ResponseWriter, r *http.Request) {
 	if len(rows) == 0 {
 		wider, werr := s.widerWindow()
 		if werr != nil {
-			http.Error(w, werr.Error(), http.StatusInternalServerError)
+			s.internalError(w, r.URL.Path, werr)
 			return
 		}
 		data.Wider = wider
@@ -279,7 +279,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 
 	chain, err := s.loadChain()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 
@@ -307,7 +307,7 @@ func (s *Server) handleRecord(w http.ResponseWriter, r *http.Request) {
 			data.Err = err.Error()
 			s.respond(w, http.StatusNotFound, "record", data)
 		default:
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.internalError(w, r.URL.Path, err)
 		}
 		return
 	}
@@ -335,7 +335,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 
 	chain, err := s.loadChain()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 
@@ -361,7 +361,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 			s.respond(w, http.StatusBadRequest, "memory", data)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 	data.Rows = rows
@@ -377,15 +377,15 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 // It takes no reveal: the view renders no memory content, so there is nothing to
 // reveal and it must not write a "revealed sensitive content" note that would be
 // false, nor offer a control that reveals nothing.
-func (s *Server) handleGaps(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
 	chain, err := s.loadChain()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 	view, err := s.loadGaps()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 
@@ -402,10 +402,10 @@ func (s *Server) handleGaps(w http.ResponseWriter, _ *http.Request) {
 //
 // Like handleGaps it takes no reveal: the view renders no memory content, so it
 // must not offer a reveal control or write a false reveal note.
-func (s *Server) handleVerify(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	chain, err := s.loadChain()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r.URL.Path, err)
 		return
 	}
 
@@ -417,7 +417,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, _ *http.Request) {
 	if chain.Clean() {
 		n, err := s.recordCount()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.internalError(w, r.URL.Path, err)
 			return
 		}
 		data.Records = n
@@ -466,7 +466,7 @@ func assetContentType(name string) string {
 func (s *Server) respond(w http.ResponseWriter, status int, page string, data any) {
 	var buf bytes.Buffer
 	if err := s.render(&buf, page, data); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		s.internalError(w, page, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

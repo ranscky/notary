@@ -158,6 +158,7 @@ func runServe(cmd *cobra.Command, cfg *config.Config) error {
 		Keyring:     keyring,
 		KeyringPath: cfg.TrustedKeysPath,
 		Reveal:      cmd.ErrOrStderr(),
+		Log:         cmd.ErrOrStderr(),
 		// Now is left nil: the server normalises it to time.Now, so the
 		// default records window is "now minus 30 days" and cannot be
 		// accidentally disabled.
