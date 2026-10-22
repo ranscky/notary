@@ -1,6 +1,8 @@
 package serve
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"notary/config"
 	"notary/internal/ledger"
 	"notary/internal/store"
 )
@@ -121,7 +124,12 @@ func TestOverviewEmptyLedgerShowsTheFirstRunNote(t *testing.T) {
 
 	assert.Contains(t, body, "nothing is recording into this ledger yet",
 		"the page must say why it is empty in plain words")
-	assert.Contains(t, body, "NOTARY_DB_PATH", "the note must name the ledger path to set")
+	assert.Contains(t, body, config.EnvDBPath,
+		"the note must name the ledger variable, and must take its name from config")
+	assert.Contains(t, body, config.DefaultSigningKeyEnv,
+		"the note must name the signing-key variable, and must take its name from config")
+	assert.Contains(t, body, config.EnvTrustedKeysPath,
+		"the note must name the trusted-keys variable, and must take its name from config")
 	assert.Contains(t, body, "notary proxy", "the note must name how to connect an application")
 	assert.Contains(t, body, "notary doctor", "the note must name how to produce the key pair")
 
@@ -160,4 +168,69 @@ func TestOverviewNoteEscapesAHostileLedgerPath(t *testing.T) {
 	assert.NotContains(t, body, hostile, "the configured path must not reach the page as markup")
 	assert.NotContains(t, body, "<script>alert(1)", "no script element may be built from a configured value")
 	assert.Contains(t, body, "&lt;script&gt;", "the path must render as escaped text")
+}
+
+// TestOverviewDegradesWhenTheStatsCannotBeRead pins the front page's behaviour on
+// a ledger it cannot summarise.
+//
+// A row edited behind the ledger's back can carry a tier that is none of the
+// three, which is what makes the aggregate read fail. That must not fail the page:
+// the verdict is still known, and the verdict is what the reader came for. Only a
+// failure of the chain verdict itself is fatal, because then there is no honest
+// answer to give at all.
+func TestOverviewDegradesWhenTheStatsCannotBeRead(t *testing.T) {
+	f := newFixture(t)
+	tamperStoredEvent(t, filepath.Join(f.dir, "ledger.db"),
+		`UPDATE records SET tier = 'not-a-tier' WHERE seq = 3`)
+
+	// Precondition: the figures really are unreadable, and the verdict really is
+	// still available. Without both, this test would pass for the wrong reason.
+	_, statsErr := f.store.LedgerStats()
+	require.Error(t, statsErr, "an unrecognised stored tier must make the aggregate read fail")
+
+	verdict, err := f.server.loadChain()
+	require.NoError(t, err, "the chain verdict must still be available")
+	require.Equal(t, chainBroken, verdict.State, "the broken row is the verdict's business, not the facts'")
+
+	rr := get(t, f.server.Handler(), "/")
+	require.Equal(t, http.StatusOK, rr.Code,
+		"a ledger the facts cannot be read from must still render, not 500")
+	body := rr.Body.String()
+
+	assert.Contains(t, body, "break(s) found", "the card must still give the verdict")
+	assert.Contains(t, body, "could not be read", "the facts section must say so in plain words")
+	assert.Contains(t, body, `href="/verify"`, "the reader must be sent to the detail")
+	assert.Contains(t, body, "notary verify", "and to the command that reproduces it")
+
+	// The figures must be ABSENT, not zeroed: "0 records" would be a claim the
+	// console cannot support on a ledger it could not count.
+	assert.NotContains(t, body, "Seen directly", "the tier split must be absent, not zeroed")
+	assert.NotContains(t, body, "Not visible to Notary")
+	assert.NotContains(t, body, "records</strong>")
+
+	// Nor may the reader ever see the underlying error.
+	assert.NotContains(t, body, "unrecognised stored tier", "the internal error text must not reach the page")
+	assert.NotContains(t, body, "store:", "no storage-layer error text may reach the page")
+}
+
+// TestFirstRunNoteCarriesNoKeyMaterial pins that the note a reviewer forwards
+// cannot pick up the signing key.
+//
+// The console needs no signing key of its own, but a deployment sets one, and the
+// note is assembled from configuration -- so this holds the two apart: whatever
+// NOTARY_SIGNING_KEY happens to be, it is not part of the text that leaves the
+// machine in an email.
+func TestFirstRunNoteCarriesNoKeyMaterial(t *testing.T) {
+	seed := make([]byte, 32)
+	_, err := rand.Read(seed)
+	require.NoError(t, err)
+	canary := base64.StdEncoding.EncodeToString(seed)
+	t.Setenv(config.DefaultSigningKeyEnv, canary)
+
+	srv := newEmptyServer(t)
+	body := get(t, srv.Handler(), "/").Body.String()
+
+	require.Contains(t, body, "nothing is recording into this ledger yet",
+		"the first-run note must render for this test to mean anything")
+	assert.NotContains(t, body, canary, "the note must never echo signing key material")
 }

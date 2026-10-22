@@ -18,7 +18,14 @@ field that changed.</p>
 <p class="reproduce">Re-run: <kbd>notary verify</kbd> to reproduce this verdict.</p>
 </section>
 
-{{if .Empty}}
+{{if .FactsUnavailable}}
+<section class="overview-facts">
+<h3>What is in this ledger</h3>
+<p>The record counts could not be read from this ledger. That usually means a stored row no longer
+matches the shape Notary wrote. <a href="/verify">The chain page</a> names what is wrong, and
+<kbd>notary verify</kbd> reports it from the command line.</p>
+</section>
+{{else if .Empty}}
 <section class="first-run">
 <h3>Nothing has been recorded yet</h3>
 <p>Notary records what an agent's memory does — what was stored, what a search returned, and what later
@@ -44,7 +51,9 @@ for the span and the tier counts — its JSONL carries the event time and the ti
 
 <section class="overview-gaps">
 <h3>Gaps</h3>
-{{if .Gaps}}<p><strong>{{.Gaps}} moments Notary did not record</strong> — <a href="/gaps">see them</a>.</p>
+{{if .GapsUnavailable}}<p>The gap count could not be read. <kbd>notary gaps</kbd> reports it from the
+command line.</p>
+{{else if .Gaps}}<p><strong>{{.Gaps}} moments Notary did not record</strong> — <a href="/gaps">see them</a>.</p>
 {{else}}<p><strong>None found</strong> — every operation Notary watched was recorded.</p>{{end}}
 <p class="reproduce">Reproduced by <kbd>notary gaps</kbd>.</p>
 </section>

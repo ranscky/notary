@@ -121,17 +121,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// The chain banner is on every page, so the verdict is taken here too -- the
 	// Overview's own card is the same verdict, presented for a reader who will not
 	// read the banner.
+	// The chain verdict is the one thing that can fail this page: without it there
+	// is no honest answer to give, so a failure returns 500 rather than a page
+	// pretending to have a verdict. Everything else -- the figures, the gap count --
+	// degrades inside newOverviewData, because the verdict is still worth showing.
 	chain, err := s.loadChain()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	data, err := s.newOverviewData(chain)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	data := s.newOverviewData(chain)
 	data.pageData = pageData{Title: "Overview", Current: sectionOverview, Now: s.now(), Chain: chain}
 	s.respond(w, http.StatusOK, "overview", data)
 }
